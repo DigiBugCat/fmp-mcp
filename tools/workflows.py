@@ -473,7 +473,7 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         ) = await asyncio.gather(
             client.get_safe("/stable/profile", params=sym, cache_ttl=client.TTL_DAILY, default=[]),
             client.get_safe("/stable/quote", params=sym, cache_ttl=client.TTL_REALTIME, default=[]),
-            client.get_safe("/stable/earnings", params=sym, cache_ttl=client.TTL_6H, default=[]),
+            client.get_safe("/stable/earnings", params=sym, cache_ttl=client.TTL_HOURLY, default=[]),
             client.get_safe("/stable/grades", params=sym, cache_ttl=client.TTL_6H, default=[]),
             client.get_safe("/stable/historical-price-eod/full", params={**sym, "from": (date.today() - timedelta(days=90)).isoformat(), "to": date.today().isoformat()}, cache_ttl=client.TTL_12H, default=[]),
             client.get_safe("/stable/insider-trading/search", params={**sym, "limit": 50}, cache_ttl=client.TTL_HOURLY, default=[]),
@@ -975,19 +975,39 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         """
         symbol = symbol.upper().strip()
         sym = {"symbol": symbol}
+        if quarter is not None and quarter not in (1, 2, 3, 4):
+            return {"error": f"Invalid quarter '{quarter}'. Must be 1, 2, 3, or 4."}
+
+        def _to_int(value: Any) -> int | None:
+            try:
+                return int(value) if value is not None else None
+            except (TypeError, ValueError):
+                return None
+
+        def _period_from_report(report: dict) -> tuple[int, int] | None:
+            fiscal_y = _to_int(report.get("fiscalYear") or report.get("year"))
+            fiscal_q = _to_int(report.get("quarter"))
+            if fiscal_y is not None and fiscal_q in (1, 2, 3, 4):
+                return fiscal_y, fiscal_q
+            fiscal_end = report.get("fiscalDateEnding", "")
+            try:
+                fd = datetime.strptime(fiscal_end, "%Y-%m-%d").date()
+                return fd.year, (fd.month - 1) // 3 + 1
+            except (ValueError, TypeError):
+                return None
 
         (
             earnings_data, income_data, grades_data,
             targets_data, history_data, quote_data,
             transcript_dates_data,
         ) = await asyncio.gather(
-            client.get_safe("/stable/earnings", params=sym, cache_ttl=client.TTL_6H, default=[]),
+            client.get_safe("/stable/earnings", params=sym, cache_ttl=client.TTL_HOURLY, default=[]),
             client.get_safe("/stable/income-statement", params={**sym, "period": "quarter", "limit": 8}, cache_ttl=client.TTL_HOURLY, default=[]),
             client.get_safe("/stable/grades", params=sym, cache_ttl=client.TTL_6H, default=[]),
             client.get_safe("/stable/price-target-consensus", params=sym, cache_ttl=client.TTL_6H, default=[]),
             client.get_safe("/stable/historical-price-eod/full", params={**sym, "from": (date.today() - timedelta(days=90)).isoformat(), "to": date.today().isoformat()}, cache_ttl=client.TTL_12H, default=[]),
             client.get_safe("/stable/quote", params=sym, cache_ttl=client.TTL_REALTIME, default=[]),
-            client.get_safe("/stable/earning-call-transcript-dates", params=sym, cache_ttl=client.TTL_DAILY, default=[]),
+            client.get_safe("/stable/earning-call-transcript-dates", params=sym, cache_ttl=client.TTL_REALTIME, default=[]),
         )
 
         earnings_list = earnings_data if isinstance(earnings_data, list) else []
@@ -1006,20 +1026,23 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         actual_earnings = [e for e in earnings_list if e.get("epsActual") is not None and (e.get("date") or "") <= today_str]
         actual_earnings.sort(key=lambda e: e.get("date", ""), reverse=True)
 
+        transcript_period_by_date: dict[str, tuple[int, int]] = {}
+        for t in transcript_dates:
+            t_date = t.get("date")
+            t_year = _to_int(t.get("fiscalYear") or t.get("year"))
+            t_quarter = _to_int(t.get("quarter"))
+            if t_date and t_year is not None and t_quarter in (1, 2, 3, 4):
+                transcript_period_by_date[t_date] = (t_year, t_quarter)
+
         target_report = None
         if quarter is not None and year is not None:
-            # Find specific quarter
+            # Prefer transcript date mapping to avoid fiscal calendar mismatches.
             for e in actual_earnings:
-                fiscal_end = e.get("fiscalDateEnding", "")
-                try:
-                    fd = datetime.strptime(fiscal_end, "%Y-%m-%d").date()
-                    fiscal_q = (fd.month - 1) // 3 + 1
-                    fiscal_y = fd.year
-                    if fiscal_q == quarter and fiscal_y == year:
-                        target_report = e
-                        break
-                except (ValueError, TypeError):
-                    continue
+                report_date = e.get("date", "")
+                report_period = transcript_period_by_date.get(report_date) or _period_from_report(e)
+                if report_period == (year, quarter):
+                    target_report = e
+                    break
         if target_report is None:
             target_report = actual_earnings[0] if actual_earnings else None
 
@@ -1125,49 +1148,64 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
 
         # Guidance tone from transcript (if available)
         guidance = {"has_transcript": False, "tone": None, "snippet": None}
-        # Check if transcript exists for this quarter
-        fiscal_end = target_report.get("fiscalDateEnding", "")
         transcript_year = None
         transcript_quarter = None
-        if fiscal_end:
+
+        matched_transcript: dict | None = next(
+            (t for t in transcript_dates if (t.get("date") or "") == earnings_date),
+            None,
+        )
+        if matched_transcript is None and earnings_date:
             try:
-                fd = datetime.strptime(fiscal_end, "%Y-%m-%d").date()
-                transcript_quarter = (fd.month - 1) // 3 + 1
-                transcript_year = fd.year
-            except (ValueError, TypeError):
+                earnings_dt = datetime.strptime(earnings_date, "%Y-%m-%d").date()
+                nearest_match: tuple[int, dict] | None = None
+                for t in transcript_dates:
+                    t_date = t.get("date") or ""
+                    try:
+                        td = datetime.strptime(t_date, "%Y-%m-%d").date()
+                    except ValueError:
+                        continue
+                    diff = abs((td - earnings_dt).days)
+                    if diff <= 7 and (nearest_match is None or diff < nearest_match[0]):
+                        nearest_match = (diff, t)
+                if nearest_match is not None:
+                    matched_transcript = nearest_match[1]
+            except ValueError:
                 pass
 
-        if transcript_year and transcript_quarter:
-            # Check if we have a matching transcript date
-            has_transcript = any(
-                (t.get("fiscalYear") == transcript_year and t.get("quarter") == transcript_quarter)
-                for t in transcript_dates
+        if matched_transcript is not None:
+            transcript_year = _to_int(matched_transcript.get("fiscalYear") or matched_transcript.get("year"))
+            transcript_quarter = _to_int(matched_transcript.get("quarter"))
+        else:
+            report_period = _period_from_report(target_report)
+            if report_period is not None:
+                transcript_year, transcript_quarter = report_period
+
+        if transcript_year is not None and transcript_quarter in (1, 2, 3, 4):
+            transcript_data = await client.get_safe(
+                "/stable/earning-call-transcript",
+                params={"symbol": symbol, "year": transcript_year, "quarter": transcript_quarter},
+                cache_ttl=client.TTL_REALTIME,
+                default=[],
             )
-            if has_transcript:
-                transcript_data = await client.get_safe(
-                    "/stable/earning-call-transcript",
-                    params={"symbol": symbol, "year": transcript_year, "quarter": transcript_quarter},
-                    cache_ttl=client.TTL_DAILY,
-                    default=[],
-                )
-                transcript_list = transcript_data if isinstance(transcript_data, list) else []
-                if transcript_list:
-                    content = " ".join(t.get("content", "") for t in transcript_list)
-                    guidance["has_transcript"] = True
-                    # Simple sentiment scan
-                    content_lower = content.lower()
-                    positive_kw = ["strong", "growth", "record", "accelerat", "momentum", "confident", "optimistic", "exceed", "above expectations"]
-                    negative_kw = ["headwind", "challenge", "decline", "soft", "pressure", "cautious", "uncertain", "below expectations", "weakness"]
-                    pos_count = sum(1 for kw in positive_kw if kw in content_lower)
-                    neg_count = sum(1 for kw in negative_kw if kw in content_lower)
-                    if pos_count > neg_count * 1.5:
-                        guidance["tone"] = "positive"
-                    elif neg_count > pos_count * 1.5:
-                        guidance["tone"] = "negative"
-                    else:
-                        guidance["tone"] = "mixed"
-                    # Snippet: first 300 chars
-                    guidance["snippet"] = content[:300] if content else None
+            transcript_list = transcript_data if isinstance(transcript_data, list) else []
+            if transcript_list:
+                content = " ".join(t.get("content", "") for t in transcript_list)
+                guidance["has_transcript"] = True
+                # Simple sentiment scan
+                content_lower = content.lower()
+                positive_kw = ["strong", "growth", "record", "accelerat", "momentum", "confident", "optimistic", "exceed", "above expectations"]
+                negative_kw = ["headwind", "challenge", "decline", "soft", "pressure", "cautious", "uncertain", "below expectations", "weakness"]
+                pos_count = sum(1 for kw in positive_kw if kw in content_lower)
+                neg_count = sum(1 for kw in negative_kw if kw in content_lower)
+                if pos_count > neg_count * 1.5:
+                    guidance["tone"] = "positive"
+                elif neg_count > pos_count * 1.5:
+                    guidance["tone"] = "negative"
+                else:
+                    guidance["tone"] = "mixed"
+                # Snippet: first 300 chars
+                guidance["snippet"] = content[:300] if content else None
 
         # Summary
         headline_parts = []
@@ -1270,20 +1308,20 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
 
         # Import ownership tools from the ownership module
         from tools.ownership import (
-            _latest_quarter,
+            _resolve_latest_symbol_institutional_period,
             _safe_first,
             _short_interest_dates,
             _fetch_finra_short_interest,
         )
 
         sym_params = {"symbol": symbol}
-        year, quarter = _latest_quarter()
+        period_task = _resolve_latest_symbol_institutional_period(client, symbol)
 
         # Fetch all ownership-related endpoints in parallel
         (
             float_data, profile_data, quote_data,
             insider_trades_data, insider_stats_data,
-            institutional_summary_data, institutional_holders_data,
+            institutional_period_data,
             finra_tasks,
         ) = await asyncio.gather(
             client.get_safe("/stable/shares-float", params=sym_params, cache_ttl=client.TTL_DAILY, default=[]),
@@ -1291,10 +1329,10 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             client.get_safe("/stable/quote", params=sym_params, cache_ttl=client.TTL_REALTIME, default=[]),
             client.get_safe("/stable/insider-trading/search", params={**sym_params, "limit": 100}, cache_ttl=client.TTL_HOURLY, default=[]),
             client.get_safe("/stable/insider-trading/statistics", params=sym_params, cache_ttl=client.TTL_HOURLY, default=[]),
-            client.get_safe("/stable/institutional-ownership/symbol-positions-summary", params={**sym_params, "year": year, "quarter": quarter}, cache_ttl=client.TTL_6H, default=[]),
-            client.get_safe("/stable/institutional-ownership/extract-analytics/holder", params={**sym_params, "year": year, "quarter": quarter, "limit": 20}, cache_ttl=client.TTL_6H, default=[]),
+            period_task,
             asyncio.gather(*[_fetch_finra_short_interest(symbol, d) for d in _short_interest_dates()]),
         )
+        year, quarter, institutional_summary_data, institutional_holders_data = institutional_period_data
 
         float_info = _safe_first(float_data)
         profile = _safe_first(profile_data)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import date
+
 import pytest
 import respx
 import httpx
@@ -183,6 +185,52 @@ class TestFundHoldings:
         assert "error" in data
         await fmp.close()
 
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_defaults_to_latest_available_quarter(self):
+        today = date.today()
+        if today.month <= 3:
+            latest_year, latest_quarter = today.year - 1, 4
+        elif today.month <= 6:
+            latest_year, latest_quarter = today.year, 1
+        elif today.month <= 9:
+            latest_year, latest_quarter = today.year, 2
+        else:
+            latest_year, latest_quarter = today.year, 3
+        prev_year, prev_quarter = (latest_year - 1, 4) if latest_quarter == 1 else (latest_year, latest_quarter - 1)
+
+        def extract_side_effect(request: httpx.Request) -> httpx.Response:
+            year = int(request.url.params.get("year", 0))
+            quarter = int(request.url.params.get("quarter", 0))
+            if (year, quarter) == (latest_year, latest_quarter):
+                return httpx.Response(200, json=[])
+            if (year, quarter) == (prev_year, prev_quarter):
+                return httpx.Response(200, json=VANGUARD_HOLDINGS)
+            return httpx.Response(200, json=[])
+
+        def industry_side_effect(request: httpx.Request) -> httpx.Response:
+            year = int(request.url.params.get("year", 0))
+            quarter = int(request.url.params.get("quarter", 0))
+            if (year, quarter) == (latest_year, latest_quarter):
+                return httpx.Response(200, json=[])
+            if (year, quarter) == (prev_year, prev_quarter):
+                return httpx.Response(200, json=VANGUARD_INDUSTRY_BREAKDOWN)
+            return httpx.Response(200, json=[])
+
+        respx.get(f"{BASE}/stable/institutional-ownership/extract").mock(side_effect=extract_side_effect)
+        respx.get(f"{BASE}/stable/institutional-ownership/holder-performance-summary").mock(
+            return_value=httpx.Response(200, json=VANGUARD_PERFORMANCE)
+        )
+        respx.get(f"{BASE}/stable/institutional-ownership/holder-industry-breakdown").mock(side_effect=industry_side_effect)
+
+        mcp, fmp = _make_server(register_ownership)
+        async with Client(mcp) as c:
+            result = await c.call_tool("fund_holdings", {"cik": "0001166559"})
+        data = result.data
+        assert data["reporting_period"] == f"Q{prev_quarter} {prev_year}"
+        assert len(data["top_holdings"]) > 0
+        await fmp.close()
+
 
 class TestOwnershipStructure:
     @pytest.mark.asyncio
@@ -196,6 +244,9 @@ class TestOwnershipStructure:
         )
         respx.get(f"{BASE}/stable/institutional-ownership/symbol-positions-summary").mock(
             return_value=httpx.Response(200, json=AAPL_INSTITUTIONAL_SUMMARY)
+        )
+        respx.get(f"{BASE}/stable/institutional-ownership/extract-analytics/holder").mock(
+            return_value=httpx.Response(200, json=[])
         )
         # Mock FINRA short interest (external API) - match any POST to FINRA_URL
         respx.post(FINRA_URL).mock(
@@ -224,6 +275,9 @@ class TestOwnershipStructure:
         respx.get(f"{BASE}/stable/institutional-ownership/symbol-positions-summary").mock(
             return_value=httpx.Response(200, json=[])
         )
+        respx.get(f"{BASE}/stable/institutional-ownership/extract-analytics/holder").mock(
+            return_value=httpx.Response(200, json=[])
+        )
         respx.post(FINRA_URL).mock(
             return_value=httpx.Response(204, content=b"")
         )
@@ -233,6 +287,51 @@ class TestOwnershipStructure:
             result = await c.call_tool("ownership_structure", {"symbol": "ZZZZ"})
         data = result.data
         assert "error" in data
+        await fmp.close()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_uses_latest_available_institutional_period(self):
+        today = date.today()
+        if today.month <= 3:
+            latest_year, latest_quarter = today.year - 1, 4
+        elif today.month <= 6:
+            latest_year, latest_quarter = today.year, 1
+        elif today.month <= 9:
+            latest_year, latest_quarter = today.year, 2
+        else:
+            latest_year, latest_quarter = today.year, 3
+        prev_year, prev_quarter = (latest_year - 1, 4) if latest_quarter == 1 else (latest_year, latest_quarter - 1)
+
+        def summary_side_effect(request: httpx.Request) -> httpx.Response:
+            year = int(request.url.params.get("year", 0))
+            quarter = int(request.url.params.get("quarter", 0))
+            if (year, quarter) == (latest_year, latest_quarter):
+                return httpx.Response(200, json=[])
+            if (year, quarter) == (prev_year, prev_quarter):
+                return httpx.Response(200, json=AAPL_INSTITUTIONAL_SUMMARY)
+            return httpx.Response(200, json=[])
+
+        respx.get(f"{BASE}/stable/shares-float").mock(
+            return_value=httpx.Response(200, json=AAPL_SHARES_FLOAT)
+        )
+        respx.get(f"{BASE}/stable/insider-trading/statistics").mock(
+            return_value=httpx.Response(200, json=AAPL_INSIDER_STATS)
+        )
+        respx.get(f"{BASE}/stable/institutional-ownership/symbol-positions-summary").mock(side_effect=summary_side_effect)
+        respx.get(f"{BASE}/stable/institutional-ownership/extract-analytics/holder").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        respx.post(FINRA_URL).mock(
+            return_value=httpx.Response(200, json=AAPL_SHORT_INTEREST)
+        )
+
+        mcp, fmp = _make_server(register_ownership)
+        async with Client(mcp) as c:
+            result = await c.call_tool("ownership_structure", {"symbol": "AAPL"})
+        data = result.data
+        assert data["reporting_period"] == f"Q{prev_quarter} {prev_year}"
+        assert data["ownership_percentages"]["institutional_pct"] > 0
         await fmp.close()
 
 

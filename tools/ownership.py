@@ -37,6 +37,86 @@ def _latest_quarter() -> tuple[int, int]:
         return year, 3
 
 
+def _quarter_candidates(lookback_quarters: int = 6) -> list[tuple[int, int]]:
+    """Return recent completed quarter candidates, newest first."""
+    year, quarter = _latest_quarter()
+    out: list[tuple[int, int]] = []
+    for _ in range(max(1, lookback_quarters)):
+        out.append((year, quarter))
+        quarter -= 1
+        if quarter < 1:
+            quarter = 4
+            year -= 1
+    return out
+
+
+async def _resolve_latest_symbol_institutional_period(
+    client: FMPClient,
+    symbol: str,
+    lookback_quarters: int = 6,
+) -> tuple[int, int, list[dict], list[dict]]:
+    """Find most recent quarter with institutional ownership data for a symbol."""
+    candidates = _quarter_candidates(lookback_quarters)
+    default_year, default_quarter = candidates[0]
+    sym_params = {"symbol": symbol}
+
+    for year, quarter in candidates:
+        summary_data, holders_data = await asyncio.gather(
+            client.get_safe(
+                "/stable/institutional-ownership/symbol-positions-summary",
+                params={**sym_params, "year": year, "quarter": quarter},
+                cache_ttl=client.TTL_HOURLY,
+                default=[],
+            ),
+            client.get_safe(
+                "/stable/institutional-ownership/extract-analytics/holder",
+                params={**sym_params, "year": year, "quarter": quarter, "limit": 20},
+                cache_ttl=client.TTL_HOURLY,
+                default=[],
+            ),
+        )
+        summary_list = summary_data if isinstance(summary_data, list) else []
+        holders_list = holders_data if isinstance(holders_data, list) else []
+        if summary_list or holders_list:
+            return year, quarter, summary_list, holders_list
+
+    return default_year, default_quarter, [], []
+
+
+async def _resolve_latest_fund_period(
+    client: FMPClient,
+    cik: str,
+    lookback_quarters: int = 8,
+) -> tuple[int, int, list[dict], list[dict]]:
+    """Find most recent quarter with holdings/industry data for a fund CIK."""
+    candidates = _quarter_candidates(lookback_quarters)
+    default_year, default_quarter = candidates[0]
+    cik_params = {"cik": cik}
+
+    for year, quarter in candidates:
+        period_params = {**cik_params, "year": year, "quarter": quarter}
+        holdings_data, industry_data = await asyncio.gather(
+            client.get_safe(
+                "/stable/institutional-ownership/extract",
+                params={**period_params, "limit": 50},
+                cache_ttl=client.TTL_HOURLY,
+                default=[],
+            ),
+            client.get_safe(
+                "/stable/institutional-ownership/holder-industry-breakdown",
+                params=period_params,
+                cache_ttl=client.TTL_HOURLY,
+                default=[],
+            ),
+        )
+        holdings_list = holdings_data if isinstance(holdings_data, list) else []
+        industry_list = industry_data if isinstance(industry_data, list) else []
+        if holdings_list or industry_list:
+            return year, quarter, holdings_list, industry_list
+
+    return default_year, default_quarter, [], []
+
+
 def _short_interest_dates() -> list[str]:
     """Generate candidate FINRA settlement dates (15th + last biz day).
 
@@ -283,32 +363,13 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             symbol: Stock ticker symbol (e.g. "AAPL")
         """
         symbol = symbol.upper().strip()
-        sym_params = {"symbol": symbol}
-        year, quarter = _latest_quarter()
-
-        summary_data, holders_data, float_data = await asyncio.gather(
-            client.get_safe(
-                "/stable/institutional-ownership/symbol-positions-summary",
-                params={**sym_params, "year": year, "quarter": quarter},
-                cache_ttl=client.TTL_6H,
-                default=[],
-            ),
-            client.get_safe(
-                "/stable/institutional-ownership/extract-analytics/holder",
-                params={**sym_params, "year": year, "quarter": quarter, "limit": 20},
-                cache_ttl=client.TTL_6H,
-                default=[],
-            ),
-            client.get_safe(
-                "/stable/shares-float",
-                params=sym_params,
-                cache_ttl=client.TTL_DAILY,
-                default=[],
-            ),
+        year, quarter, summary_list, holders_list = await _resolve_latest_symbol_institutional_period(client, symbol)
+        float_data = await client.get_safe(
+            "/stable/shares-float",
+            params={"symbol": symbol},
+            cache_ttl=client.TTL_DAILY,
+            default=[],
         )
-
-        summary_list = summary_data if isinstance(summary_data, list) else []
-        holders_list = holders_data if isinstance(holders_data, list) else []
         float_info = _safe_first(float_data)
 
         if not summary_list and not holders_list:
@@ -486,42 +547,38 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         """
         cik = cik.strip()
 
-        # Default to latest quarter if not specified
-        if year is None or quarter is None:
-            year_default, quarter_default = _latest_quarter()
-            if year is None:
-                year = year_default
-            if quarter is None:
-                quarter = quarter_default
-
         cik_params = {"cik": cik}
-        period_params = {**cik_params, "year": year, "quarter": quarter}
+        # If period is omitted, use most recent quarter where data is available.
+        holdings_list: list[dict]
+        industry_list: list[dict]
+        if year is None or quarter is None:
+            year, quarter, holdings_list, industry_list = await _resolve_latest_fund_period(client, cik)
+        else:
+            period_params = {**cik_params, "year": year, "quarter": quarter}
+            holdings_data, industry_data = await asyncio.gather(
+                client.get_safe(
+                    "/stable/institutional-ownership/extract",
+                    params={**period_params, "limit": 50},
+                    cache_ttl=client.TTL_HOURLY,
+                    default=[],
+                ),
+                client.get_safe(
+                    "/stable/institutional-ownership/holder-industry-breakdown",
+                    params=period_params,
+                    cache_ttl=client.TTL_HOURLY,
+                    default=[],
+                ),
+            )
+            holdings_list = holdings_data if isinstance(holdings_data, list) else []
+            industry_list = industry_data if isinstance(industry_data, list) else []
 
-        # Fetch all 3 endpoints in parallel
-        holdings_data, performance_data, industry_data = await asyncio.gather(
-            client.get_safe(
-                "/stable/institutional-ownership/extract",
-                params={**period_params, "limit": 50},
-                cache_ttl=client.TTL_6H,
-                default=[],
-            ),
-            client.get_safe(
-                "/stable/institutional-ownership/holder-performance-summary",
-                params=cik_params,
-                cache_ttl=client.TTL_6H,
-                default=[],
-            ),
-            client.get_safe(
-                "/stable/institutional-ownership/holder-industry-breakdown",
-                params=period_params,
-                cache_ttl=client.TTL_6H,
-                default=[],
-            ),
+        performance_data = await client.get_safe(
+            "/stable/institutional-ownership/holder-performance-summary",
+            params=cik_params,
+            cache_ttl=client.TTL_HOURLY,
+            default=[],
         )
-
-        holdings_list = holdings_data if isinstance(holdings_data, list) else []
         performance_list = performance_data if isinstance(performance_data, list) else []
-        industry_list = industry_data if isinstance(industry_data, list) else []
 
         if not holdings_list and not performance_list and not industry_list:
             return {"error": f"No fund data found for CIK '{cik}'"}
@@ -620,10 +677,10 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         """
         symbol = symbol.upper().strip()
         sym_params = {"symbol": symbol}
-        year, quarter = _latest_quarter()
+        year, quarter, institutional_list, _holders_unused = await _resolve_latest_symbol_institutional_period(client, symbol)
 
         # Fetch float, insider stats, institutional summary, and short interest in parallel
-        float_data, insider_stats_data, institutional_data, finra_results = await asyncio.gather(
+        float_data, insider_stats_data, finra_results = await asyncio.gather(
             client.get_safe(
                 "/stable/shares-float",
                 params=sym_params,
@@ -636,12 +693,6 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
                 cache_ttl=client.TTL_HOURLY,
                 default=[],
             ),
-            client.get_safe(
-                "/stable/institutional-ownership/symbol-positions-summary",
-                params={**sym_params, "year": year, "quarter": quarter},
-                cache_ttl=client.TTL_6H,
-                default=[],
-            ),
             # For short interest, use the existing helper
             asyncio.gather(
                 *[_fetch_finra_short_interest(symbol, d) for d in _short_interest_dates()]
@@ -650,7 +701,7 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
 
         float_info = _safe_first(float_data)
         insider_stats = _safe_first(insider_stats_data)
-        institutional_summary = _safe_first(institutional_data)
+        institutional_summary = _safe_first(institutional_list)
 
         # Process FINRA results
         finra = None

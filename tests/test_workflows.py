@@ -469,6 +469,53 @@ class TestEarningsPostmortem:
         assert "error" in data
         await fmp.close()
 
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_specific_quarter_uses_transcript_period_mapping(self):
+        earnings = [
+            {
+                "date": "2025-05-08",
+                "symbol": "AAPL",
+                "epsActual": 1.61,
+                "epsEstimated": 1.55,
+                "revenueActual": 91000000000,
+                "revenueEstimated": 90000000000,
+                "fiscalDateEnding": "2025-03-31",
+            },
+            {
+                "date": "2025-02-06",
+                "symbol": "AAPL",
+                "epsActual": 2.44,
+                "epsEstimated": 2.36,
+                "revenueActual": 124200000000,
+                "revenueEstimated": 120000000000,
+                "fiscalDateEnding": "2024-12-31",
+            },
+        ]
+        transcript_dates = [
+            {"quarter": 2, "fiscalYear": 2025, "date": "2025-05-08"},
+            {"quarter": 1, "fiscalYear": 2025, "date": "2025-02-06"},
+        ]
+        transcript = [{**AAPL_TRANSCRIPT[0], "date": "2025-02-06", "year": 2025, "quarter": 1}]
+
+        respx.get(f"{BASE}/stable/earnings").mock(return_value=httpx.Response(200, json=earnings))
+        respx.get(f"{BASE}/stable/income-statement").mock(return_value=httpx.Response(200, json=AAPL_QUARTERLY_INCOME))
+        respx.get(f"{BASE}/stable/grades").mock(return_value=httpx.Response(200, json=AAPL_GRADES_DETAIL))
+        respx.get(f"{BASE}/stable/price-target-consensus").mock(return_value=httpx.Response(200, json=AAPL_PRICE_TARGET))
+        respx.get(f"{BASE}/stable/historical-price-eod/full").mock(return_value=httpx.Response(200, json=AAPL_HISTORICAL))
+        respx.get(f"{BASE}/stable/quote").mock(return_value=httpx.Response(200, json=AAPL_QUOTE))
+        respx.get(f"{BASE}/stable/earning-call-transcript-dates").mock(return_value=httpx.Response(200, json=transcript_dates))
+        respx.get(f"{BASE}/stable/earning-call-transcript").mock(return_value=httpx.Response(200, json=transcript))
+
+        mcp, fmp = _make_server()
+        async with Client(mcp) as c:
+            result = await c.call_tool("earnings_postmortem", {"symbol": "AAPL", "year": 2025, "quarter": 1})
+
+        data = result.data
+        assert data["earnings_date"] == "2025-02-06"
+        assert data["guidance"]["has_transcript"] is True
+        await fmp.close()
+
 
 # ================================================================
 # ownership_deep_dive

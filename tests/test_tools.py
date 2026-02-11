@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import date
+
 import pytest
 import respx
 import httpx
@@ -421,6 +423,51 @@ class TestInstitutionalOwnership:
 
         data = result.data
         assert "error" in data
+        await fmp.close()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_falls_back_to_previous_available_quarter(self):
+        today = date.today()
+        if today.month <= 3:
+            latest_year, latest_quarter = today.year - 1, 4
+        elif today.month <= 6:
+            latest_year, latest_quarter = today.year, 1
+        elif today.month <= 9:
+            latest_year, latest_quarter = today.year, 2
+        else:
+            latest_year, latest_quarter = today.year, 3
+        prev_year, prev_quarter = (latest_year - 1, 4) if latest_quarter == 1 else (latest_year, latest_quarter - 1)
+
+        def summary_side_effect(request: httpx.Request) -> httpx.Response:
+            year = int(request.url.params.get("year", 0))
+            quarter = int(request.url.params.get("quarter", 0))
+            if (year, quarter) == (latest_year, latest_quarter):
+                return httpx.Response(200, json=[])
+            if (year, quarter) == (prev_year, prev_quarter):
+                return httpx.Response(200, json=AAPL_INSTITUTIONAL_SUMMARY)
+            return httpx.Response(200, json=[])
+
+        def holders_side_effect(request: httpx.Request) -> httpx.Response:
+            year = int(request.url.params.get("year", 0))
+            quarter = int(request.url.params.get("quarter", 0))
+            if (year, quarter) == (latest_year, latest_quarter):
+                return httpx.Response(200, json=[])
+            if (year, quarter) == (prev_year, prev_quarter):
+                return httpx.Response(200, json=AAPL_INSTITUTIONAL_HOLDERS)
+            return httpx.Response(200, json=[])
+
+        respx.get(f"{BASE}/stable/institutional-ownership/symbol-positions-summary").mock(side_effect=summary_side_effect)
+        respx.get(f"{BASE}/stable/institutional-ownership/extract-analytics/holder").mock(side_effect=holders_side_effect)
+        respx.get(f"{BASE}/stable/shares-float").mock(return_value=httpx.Response(200, json=AAPL_SHARES_FLOAT))
+
+        mcp, fmp = _make_server(register_ownership)
+        async with Client(mcp) as c:
+            result = await c.call_tool("institutional_ownership", {"symbol": "AAPL"})
+
+        data = result.data
+        assert data["reporting_period"] == f"Q{prev_quarter} {prev_year}"
+        assert len(data["top_holders"]) > 0
         await fmp.close()
 
 

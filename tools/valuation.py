@@ -509,7 +509,7 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             client.get_safe(
                 "/stable/earnings",
                 params={"symbol": symbol, "limit": 8},
-                cache_ttl=client.TTL_6H,
+                cache_ttl=client.TTL_HOURLY,
                 default=[],
             ),
         )

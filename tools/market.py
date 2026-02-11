@@ -504,7 +504,7 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
                 "from": today.isoformat(),
                 "to": to_date.isoformat(),
             },
-            cache_ttl=client.TTL_HOURLY,
+            cache_ttl=client.TTL_REALTIME,
             default=[],
         )
 

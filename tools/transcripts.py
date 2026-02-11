@@ -59,7 +59,7 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             transcript_data = await client.get_safe(
                 "/stable/earning-call-transcript",
                 params={"symbol": symbol, "year": year, "quarter": quarter},
-                cache_ttl=client.TTL_DAILY,
+                cache_ttl=client.TTL_REALTIME,
                 default=[],
             )
         else:
@@ -115,7 +115,7 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             transcript_data = await client.get_safe(
                 "/stable/earning-call-transcript",
                 params={"symbol": symbol, "year": target_year, "quarter": target_quarter},
-                cache_ttl=client.TTL_DAILY,
+                cache_ttl=client.TTL_REALTIME,
                 default=[],
             )
 
