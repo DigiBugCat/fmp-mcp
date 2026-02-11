@@ -272,26 +272,45 @@ ECONOMIC_CALENDAR = [
     {"date": "2026-02-13 07:00:00", "event": "ECB Rate Decision", "country": "EU", "estimate": 2.50, "actual": None, "previous": 2.75, "change": None, "impact": "High"},
 ]
 
-SECTOR_PERFORMANCE = [
-    {"sector": "Technology", "changesPercentage": 1.25},
-    {"sector": "Healthcare", "changesPercentage": 0.85},
-    {"sector": "Financials", "changesPercentage": -0.32},
-    {"sector": "Energy", "changesPercentage": -1.10},
+SECTOR_PERFORMANCE_NYSE = [
+    {"date": "2026-02-10", "sector": "Technology", "exchange": "NYSE", "averageChange": 1.15},
+    {"date": "2026-02-10", "sector": "Healthcare", "exchange": "NYSE", "averageChange": 0.75},
+    {"date": "2026-02-10", "sector": "Financial Services", "exchange": "NYSE", "averageChange": -0.42},
+    {"date": "2026-02-10", "sector": "Energy", "exchange": "NYSE", "averageChange": -1.00},
+]
+
+SECTOR_PERFORMANCE_NASDAQ = [
+    {"date": "2026-02-10", "sector": "Technology", "exchange": "NASDAQ", "averageChange": 1.35},
+    {"date": "2026-02-10", "sector": "Healthcare", "exchange": "NASDAQ", "averageChange": 0.95},
+    {"date": "2026-02-10", "sector": "Financial Services", "exchange": "NASDAQ", "averageChange": -0.22},
+    {"date": "2026-02-10", "sector": "Energy", "exchange": "NASDAQ", "averageChange": -1.20},
 ]
 
 BIGGEST_GAINERS = [
-    {"symbol": "XYZ", "name": "XYZ Corp", "price": 45.50, "changesPercentage": 15.3},
-    {"symbol": "ABC", "name": "ABC Inc", "price": 120.00, "changesPercentage": 12.1},
+    {"symbol": "XYZ", "name": "XYZ Corp", "price": 45.50, "changesPercentage": 15.3, "exchange": "NASDAQ"},
+    {"symbol": "ABC", "name": "ABC Inc", "price": 120.00, "changesPercentage": 12.1, "exchange": "NYSE"},
+    {"symbol": "TINY", "name": "Tiny Micro Corp", "price": 0.50, "changesPercentage": 200.0, "exchange": "NASDAQ"},
 ]
 
 BIGGEST_LOSERS = [
-    {"symbol": "DEF", "name": "DEF Corp", "price": 22.30, "changesPercentage": -10.5},
-    {"symbol": "GHI", "name": "GHI Inc", "price": 8.75, "changesPercentage": -8.2},
+    {"symbol": "DEF", "name": "DEF Corp", "price": 22.30, "changesPercentage": -10.5, "exchange": "NYSE"},
+    {"symbol": "GHI", "name": "GHI Inc", "price": 8.75, "changesPercentage": -8.2, "exchange": "NASDAQ"},
 ]
 
 MOST_ACTIVES = [
-    {"symbol": "NVDA", "name": "NVIDIA Corporation", "price": 188.54, "changesPercentage": 2.3},
-    {"symbol": "TSLA", "name": "Tesla Inc", "price": 350.00, "changesPercentage": -1.5},
+    {"symbol": "NVDA", "name": "NVIDIA Corporation", "price": 188.54, "changesPercentage": 2.3, "exchange": "NASDAQ"},
+    {"symbol": "TSLA", "name": "Tesla Inc", "price": 350.00, "changesPercentage": -1.5, "exchange": "NASDAQ"},
+]
+
+# Batch quote data for movers market cap filtering
+MOVERS_BATCH_QUOTE = [
+    {"symbol": "XYZ", "marketCap": 5000000000},       # $5B - passes filter
+    {"symbol": "ABC", "marketCap": 15000000000},       # $15B - passes filter
+    {"symbol": "TINY", "marketCap": 50000000},         # $50M - filtered out
+    {"symbol": "DEF", "marketCap": 3000000000},        # $3B - passes filter
+    {"symbol": "GHI", "marketCap": 2000000000},        # $2B - passes filter
+    {"symbol": "NVDA", "marketCap": 4590000000000},    # $4.59T - passes filter
+    {"symbol": "TSLA", "marketCap": 1100000000000},    # $1.1T - passes filter
 ]
 
 # --- Earnings Transcript ---

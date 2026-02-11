@@ -18,7 +18,8 @@ from tests.conftest import (
     AAPL_INSTITUTIONAL_SUMMARY, AAPL_INSTITUTIONAL_HOLDERS,
     AAPL_NEWS, AAPL_PRESS_RELEASES,
     TREASURY_RATES, MARKET_RISK_PREMIUM, ECONOMIC_CALENDAR,
-    SECTOR_PERFORMANCE, BIGGEST_GAINERS, BIGGEST_LOSERS, MOST_ACTIVES,
+    SECTOR_PERFORMANCE_NYSE, SECTOR_PERFORMANCE_NASDAQ,
+    BIGGEST_GAINERS, BIGGEST_LOSERS, MOST_ACTIVES, MOVERS_BATCH_QUOTE,
     AAPL_TRANSCRIPT_DATES, AAPL_TRANSCRIPT,
     AAPL_PRODUCT_SEGMENTS, AAPL_GEO_SEGMENTS,
     AAPL_PEERS, AAPL_KEY_METRICS,
@@ -537,10 +538,12 @@ class TestMarketOverview:
     @pytest.mark.asyncio
     @respx.mock
     async def test_full_market_overview(self):
-        respx.get(f"{BASE}/stable/sector-performance-snapshot").mock(return_value=httpx.Response(200, json=SECTOR_PERFORMANCE))
+        respx.get(f"{BASE}/stable/sector-performance-snapshot", params__contains={"exchange": "NYSE"}).mock(return_value=httpx.Response(200, json=SECTOR_PERFORMANCE_NYSE))
+        respx.get(f"{BASE}/stable/sector-performance-snapshot", params__contains={"exchange": "NASDAQ"}).mock(return_value=httpx.Response(200, json=SECTOR_PERFORMANCE_NASDAQ))
         respx.get(f"{BASE}/stable/biggest-gainers").mock(return_value=httpx.Response(200, json=BIGGEST_GAINERS))
         respx.get(f"{BASE}/stable/biggest-losers").mock(return_value=httpx.Response(200, json=BIGGEST_LOSERS))
         respx.get(f"{BASE}/stable/most-actives").mock(return_value=httpx.Response(200, json=MOST_ACTIVES))
+        respx.get(f"{BASE}/stable/batch-quote").mock(return_value=httpx.Response(200, json=MOVERS_BATCH_QUOTE))
 
         mcp, fmp = _make_server(register_macro)
         async with Client(mcp) as c:
@@ -549,8 +552,10 @@ class TestMarketOverview:
         data = result.data
         assert len(data["sectors"]) == 4
         assert data["sectors"][0]["sector"] == "Technology"  # Highest change
-        assert len(data["top_gainers"]) == 2
-        assert data["top_gainers"][0]["symbol"] == "XYZ"
+        # TINY ($50M mcap) should be filtered out from gainers
+        gainer_symbols = [g["symbol"] for g in data["top_gainers"]]
+        assert "TINY" not in gainer_symbols
+        assert "XYZ" in gainer_symbols
         assert len(data["top_losers"]) == 2
         assert len(data["most_active"]) == 2
         assert "_warnings" not in data
@@ -559,10 +564,12 @@ class TestMarketOverview:
     @pytest.mark.asyncio
     @respx.mock
     async def test_partial_market(self):
-        respx.get(f"{BASE}/stable/sector-performance-snapshot").mock(return_value=httpx.Response(200, json=SECTOR_PERFORMANCE))
+        respx.get(f"{BASE}/stable/sector-performance-snapshot", params__contains={"exchange": "NYSE"}).mock(return_value=httpx.Response(200, json=SECTOR_PERFORMANCE_NYSE))
+        respx.get(f"{BASE}/stable/sector-performance-snapshot", params__contains={"exchange": "NASDAQ"}).mock(return_value=httpx.Response(200, json=SECTOR_PERFORMANCE_NASDAQ))
         respx.get(f"{BASE}/stable/biggest-gainers").mock(return_value=httpx.Response(500, text="error"))
         respx.get(f"{BASE}/stable/biggest-losers").mock(return_value=httpx.Response(500, text="error"))
         respx.get(f"{BASE}/stable/most-actives").mock(return_value=httpx.Response(500, text="error"))
+        respx.get(f"{BASE}/stable/batch-quote").mock(return_value=httpx.Response(200, json=[]))
 
         mcp, fmp = _make_server(register_macro)
         async with Client(mcp) as c:

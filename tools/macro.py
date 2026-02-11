@@ -7,14 +7,123 @@ from datetime import date, timedelta
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from fastmcp import FastMCP
     from fmp_client import FMPClient
+    from fastmcp import FastMCP
+
+MIN_MARKET_CAP = 1_000_000_000  # $1B floor for movers
 
 
 def _safe_first(data: list | None) -> dict:
     if isinstance(data, list) and data:
         return data[0]
     return {}
+
+
+async def _fetch_sectors(client: "FMPClient") -> list[dict]:
+    """Fetch sector performance from NYSE + NASDAQ and average by sector.
+
+    /stable/sector-performance-snapshot requires `date` and returns
+    per-exchange data with `averageChange` (not `changesPercentage`).
+    """
+    today_str = date.today().isoformat()
+    nyse_data, nasdaq_data = await asyncio.gather(
+        client.get_safe(
+            "/stable/sector-performance-snapshot",
+            params={"date": today_str, "exchange": "NYSE"},
+            cache_ttl=client.TTL_REALTIME,
+            default=[],
+        ),
+        client.get_safe(
+            "/stable/sector-performance-snapshot",
+            params={"date": today_str, "exchange": "NASDAQ"},
+            cache_ttl=client.TTL_REALTIME,
+            default=[],
+        ),
+    )
+
+    nyse_list = nyse_data if isinstance(nyse_data, list) else []
+    nasdaq_list = nasdaq_data if isinstance(nasdaq_data, list) else []
+
+    # Build lookup by sector and average
+    sector_vals: dict[str, list[float]] = {}
+    for entry in nyse_list + nasdaq_list:
+        sector = entry.get("sector")
+        change = entry.get("averageChange")
+        if sector and change is not None:
+            sector_vals.setdefault(sector, []).append(change)
+
+    sectors = []
+    for sector, vals in sector_vals.items():
+        avg = round(sum(vals) / len(vals), 4)
+        sectors.append({"sector": sector, "change_pct": avg})
+
+    sectors.sort(key=lambda x: x.get("change_pct") or 0, reverse=True)
+    return sectors
+
+
+async def _fetch_movers_with_mcap(client: "FMPClient") -> tuple[list, list, list]:
+    """Fetch gainers/losers/actives and filter by market cap using batch-quote.
+
+    Returns (gainers, losers, actives) lists with marketCap-enriched entries,
+    filtered to MIN_MARKET_CAP.
+    """
+    gainers_data, losers_data, actives_data = await asyncio.gather(
+        client.get_safe("/stable/biggest-gainers", cache_ttl=client.TTL_REALTIME, default=[]),
+        client.get_safe("/stable/biggest-losers", cache_ttl=client.TTL_REALTIME, default=[]),
+        client.get_safe("/stable/most-actives", cache_ttl=client.TTL_REALTIME, default=[]),
+    )
+
+    gainers_raw = gainers_data if isinstance(gainers_data, list) else []
+    losers_raw = losers_data if isinstance(losers_data, list) else []
+    actives_raw = actives_data if isinstance(actives_data, list) else []
+
+    # Collect all unique symbols for batch quote
+    all_symbols = set()
+    for item in gainers_raw + losers_raw + actives_raw:
+        sym = item.get("symbol")
+        if sym:
+            all_symbols.add(sym)
+
+    # Batch-quote to get market caps (max ~150 symbols per call is fine)
+    mcap_map: dict[str, float] = {}
+    if all_symbols:
+        symbols_str = ",".join(sorted(all_symbols))
+        batch_data = await client.get_safe(
+            "/stable/batch-quote",
+            params={"symbols": symbols_str},
+            cache_ttl=client.TTL_REALTIME,
+            default=[],
+        )
+        batch_list = batch_data if isinstance(batch_data, list) else []
+        for q in batch_list:
+            sym = q.get("symbol")
+            mc = q.get("marketCap")
+            if sym and mc:
+                mcap_map[sym] = mc
+
+    def _enrich_and_filter(items: list[dict]) -> list[dict]:
+        result = []
+        for m in items:
+            sym = m.get("symbol")
+            mc = mcap_map.get(sym)
+            if mc is not None and mc < MIN_MARKET_CAP:
+                continue
+            entry = {
+                "symbol": sym,
+                "name": m.get("name"),
+                "price": m.get("price"),
+                "change_pct": m.get("changesPercentage"),
+            }
+            if mc is not None:
+                entry["market_cap"] = mc
+            result.append(entry)
+        return result
+
+    return (
+        _enrich_and_filter(gainers_raw),
+        _enrich_and_filter(losers_raw),
+        _enrich_and_filter(actives_raw),
+    )
 
 
 def register(mcp: FastMCP, client: FMPClient) -> None:
@@ -203,71 +312,31 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         """Get today's market snapshot: sector performance, biggest movers, and most active stocks.
 
         Returns sector rankings, top 5 gainers/losers, and most actively traded names.
+        Movers are filtered to companies with market cap > $1B to exclude micro-caps.
         """
-        sectors_data, gainers_data, losers_data, actives_data = await asyncio.gather(
-            client.get_safe(
-                "/stable/sector-performance-snapshot",
-                cache_ttl=client.TTL_REALTIME,
-                default=[],
-            ),
-            client.get_safe(
-                "/stable/biggest-gainers",
-                cache_ttl=client.TTL_REALTIME,
-                default=[],
-            ),
-            client.get_safe(
-                "/stable/biggest-losers",
-                cache_ttl=client.TTL_REALTIME,
-                default=[],
-            ),
-            client.get_safe(
-                "/stable/most-actives",
-                cache_ttl=client.TTL_REALTIME,
-                default=[],
-            ),
+        sectors, (gainers, losers, actives) = await asyncio.gather(
+            _fetch_sectors(client),
+            _fetch_movers_with_mcap(client),
         )
 
-        sectors_list = sectors_data if isinstance(sectors_data, list) else []
-        gainers_list = gainers_data if isinstance(gainers_data, list) else []
-        losers_list = losers_data if isinstance(losers_data, list) else []
-        actives_list = actives_data if isinstance(actives_data, list) else []
-
-        if not any([sectors_list, gainers_list, losers_list, actives_list]):
+        if not any([sectors, gainers, losers, actives]):
             return {"error": "No market data available"}
-
-        # Sector performance sorted by change %
-        sectors = []
-        for s in sectors_list:
-            sectors.append({
-                "sector": s.get("sector"),
-                "change_pct": s.get("changesPercentage"),
-            })
-        sectors.sort(key=lambda x: x.get("change_pct") or 0, reverse=True)
-
-        # Top movers helper
-        def _format_mover(m: dict) -> dict:
-            return {
-                "symbol": m.get("symbol"),
-                "name": m.get("name"),
-                "price": m.get("price"),
-                "change_pct": m.get("changesPercentage"),
-            }
 
         result = {
             "sectors": sectors,
-            "top_gainers": [_format_mover(g) for g in gainers_list[:5]],
-            "top_losers": [_format_mover(l) for l in losers_list[:5]],
-            "most_active": [_format_mover(a) for a in actives_list[:5]],
+            "top_gainers": gainers[:5],
+            "top_losers": losers[:5],
+            "most_active": actives[:5],
         }
 
         _warnings = []
-        if not sectors_list:
+        if not sectors:
             _warnings.append("sector performance unavailable")
-        if not gainers_list:
+        if not gainers:
             _warnings.append("gainers data unavailable")
-        if not losers_list:
+        if not losers:
             _warnings.append("losers data unavailable")
-        if not actives_list:
+        if not actives:
             _warnings.append("most active data unavailable")
         if _warnings:
             result["_warnings"] = _warnings

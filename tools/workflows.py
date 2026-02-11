@@ -7,6 +7,8 @@ import statistics
 from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+from tools.macro import _fetch_movers_with_mcap, _fetch_sectors
+
 if TYPE_CHECKING:
     from fastmcp import FastMCP
     from fmp_client import FMPClient
@@ -285,24 +287,18 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
 
         (
             rates_data, erp_data, calendar_data,
-            sectors_data, gainers_data, losers_data, actives_data,
+            sectors_list, (gainers_list, losers_list, actives_list),
         ) = await asyncio.gather(
             client.get_safe("/stable/treasury-rates", cache_ttl=client.TTL_HOURLY, default=[]),
             client.get_safe("/stable/market-risk-premium", cache_ttl=client.TTL_DAILY, default=[]),
             client.get_safe("/stable/economic-calendar", params={"from": today_dt.isoformat(), "to": end_dt.isoformat()}, cache_ttl=client.TTL_HOURLY, default=[]),
-            client.get_safe("/stable/sector-performance-snapshot", cache_ttl=client.TTL_REALTIME, default=[]),
-            client.get_safe("/stable/biggest-gainers", cache_ttl=client.TTL_REALTIME, default=[]),
-            client.get_safe("/stable/biggest-losers", cache_ttl=client.TTL_REALTIME, default=[]),
-            client.get_safe("/stable/most-actives", cache_ttl=client.TTL_REALTIME, default=[]),
+            _fetch_sectors(client),
+            _fetch_movers_with_mcap(client),
         )
 
         latest_rate = _safe_first(rates_data if isinstance(rates_data, list) else [])
         erp_list = erp_data if isinstance(erp_data, list) else []
         calendar_list = calendar_data if isinstance(calendar_data, list) else []
-        sectors_list = sectors_data if isinstance(sectors_data, list) else []
-        gainers_list = gainers_data if isinstance(gainers_data, list) else []
-        losers_list = losers_data if isinstance(losers_data, list) else []
-        actives_list = actives_data if isinstance(actives_data, list) else []
 
         if not latest_rate and not sectors_list:
             return {"error": "No market data available"}
@@ -320,10 +316,9 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
                 break
         cost_of_equity = round(y10 + us_erp, 2) if y10 is not None and us_erp is not None else None
 
-        # Sector rotation
-        sectors_sorted = sorted(sectors_list, key=lambda s: s.get("changesPercentage") or 0, reverse=True)
-        leaders = [{"sector": s.get("sector"), "pct": s.get("changesPercentage")} for s in sectors_sorted[:3]]
-        laggards = [{"sector": s.get("sector"), "pct": s.get("changesPercentage")} for s in sectors_sorted[-3:]]
+        # Sector rotation (sectors_list already sorted desc by change_pct)
+        leaders = [{"sector": s.get("sector"), "pct": s.get("change_pct")} for s in sectors_list[:3]]
+        laggards = [{"sector": s.get("sector"), "pct": s.get("change_pct")} for s in sectors_list[-3:]]
 
         # Rotation signal: risk_on if growth/tech leading, risk_off if defensives leading
         growth_sectors = {"Technology", "Consumer Cyclical", "Communication Services"}
@@ -338,9 +333,9 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         else:
             rotation_signal = "mixed"
 
-        # Breadth
-        gainer_pcts = [abs(g.get("changesPercentage") or 0) for g in gainers_list[:10]]
-        loser_pcts = [abs(l.get("changesPercentage") or 0) for l in losers_list[:10]]
+        # Breadth (from filtered movers — more meaningful with mcap floor)
+        gainer_pcts = [abs(g.get("change_pct") or 0) for g in gainers_list[:10]]
+        loser_pcts = [abs(l.get("change_pct") or 0) for l in losers_list[:10]]
         avg_gainer = round(statistics.mean(gainer_pcts), 2) if gainer_pcts else 0
         avg_loser = round(statistics.mean(loser_pcts), 2) if loser_pcts else 0
         if avg_gainer > avg_loser * 1.2:
@@ -349,10 +344,6 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             breadth_signal = "bearish"
         else:
             breadth_signal = "neutral"
-
-        # Movers (top 5)
-        def _fmt(m: dict) -> dict:
-            return {"symbol": m.get("symbol"), "name": m.get("name"), "price": m.get("price"), "change_pct": m.get("changesPercentage")}
 
         # Calendar: US high-impact, split today vs this_week
         high_impact_kw = [
@@ -427,9 +418,9 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
                 "signal": breadth_signal,
             },
             "movers": {
-                "gainers": [_fmt(g) for g in gainers_list[:5]],
-                "losers": [_fmt(l) for l in losers_list[:5]],
-                "most_active": [_fmt(a) for a in actives_list[:5]],
+                "gainers": gainers_list[:5],
+                "losers": losers_list[:5],
+                "most_active": actives_list[:5],
             },
             "calendar": {
                 "today": today_events,

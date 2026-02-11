@@ -18,7 +18,8 @@ from tests.conftest import (
     AAPL_PEERS, AAPL_EARNINGS, AAPL_GRADES_DETAIL,
     AAPL_TRANSCRIPT_DATES, AAPL_TRANSCRIPT,
     TREASURY_RATES, MARKET_RISK_PREMIUM, ECONOMIC_CALENDAR,
-    SECTOR_PERFORMANCE, BIGGEST_GAINERS, BIGGEST_LOSERS, MOST_ACTIVES,
+    SECTOR_PERFORMANCE_NYSE, SECTOR_PERFORMANCE_NASDAQ,
+    BIGGEST_GAINERS, BIGGEST_LOSERS, MOST_ACTIVES, MOVERS_BATCH_QUOTE,
     MSFT_RATIOS, MSFT_KEY_METRICS,
     GOOGL_RATIOS, GOOGL_KEY_METRICS,
     AMZN_RATIOS, AMZN_KEY_METRICS,
@@ -127,10 +128,12 @@ class TestMarketContext:
         respx.get(f"{BASE}/stable/treasury-rates").mock(return_value=httpx.Response(200, json=TREASURY_RATES))
         respx.get(f"{BASE}/stable/market-risk-premium").mock(return_value=httpx.Response(200, json=MARKET_RISK_PREMIUM))
         respx.get(f"{BASE}/stable/economic-calendar").mock(return_value=httpx.Response(200, json=ECONOMIC_CALENDAR))
-        respx.get(f"{BASE}/stable/sector-performance-snapshot").mock(return_value=httpx.Response(200, json=SECTOR_PERFORMANCE))
+        respx.get(f"{BASE}/stable/sector-performance-snapshot", params__contains={"exchange": "NYSE"}).mock(return_value=httpx.Response(200, json=SECTOR_PERFORMANCE_NYSE))
+        respx.get(f"{BASE}/stable/sector-performance-snapshot", params__contains={"exchange": "NASDAQ"}).mock(return_value=httpx.Response(200, json=SECTOR_PERFORMANCE_NASDAQ))
         respx.get(f"{BASE}/stable/biggest-gainers").mock(return_value=httpx.Response(200, json=BIGGEST_GAINERS))
         respx.get(f"{BASE}/stable/biggest-losers").mock(return_value=httpx.Response(200, json=BIGGEST_LOSERS))
         respx.get(f"{BASE}/stable/most-actives").mock(return_value=httpx.Response(200, json=MOST_ACTIVES))
+        respx.get(f"{BASE}/stable/batch-quote").mock(return_value=httpx.Response(200, json=MOVERS_BATCH_QUOTE))
 
         mcp, fmp = _make_server()
         async with Client(mcp) as c:
@@ -147,6 +150,9 @@ class TestMarketContext:
         assert data["rotation"]["signal"] in ("risk_on", "risk_off", "mixed")
         assert data["breadth"]["signal"] in ("bullish", "bearish", "neutral")
         assert data["environment"]["regime"] in ("risk_on", "risk_off", "neutral")
+        # TINY should be filtered out from movers
+        gainer_symbols = [g["symbol"] for g in data["movers"]["gainers"]]
+        assert "TINY" not in gainer_symbols
         assert "_warnings" not in data
         await fmp.close()
 
@@ -156,10 +162,12 @@ class TestMarketContext:
         respx.get(f"{BASE}/stable/treasury-rates").mock(return_value=httpx.Response(200, json=TREASURY_RATES))
         respx.get(f"{BASE}/stable/market-risk-premium").mock(return_value=httpx.Response(500, text="error"))
         respx.get(f"{BASE}/stable/economic-calendar").mock(return_value=httpx.Response(500, text="error"))
-        respx.get(f"{BASE}/stable/sector-performance-snapshot").mock(return_value=httpx.Response(200, json=SECTOR_PERFORMANCE))
+        respx.get(f"{BASE}/stable/sector-performance-snapshot", params__contains={"exchange": "NYSE"}).mock(return_value=httpx.Response(200, json=SECTOR_PERFORMANCE_NYSE))
+        respx.get(f"{BASE}/stable/sector-performance-snapshot", params__contains={"exchange": "NASDAQ"}).mock(return_value=httpx.Response(200, json=SECTOR_PERFORMANCE_NASDAQ))
         respx.get(f"{BASE}/stable/biggest-gainers").mock(return_value=httpx.Response(200, json=BIGGEST_GAINERS))
         respx.get(f"{BASE}/stable/biggest-losers").mock(return_value=httpx.Response(200, json=BIGGEST_LOSERS))
         respx.get(f"{BASE}/stable/most-actives").mock(return_value=httpx.Response(200, json=MOST_ACTIVES))
+        respx.get(f"{BASE}/stable/batch-quote").mock(return_value=httpx.Response(200, json=MOVERS_BATCH_QUOTE))
 
         mcp, fmp = _make_server()
         async with Client(mcp) as c:
@@ -177,10 +185,12 @@ class TestMarketContext:
         respx.get(f"{BASE}/stable/treasury-rates").mock(return_value=httpx.Response(200, json=[]))
         respx.get(f"{BASE}/stable/market-risk-premium").mock(return_value=httpx.Response(200, json=[]))
         respx.get(f"{BASE}/stable/economic-calendar").mock(return_value=httpx.Response(200, json=[]))
-        respx.get(f"{BASE}/stable/sector-performance-snapshot").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/sector-performance-snapshot", params__contains={"exchange": "NYSE"}).mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/sector-performance-snapshot", params__contains={"exchange": "NASDAQ"}).mock(return_value=httpx.Response(200, json=[]))
         respx.get(f"{BASE}/stable/biggest-gainers").mock(return_value=httpx.Response(200, json=[]))
         respx.get(f"{BASE}/stable/biggest-losers").mock(return_value=httpx.Response(200, json=[]))
         respx.get(f"{BASE}/stable/most-actives").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/batch-quote").mock(return_value=httpx.Response(200, json=[]))
 
         mcp, fmp = _make_server()
         async with Client(mcp) as c:
