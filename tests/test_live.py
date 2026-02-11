@@ -1,378 +1,390 @@
 """Live integration tests against the real FMP stable API.
 
-Run with: FMP_API_KEY=... uv run pytest tests/test_live.py -v -s
+Run examples:
+  uv run pytest tests/test_live.py -m live_smoke -q
+  uv run pytest tests/test_live.py -m live_full -q
+  uv run pytest tests/test_live.py -m live -v -s
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from pathlib import Path
 import os
+from typing import Any, Callable
 
+from dotenv import load_dotenv
 import pytest
+import pytest_asyncio
 
-from fastmcp import FastMCP, Client
+from fastmcp import Client, FastMCP
 from fmp_client import FMPClient
-from tools.overview import register as register_overview
-from tools.financials import register as register_financials
-from tools.valuation import register as register_valuation
-from tools.market import register as register_market
-from tools.ownership import register as register_ownership
-from tools.news import register as register_news
-from tools.macro import register as register_macro
-from tools.transcripts import register as register_transcripts
-
-API_KEY = os.environ.get("FMP_API_KEY", "")
-pytestmark = pytest.mark.skipif(not API_KEY, reason="FMP_API_KEY not set")
+from tools import assets, financials, macro, market, meta, news, overview, ownership, transcripts, valuation, workflows
 
 
-@pytest.fixture
-def live_server():
-    mcp = FastMCP("Live Test")
+Validator = Callable[[dict[str, Any]], None]
+
+
+def resolve_api_key() -> tuple[str, str | None, str | None]:
+    """Resolve FMP API key with deterministic precedence.
+
+    Resolution order:
+    1) Process environment
+    2) Repo-local .env
+    3) Parent .env
+    """
+    env_var = "FMP_API_KEY"
+    checked_paths: list[str] = [f"process env ({env_var})"]
+
+    key = os.environ.get(env_var)
+    if key:
+        return key, "process env", None
+
+    repo_root = Path(__file__).resolve().parent.parent
+    dotenv_candidates = [repo_root / ".env", repo_root.parent / ".env"]
+
+    for dotenv_path in dotenv_candidates:
+        checked_paths.append(str(dotenv_path))
+        if not dotenv_path.exists():
+            continue
+
+        load_dotenv(dotenv_path=dotenv_path, override=False)
+        key = os.environ.get(env_var)
+        if key:
+            return key, str(dotenv_path), None
+
+    reason = (
+        f"{env_var} not found. Resolution order checked: "
+        + " -> ".join(checked_paths)
+    )
+    return "", None, reason
+
+
+API_KEY, API_KEY_SOURCE, API_KEY_SKIP_REASON = resolve_api_key()
+
+pytestmark = [pytest.mark.live]
+if not API_KEY:
+    pytestmark.append(pytest.mark.skip(reason=API_KEY_SKIP_REASON or "FMP_API_KEY not set"))
+
+
+@dataclass(frozen=True)
+class ToolCase:
+    tool_name: str
+    args: dict[str, Any]
+    required_keys: tuple[str, ...]
+    marker_set: str  # "live_smoke" or "live_full"
+    validator: Validator | None = None
+    fallback_args: tuple[dict[str, Any], ...] = ()
+
+
+SMOKE_TOOLS = {
+    "company_overview",
+    "financial_statements",
+    "ratio_history",
+    "valuation_history",
+    "price_history",
+    "etf_lookup",
+    "market_hours",
+    "market_news",
+    "treasury_rates",
+    "stock_brief",
+    "market_context",
+    "ownership_deep_dive",
+}
+
+
+def _default_marker(tool_name: str) -> str:
+    return "live_smoke" if tool_name in SMOKE_TOOLS else "live_full"
+
+
+def _case(
+    tool_name: str,
+    args: dict[str, Any],
+    required_keys: tuple[str, ...],
+    marker_set: str | None = None,
+    validator: Validator | None = None,
+    fallback_args: tuple[dict[str, Any], ...] = (),
+) -> ToolCase:
+    return ToolCase(
+        tool_name=tool_name,
+        args=args,
+        required_keys=required_keys,
+        marker_set=marker_set or _default_marker(tool_name),
+        validator=validator,
+        fallback_args=fallback_args,
+    )
+
+
+def _as_param(case: ToolCase) -> Any:
+    marks: list[Any] = [pytest.mark.live_full]
+    if case.marker_set == "live_smoke":
+        marks.append(pytest.mark.live_smoke)
+    return pytest.param(case, id=case.tool_name, marks=marks)
+
+
+def _assert_list_key(data: dict[str, Any], key: str) -> None:
+    assert isinstance(data.get(key), list), f"'{key}' must be a list"
+
+
+def _assert_non_empty_list_key(data: dict[str, Any], key: str) -> None:
+    _assert_list_key(data, key)
+    assert len(data[key]) > 0, f"'{key}' must be non-empty"
+
+
+def _validate_market_hours(data: dict[str, Any]) -> None:
+    assert data["exchange"] == "NYSE"
+    assert "upcoming_holidays" in data
+    assert isinstance(data["upcoming_holidays"], list)
+    if "_warnings" in data:
+        assert isinstance(data["_warnings"], list)
+
+
+def _validate_etf_profile(data: dict[str, Any]) -> None:
+    assert data.get("mode") == "profile"
+    assert isinstance(data.get("info"), dict)
+    _assert_list_key(data, "top_holdings")
+
+
+CANONICAL_CASES = [
+    _case(
+        "fmp_coverage_gaps",
+        {},
+        (
+            "docs_url",
+            "coverage_basis",
+            "documented_family_count",
+            "implemented_family_count",
+            "unimplemented_family_count",
+            "unimplemented_families",
+            "categories",
+        ),
+    ),
+    # overview
+    _case("company_overview", {"symbol": "AAPL"}, ("symbol", "name", "price", "ratios")),
+    _case("stock_search", {"query": "apple", "limit": 10}, ("results", "count")),
+    _case("company_executives", {"symbol": "AAPL"}, ("symbol", "count", "executives")),
+    _case("employee_history", {"symbol": "AAPL"}, ("symbol", "count", "history")),
+    _case("delisted_companies", {"limit": 10}, ("count", "companies")),
+    _case("sec_filings", {"symbol": "AAPL", "limit": 10}, ("symbol", "count", "filings")),
+    _case("symbol_lookup", {"query": "0000320193", "type": "cik"}, ("query", "lookup_type", "count", "results")),
+    # financials
+    _case("ratio_history", {"symbol": "AAPL", "period": "annual", "limit": 10}, ("symbol", "period_type", "time_series", "trends")),
+    _case("financial_statements", {"symbol": "AAPL", "period": "annual", "limit": 5}, ("symbol", "period_type", "periods")),
+    _case("revenue_segments", {"symbol": "AAPL"}, ("symbol",)),
+    _case("financial_health", {"symbol": "AAPL"}, ("symbol",)),
+    # valuation
+    _case("valuation_history", {"symbol": "AAPL", "period": "annual", "limit": 10}, ("symbol", "period_type", "current_ttm", "historical", "percentiles")),
+    _case("analyst_consensus", {"symbol": "AAPL"}, ("symbol", "price_targets", "analyst_grades", "fmp_rating")),
+    _case("peer_comparison", {"symbol": "AAPL"}, ("symbol", "peers", "peer_count", "comparisons", "peer_details")),
+    _case("estimate_revisions", {"symbol": "AAPL"}, ("symbol", "forward_estimates", "recent_analyst_actions", "earnings_track_record")),
+    # market
+    _case("price_history", {"symbol": "AAPL", "period": "1y"}, ("symbol", "current_price", "data_points", "recent_closes")),
+    _case("earnings_info", {"symbol": "AAPL"}, ("symbol", "forward_estimates", "recent_quarters")),
+    _case("dividends_info", {"symbol": "AAPL"}, ("symbol", "recent_dividends", "stock_splits")),
+    _case(
+        "earnings_calendar",
+        {"days_ahead": 7},
+        ("from_date", "to_date", "count", "earnings"),
+        fallback_args=({"days_ahead": 30},),
+    ),
+    _case(
+        "etf_lookup",
+        {"symbol": "QQQ", "mode": "profile", "limit": 10},
+        ("symbol", "mode", "info", "top_holdings", "sector_weights", "country_allocation"),
+        validator=_validate_etf_profile,
+    ),
+    _case(
+        "intraday_prices",
+        {"symbol": "AAPL", "interval": "5m", "days_back": 1},
+        ("symbol", "interval", "candle_count", "summary", "candles"),
+        fallback_args=({"symbol": "AAPL", "interval": "5m", "days_back": 7},),
+    ),
+    _case("historical_market_cap", {"symbol": "AAPL", "limit": 10}, ("symbol", "current_market_cap", "data_points", "history")),
+    _case("technical_indicators", {"symbol": "AAPL", "indicator": "rsi", "period_length": 14}, ("symbol", "indicator", "current_value", "data_points", "values")),
+    # ownership
+    _case("insider_activity", {"symbol": "AAPL"}, ("symbol", "net_activity_30d", "statistics", "notable_trades", "float_context")),
+    _case("institutional_ownership", {"symbol": "AAPL"}, ("symbol", "reporting_period", "top_holders", "position_changes", "ownership_summary")),
+    _case("short_interest", {"symbol": "AAPL"}, ("symbol",)),
+    _case("fund_holdings", {"cik": "0001166559"}, ("cik", "reporting_period", "portfolio_summary", "top_holdings", "performance", "industry_allocation")),
+    _case("ownership_structure", {"symbol": "AAPL"}, ("symbol", "reporting_period", "shares_breakdown", "ownership_percentages", "institutional_details", "short_interest_details")),
+    # news
+    _case("market_news", {"category": "stock", "symbol": "AAPL", "limit": 10}, ("category", "count", "articles")),
+    _case("mna_activity", {"limit": 10}, ("count", "deals")),
+    # macro
+    _case("treasury_rates", {}, ("date", "yields", "curve_slope_10y_2y", "curve_inverted", "dcf_inputs")),
+    _case("economic_calendar", {"days_ahead": 14}, ("events", "count", "period")),
+    _case("market_overview", {}, ("sectors", "top_gainers", "top_losers", "most_active")),
+    _case("ipo_calendar", {"days_ahead": 14}, ("ipos", "count", "period")),
+    _case("dividends_calendar", {"days_ahead": 14}, ("dividends", "count", "period")),
+    _case("index_constituents", {"index": "sp500"}, ("index", "count", "constituents", "sector_breakdown")),
+    _case("index_performance", {}, ("indices", "count")),
+    _case("market_hours", {"exchange": "NYSE"}, ("exchange", "upcoming_holidays"), validator=_validate_market_hours),
+    _case("industry_performance", {}, ("date", "industries", "count")),
+    _case("splits_calendar", {"days_ahead": 30}, ("splits", "count", "period")),
+    _case("sector_valuation", {}, ("date",)),
+    # transcripts
+    _case("earnings_transcript", {"symbol": "AAPL"}, ("symbol", "year", "quarter", "content", "length_chars", "total_chars", "offset", "truncated")),
+    # assets
+    _case("commodity_quotes", {"symbol": "GCUSD"}, ("symbol", "mode", "asset_type", "price")),
+    _case("crypto_quotes", {"symbol": "BTCUSD"}, ("symbol", "mode", "asset_type", "price")),
+    _case("forex_quotes", {"symbol": "EURUSD"}, ("symbol", "mode", "asset_type", "price")),
+    # workflows
+    _case("stock_brief", {"symbol": "AAPL"}, ("symbol", "company_name", "price", "momentum", "valuation", "analyst", "insider", "news", "quick_take")),
+    _case("market_context", {}, ("date", "rates", "rotation", "breadth", "movers", "calendar", "environment")),
+    _case("earnings_setup", {"symbol": "AAPL"}, ("symbol", "company_name", "consensus", "surprise_history", "analyst_momentum", "setup_summary")),
+    _case("fair_value_estimate", {"symbol": "AAPL"}, ("symbol", "current_price", "fundamentals", "growth", "multiples", "fair_value", "quality", "summary")),
+    _case("earnings_postmortem", {"symbol": "AAPL"}, ("symbol", "earnings_date", "results", "yoy", "qoq", "guidance", "analyst_reaction", "market_reaction", "summary")),
+    _case("ownership_deep_dive", {"symbol": "AAPL"}, ("symbol", "ownership_structure", "insider_activity", "institutional_ownership", "short_interest", "ownership_analysis")),
+    _case(
+        "industry_analysis",
+        {"industry": "Software", "limit": 10},
+        ("industry", "overview", "top_stocks", "industry_medians", "valuation_spread", "rotation", "summary"),
+        fallback_args=(
+            {"industry": "Semiconductors", "limit": 10},
+            {"industry": "Technology", "limit": 10},
+        ),
+    ),
+]
+
+assert len(CANONICAL_CASES) == 53
+
+
+@pytest_asyncio.fixture
+async def live_server() -> FastMCP:
+    """Create one FastMCP instance with all tool modules registered."""
+    mcp = FastMCP("Live E2E")
     client = FMPClient(api_key=API_KEY)
-    register_overview(mcp, client)
-    register_financials(mcp, client)
-    register_valuation(mcp, client)
-    register_market(mcp, client)
-    register_ownership(mcp, client)
-    register_news(mcp, client)
-    register_macro(mcp, client)
-    register_transcripts(mcp, client)
-    return mcp, client
 
+    overview.register(mcp, client)
+    financials.register(mcp, client)
+    valuation.register(mcp, client)
+    market.register(mcp, client)
+    ownership.register(mcp, client)
+    news.register(mcp, client)
+    macro.register(mcp, client)
+    transcripts.register(mcp, client)
+    assets.register(mcp, client)
+    workflows.register(mcp, client)
+    meta.register(mcp, client)
 
-class TestLiveCompanyOverview:
-    @pytest.mark.asyncio
-    async def test_aapl(self, live_server):
-        mcp, client = live_server
-        async with Client(mcp) as c:
-            result = await c.call_tool("company_overview", {"symbol": "AAPL"})
-        data = result.data
-        assert data["symbol"] == "AAPL"
-        assert data["name"] == "Apple Inc."
-        assert data["sector"] == "Technology"
-        assert data["price"] is not None
-        assert data["market_cap"] is not None
-        assert data["ratios"]["pe_ttm"] is not None
-        print(f"\n  AAPL: ${data['price']}, P/E={data['ratios']['pe_ttm']:.1f}, MCap=${data['market_cap']:,.0f}")
-        await client.close()
-
-    @pytest.mark.asyncio
-    async def test_msft(self, live_server):
-        mcp, client = live_server
-        async with Client(mcp) as c:
-            result = await c.call_tool("company_overview", {"symbol": "MSFT"})
-        data = result.data
-        assert data["symbol"] == "MSFT"
-        assert data["price"] is not None
-        print(f"\n  MSFT: ${data['price']}, Sector={data['sector']}")
-        await client.close()
-
-    @pytest.mark.asyncio
-    async def test_invalid_symbol(self, live_server):
-        mcp, client = live_server
-        async with Client(mcp) as c:
-            result = await c.call_tool("company_overview", {"symbol": "ZZZZZZZZ"})
-        data = result.data
-        assert "error" in data or data.get("name") is None
+    try:
+        yield mcp
+    finally:
         await client.close()
 
 
-class TestLiveStockSearch:
-    @pytest.mark.asyncio
-    async def test_search_apple(self, live_server):
-        mcp, client = live_server
-        async with Client(mcp) as c:
-            result = await c.call_tool("stock_search", {"query": "apple"})
-        data = result.data
-        assert data["count"] > 0
-        print(f"\n  Found {data['count']} results for 'apple'")
-        await client.close()
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", [_as_param(c) for c in CANONICAL_CASES])
+async def test_live_tool_contracts(live_server: FastMCP, case: ToolCase) -> None:
+    data: dict[str, Any] | None = None
+    all_args = (case.args, *case.fallback_args)
 
-    @pytest.mark.asyncio
-    async def test_screener_tech(self, live_server):
-        mcp, client = live_server
-        async with Client(mcp) as c:
-            result = await c.call_tool("stock_search", {
+    for current_args in all_args:
+        async with Client(live_server) as c:
+            result = await c.call_tool(case.tool_name, current_args)
+        data = result.data
+        assert isinstance(data, dict), f"{case.tool_name} must return dict data"
+        if "error" not in data:
+            break
+
+    assert data is not None
+    assert "error" not in data, (
+        f"{case.tool_name} returned error after args attempts {all_args}: {data.get('error')}"
+    )
+
+    for key in case.required_keys:
+        assert key in data, f"{case.tool_name} missing required key '{key}'"
+
+    if case.validator is not None:
+        case.validator(data)
+
+
+@pytest.mark.asyncio
+@pytest.mark.live_full
+@pytest.mark.parametrize(
+    ("args", "expected_mode", "list_key"),
+    [
+        pytest.param({"symbol": "QQQ", "mode": "holdings", "limit": 10}, "holdings", "holdings", id="etf-holdings"),
+        pytest.param({"symbol": "AAPL", "mode": "exposure", "limit": 10}, "exposure", "etf_holders", id="etf-exposure"),
+        pytest.param({"symbol": "AAPL", "mode": "auto", "limit": 10}, "auto", "auto", id="etf-auto"),
+    ],
+)
+async def test_live_etf_lookup_modes(live_server: FastMCP, args: dict[str, Any], expected_mode: str, list_key: str) -> None:
+    async with Client(live_server) as c:
+        result = await c.call_tool("etf_lookup", args)
+
+    data = result.data
+    assert isinstance(data, dict)
+    assert "error" not in data, f"etf_lookup returned error: {data.get('error')}"
+
+    if expected_mode == "auto":
+        assert data.get("mode") in {"holdings", "exposure"}
+        if data.get("mode") == "holdings":
+            _assert_non_empty_list_key(data, "holdings")
+        else:
+            _assert_non_empty_list_key(data, "etf_holders")
+        return
+
+    assert data.get("mode") == expected_mode
+    _assert_non_empty_list_key(data, list_key)
+
+
+@pytest.mark.asyncio
+@pytest.mark.live_full
+@pytest.mark.parametrize(
+    "args",
+    [
+        pytest.param({"category": "general", "limit": 10}, id="general-latest"),
+        pytest.param({"category": "press_releases", "symbol": "AAPL", "limit": 10}, id="press-releases-aapl"),
+    ],
+)
+async def test_live_market_news_categories(live_server: FastMCP, args: dict[str, Any]) -> None:
+    async with Client(live_server) as c:
+        result = await c.call_tool("market_news", args)
+
+    data = result.data
+    assert isinstance(data, dict)
+    assert "error" not in data, f"market_news returned error: {data.get('error')}"
+    for key in ("category", "count", "articles"):
+        assert key in data
+    _assert_list_key(data, "articles")
+
+
+@pytest.mark.asyncio
+@pytest.mark.live_full
+async def test_live_stock_search_modes(live_server: FastMCP) -> None:
+    async with Client(live_server) as c:
+        name_result = await c.call_tool("stock_search", {"query": "apple", "limit": 10})
+        screener_result = await c.call_tool(
+            "stock_search",
+            {
                 "query": "",
                 "sector": "Technology",
                 "market_cap_min": 100_000_000_000,
                 "limit": 10,
-            })
-        data = result.data
-        assert data["count"] > 0
-        print(f"\n  Found {data['count']} tech stocks >$100B")
-        for r in data["results"][:5]:
-            print(f"    {r['symbol']}: {r['name']} MCap=${r.get('market_cap', 0):,.0f}")
-        await client.close()
+            },
+        )
+
+    for label, payload in (("name-search", name_result.data), ("screener-search", screener_result.data)):
+        assert isinstance(payload, dict), f"{label} response must be dict"
+        assert "error" not in payload, f"{label} returned error: {payload.get('error')}"
+        for key in ("results", "count"):
+            assert key in payload
+        _assert_list_key(payload, "results")
 
 
-class TestLiveFinancials:
-    @pytest.mark.asyncio
-    async def test_aapl_annual(self, live_server):
-        mcp, client = live_server
-        async with Client(mcp) as c:
-            result = await c.call_tool("financial_statements", {"symbol": "AAPL"})
-        data = result.data
-        assert data["symbol"] == "AAPL"
-        assert len(data["periods"]) > 0
-        p = data["periods"][0]
-        assert p["revenue"] is not None
-        assert p["gross_margin"] is not None
-        print(f"\n  AAPL FY{p['date'][:4]}: Rev=${p['revenue']:,.0f}, GM={p['gross_margin']:.1f}%, NM={p['net_margin']:.1f}%")
-        if "growth_3y_cagr" in data:
-            g = data["growth_3y_cagr"]
-            print(f"  3Y CAGR: Rev={g.get('revenue_cagr_3y')}%, EPS={g.get('eps_cagr_3y')}%")
-        await client.close()
+@pytest.mark.asyncio
+@pytest.mark.live_full
+async def test_live_market_hours_warning_tolerant(live_server: FastMCP) -> None:
+    async with Client(live_server) as c:
+        result = await c.call_tool("market_hours", {"exchange": "NYSE"})
 
-    @pytest.mark.asyncio
-    async def test_msft_quarterly(self, live_server):
-        mcp, client = live_server
-        async with Client(mcp) as c:
-            result = await c.call_tool("financial_statements", {"symbol": "MSFT", "period": "quarter", "limit": 4})
-        data = result.data
-        assert data["period_type"] == "quarter"
-        assert len(data["periods"]) > 0
-        print(f"\n  MSFT quarterly: {len(data['periods'])} periods")
-        await client.close()
+    data = result.data
+    assert isinstance(data, dict)
+    assert "error" not in data, f"market_hours returned error: {data.get('error')}"
+    assert data.get("exchange") == "NYSE"
+    assert "upcoming_holidays" in data
+    assert isinstance(data["upcoming_holidays"], list)
 
-
-class TestLiveAnalystConsensus:
-    @pytest.mark.asyncio
-    async def test_aapl(self, live_server):
-        mcp, client = live_server
-        async with Client(mcp) as c:
-            result = await c.call_tool("analyst_consensus", {"symbol": "AAPL"})
-        data = result.data
-        assert data["symbol"] == "AAPL"
-        pt = data["price_targets"]
-        if pt.get("consensus"):
-            print(f"\n  AAPL targets: ${pt['consensus']:.0f} (${pt.get('low', 0):.0f}-${pt.get('high', 0):.0f})")
-            if pt.get("upside_pct") is not None:
-                print(f"  Upside: {pt['upside_pct']:.1f}%")
-        grades = data["analyst_grades"]
-        if grades.get("buy") is not None:
-            print(f"  Grades: StrongBuy={grades.get('strong_buy')}, Buy={grades['buy']}, Hold={grades['hold']}, Sell={grades['sell']}")
-        rating = data["fmp_rating"]
-        if rating.get("rating"):
-            print(f"  FMP Rating: {rating['rating']} (score: {rating['overall_score']})")
-        await client.close()
-
-
-class TestLivePriceHistory:
-    @pytest.mark.asyncio
-    async def test_aapl_1y(self, live_server):
-        mcp, client = live_server
-        async with Client(mcp) as c:
-            result = await c.call_tool("price_history", {"symbol": "AAPL"})
-        data = result.data
-        assert data["current_price"] is not None
-        assert data["data_points"] > 200
-        print(f"\n  AAPL: ${data['current_price']}, SMA50={data['sma_50']}, SMA200={data['sma_200']}")
-        print(f"  52wk: ${data['year_low']}-${data['year_high']}, Vol={data.get('daily_volatility_annualized_pct', 'N/A')}%")
-        if data.get("performance_pct"):
-            print(f"  Perf: {data['performance_pct']}")
-        await client.close()
-
-    @pytest.mark.asyncio
-    async def test_tsla_3m(self, live_server):
-        mcp, client = live_server
-        async with Client(mcp) as c:
-            result = await c.call_tool("price_history", {"symbol": "TSLA", "period": "3m"})
-        data = result.data
-        assert data["current_price"] is not None
-        assert data["data_points"] > 40
-        print(f"\n  TSLA 3m: ${data['current_price']}, {data['data_points']} data points")
-        await client.close()
-
-
-class TestLiveEarningsInfo:
-    @pytest.mark.asyncio
-    async def test_aapl(self, live_server):
-        mcp, client = live_server
-        async with Client(mcp) as c:
-            result = await c.call_tool("earnings_info", {"symbol": "AAPL"})
-        data = result.data
-        assert data["symbol"] == "AAPL"
-        estimates = data.get("forward_estimates", [])
-        quarters = data.get("recent_quarters", [])
-        assert len(estimates) > 0 or len(quarters) > 0
-        if estimates:
-            e = estimates[0]
-            print(f"\n  Next estimate: {e['date']}, EPS avg={e['eps_avg']}, analysts={e['num_analysts_eps']}")
-        if quarters:
-            q = quarters[0]
-            print(f"  Latest quarter: {q['date']} ({q['period']}), Rev=${q['revenue']:,.0f}, EPS={q['eps_diluted']}")
-        await client.close()
-
-
-class TestLiveInsiderActivity:
-    @pytest.mark.asyncio
-    async def test_aapl(self, live_server):
-        mcp, client = live_server
-        async with Client(mcp) as c:
-            result = await c.call_tool("insider_activity", {"symbol": "AAPL"})
-        data = result.data
-        assert data["symbol"] == "AAPL"
-        print(f"\n  AAPL insider 30d: {data['net_activity_30d']}")
-        print(f"  Cluster buying: {data['cluster_buying']}")
-        if data.get("notable_trades"):
-            for t in data["notable_trades"][:3]:
-                print(f"    {t['name']} ({t['title']}): {t['type']} {t['shares']} @ ${t.get('price', 'N/A')}")
-        await client.close()
-
-
-class TestLiveInstitutionalOwnership:
-    @pytest.mark.asyncio
-    async def test_aapl(self, live_server):
-        mcp, client = live_server
-        async with Client(mcp) as c:
-            result = await c.call_tool("institutional_ownership", {"symbol": "AAPL"})
-        data = result.data
-        assert data["symbol"] == "AAPL"
-        if data.get("top_holders"):
-            print(f"\n  Top holders:")
-            for h in data["top_holders"][:5]:
-                print(f"    {h['holder']}: {h['shares']:,} ({h.get('ownership_pct', 'N/A')}%)")
-        print(f"  Position changes: {data.get('position_changes', {})}")
-        await client.close()
-
-
-class TestLiveStockNews:
-    @pytest.mark.asyncio
-    async def test_aapl(self, live_server):
-        mcp, client = live_server
-        async with Client(mcp) as c:
-            result = await c.call_tool("market_news", {"category": "stock", "symbol": "AAPL", "limit": 10})
-        data = result.data
-        assert data["symbol"] == "AAPL"
-        assert data["count"] > 0
-        print(f"\n  AAPL news: {data['count']} articles")
-        for a in data["articles"][:3]:
-            print(f"    {a['date'][:10]}: {a['title'][:60]}")
-        await client.close()
-
-
-class TestLiveTreasuryRates:
-    @pytest.mark.asyncio
-    async def test_treasury(self, live_server):
-        mcp, client = live_server
-        async with Client(mcp) as c:
-            result = await c.call_tool("treasury_rates", {})
-        data = result.data
-        assert "yields" in data
-        y = data["yields"]
-        print(f"\n  Treasury rates ({data.get('date', 'N/A')}):")
-        print(f"    2Y={y.get('2y')}, 5Y={y.get('5y')}, 10Y={y.get('10y')}, 30Y={y.get('30y')}")
-        print(f"    Slope 10Y-2Y: {data.get('curve_slope_10y_2y')}, Inverted: {data.get('curve_inverted')}")
-        dcf = data.get("dcf_inputs", {})
-        if dcf.get("implied_cost_of_equity"):
-            print(f"    DCF: Rf={dcf['risk_free_rate']}, ERP={dcf['equity_risk_premium']}, CoE={dcf['implied_cost_of_equity']}")
-        await client.close()
-
-
-class TestLiveEconomicCalendar:
-    @pytest.mark.asyncio
-    async def test_calendar(self, live_server):
-        mcp, client = live_server
-        async with Client(mcp) as c:
-            result = await c.call_tool("economic_calendar", {"days_ahead": 14})
-        data = result.data
-        print(f"\n  Economic calendar: {data['count']} high-impact events ({data['period']})")
-        for e in data["events"][:5]:
-            print(f"    {e['date'][:10]}: {e['event']} (est={e.get('estimate')}, prev={e.get('previous')})")
-        await client.close()
-
-
-class TestLiveMarketOverview:
-    @pytest.mark.asyncio
-    async def test_overview(self, live_server):
-        mcp, client = live_server
-        async with Client(mcp) as c:
-            result = await c.call_tool("market_overview", {})
-        data = result.data
-        if data.get("sectors"):
-            print(f"\n  Sector performance:")
-            for s in data["sectors"][:5]:
-                print(f"    {s['sector']}: {s['change_pct']}%")
-        if data.get("top_gainers"):
-            print(f"  Top gainers: {', '.join(g['symbol'] for g in data['top_gainers'][:3])}")
-        if data.get("top_losers"):
-            print(f"  Top losers: {', '.join(l['symbol'] for l in data['top_losers'][:3])}")
-        await client.close()
-
-
-class TestLiveEarningsTranscript:
-    @pytest.mark.asyncio
-    async def test_aapl_latest(self, live_server):
-        mcp, client = live_server
-        async with Client(mcp) as c:
-            result = await c.call_tool("earnings_transcript", {"symbol": "AAPL"})
-        data = result.data
-        assert data["symbol"] == "AAPL"
-        print(f"\n  Transcript: Q{data.get('quarter')} {data.get('year')}, {data.get('length_chars', 0):,} chars")
-        if data.get("content"):
-            print(f"  Preview: {data['content'][:150]}...")
-        await client.close()
-
-
-class TestLiveRevenueSegments:
-    @pytest.mark.asyncio
-    async def test_aapl(self, live_server):
-        mcp, client = live_server
-        async with Client(mcp) as c:
-            result = await c.call_tool("revenue_segments", {"symbol": "AAPL"})
-        data = result.data
-        assert data["symbol"] == "AAPL"
-        if data.get("product_segments"):
-            ps = data["product_segments"]
-            print(f"\n  Product segments ({ps.get('date', 'N/A')}):")
-            for s in ps.get("segments", [])[:5]:
-                growth = f", YoY={s['yoy_growth_pct']}%" if s.get("yoy_growth_pct") is not None else ""
-                print(f"    {s['name']}: {s.get('pct_of_total', 0):.1f}%{growth}")
-            print(f"  Fastest growing: {ps.get('fastest_growing')}")
-            print(f"  Concentration risk: {ps.get('concentration_risk')}")
-        if data.get("geographic_segments"):
-            gs = data["geographic_segments"]
-            print(f"  Geographic segments:")
-            for s in gs.get("segments", [])[:5]:
-                print(f"    {s['name']}: {s.get('pct_of_total', 0):.1f}%")
-        await client.close()
-
-
-class TestLivePeerComparison:
-    @pytest.mark.asyncio
-    async def test_aapl(self, live_server):
-        mcp, client = live_server
-        async with Client(mcp) as c:
-            result = await c.call_tool("peer_comparison", {"symbol": "AAPL"})
-        data = result.data
-        assert data["symbol"] == "AAPL"
-        print(f"\n  Peers: {data.get('peers', [])[:5]}")
-        comps = data.get("comparisons", {})
-        if comps.get("pe_ttm"):
-            pe = comps["pe_ttm"]
-            print(f"  P/E: target={pe['target']}, median={pe['peer_median']}, premium={pe.get('premium_discount_pct')}%, rank={pe.get('rank')}")
-        if comps.get("ev_ebitda_ttm"):
-            ev = comps["ev_ebitda_ttm"]
-            print(f"  EV/EBITDA: target={ev['target']}, median={ev['peer_median']}, premium={ev.get('premium_discount_pct')}%")
-        await client.close()
-
-
-class TestLiveDividendsInfo:
-    @pytest.mark.asyncio
-    async def test_aapl(self, live_server):
-        mcp, client = live_server
-        async with Client(mcp) as c:
-            result = await c.call_tool("dividends_info", {"symbol": "AAPL"})
-        data = result.data
-        assert data["symbol"] == "AAPL"
-        print(f"\n  AAPL dividends:")
-        print(f"    Current yield: {data.get('dividend_yield_pct')}%")
-        print(f"    Trailing annual dividend: ${data.get('trailing_annual_dividend')}")
-        print(f"    CAGR 3Y: {data.get('dividend_cagr_3y')}%, 5Y: {data.get('dividend_cagr_5y')}%")
-        if data.get("upcoming_ex_date"):
-            ex = data["upcoming_ex_date"]
-            print(f"    Next ex-date: {ex['ex_date']}, ${ex['dividend']}")
-        if data.get("stock_splits"):
-            splits_str = ", ".join(f"{s['date']}: {s['label']}" for s in data["stock_splits"])
-            print(f"    Splits: {splits_str}")
-        await client.close()
+    if "_warnings" in data:
+        assert isinstance(data["_warnings"], list)

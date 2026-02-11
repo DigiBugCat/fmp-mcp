@@ -109,7 +109,7 @@ class TestSymbolLookup:
     @pytest.mark.asyncio
     @respx.mock
     async def test_cik_search(self):
-        respx.get(f"{BASE}/stable/cik-search").mock(
+        respx.get(f"{BASE}/stable/search-cik").mock(
             return_value=httpx.Response(200, json=CIK_SEARCH_RESULTS)
         )
         mcp, fmp = _make_server(register_overview)
@@ -124,7 +124,10 @@ class TestSymbolLookup:
     @pytest.mark.asyncio
     @respx.mock
     async def test_no_results(self):
-        respx.get(f"{BASE}/stable/cik-search").mock(
+        respx.get(f"{BASE}/stable/search-name").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        respx.get(f"{BASE}/stable/search-symbol").mock(
             return_value=httpx.Response(200, json=[])
         )
         mcp, fmp = _make_server(register_overview)
@@ -350,7 +353,7 @@ class TestHistoricalMarketCap:
     @pytest.mark.asyncio
     @respx.mock
     async def test_market_cap_history(self):
-        respx.get(f"{BASE}/stable/historical-market-cap").mock(
+        respx.get(f"{BASE}/stable/historical-market-capitalization").mock(
             return_value=httpx.Response(200, json=AAPL_HISTORICAL_MARKET_CAP)
         )
         mcp, fmp = _make_server(register_market)
@@ -366,7 +369,7 @@ class TestHistoricalMarketCap:
     @pytest.mark.asyncio
     @respx.mock
     async def test_no_data(self):
-        respx.get(f"{BASE}/stable/historical-market-cap").mock(
+        respx.get(f"{BASE}/stable/historical-market-capitalization").mock(
             return_value=httpx.Response(200, json=[])
         )
         mcp, fmp = _make_server(register_market)
@@ -381,16 +384,16 @@ class TestETFLookupProfile:
     @pytest.mark.asyncio
     @respx.mock
     async def test_profile_mode(self):
-        respx.get(f"{BASE}/stable/etf-info").mock(
+        respx.get(f"{BASE}/stable/etf/info").mock(
             return_value=httpx.Response(200, json=QQQ_INFO)
         )
-        respx.get(f"{BASE}/stable/etf-holdings").mock(
+        respx.get(f"{BASE}/stable/etf/holdings").mock(
             return_value=httpx.Response(200, json=QQQ_HOLDINGS)
         )
-        respx.get(f"{BASE}/stable/etf-sector-weighting").mock(
+        respx.get(f"{BASE}/stable/etf/sector-weightings").mock(
             return_value=httpx.Response(200, json=QQQ_SECTOR_WEIGHTING)
         )
-        respx.get(f"{BASE}/stable/etf-country-allocation").mock(
+        respx.get(f"{BASE}/stable/etf/country-weightings").mock(
             return_value=httpx.Response(200, json=QQQ_COUNTRY_ALLOCATION)
         )
         mcp, fmp = _make_server(register_market)
@@ -409,16 +412,16 @@ class TestETFLookupProfile:
     @pytest.mark.asyncio
     @respx.mock
     async def test_no_etf_data(self):
-        respx.get(f"{BASE}/stable/etf-info").mock(
+        respx.get(f"{BASE}/stable/etf/info").mock(
             return_value=httpx.Response(200, json=[])
         )
-        respx.get(f"{BASE}/stable/etf-holdings").mock(
+        respx.get(f"{BASE}/stable/etf/holdings").mock(
             return_value=httpx.Response(200, json=[])
         )
-        respx.get(f"{BASE}/stable/etf-sector-weighting").mock(
+        respx.get(f"{BASE}/stable/etf/sector-weightings").mock(
             return_value=httpx.Response(200, json=[])
         )
-        respx.get(f"{BASE}/stable/etf-country-allocation").mock(
+        respx.get(f"{BASE}/stable/etf/country-weightings").mock(
             return_value=httpx.Response(200, json=[])
         )
         mcp, fmp = _make_server(register_market)
@@ -471,10 +474,10 @@ class TestMarketHours:
     @pytest.mark.asyncio
     @respx.mock
     async def test_market_hours_data(self):
-        respx.get(f"{BASE}/stable/market-hours").mock(
+        respx.get(f"{BASE}/stable/exchange-market-hours").mock(
             return_value=httpx.Response(200, json=MARKET_HOURS_DATA)
         )
-        respx.get(f"{BASE}/stable/market-holidays").mock(
+        respx.get(f"{BASE}/stable/holidays-by-exchange").mock(
             return_value=httpx.Response(200, json=MARKET_HOLIDAYS)
         )
         mcp, fmp = _make_server(register_macro)
@@ -490,10 +493,10 @@ class TestMarketHours:
     @pytest.mark.asyncio
     @respx.mock
     async def test_no_data(self):
-        respx.get(f"{BASE}/stable/market-hours").mock(
+        respx.get(f"{BASE}/stable/exchange-market-hours").mock(
             return_value=httpx.Response(200, json=[])
         )
-        respx.get(f"{BASE}/stable/market-holidays").mock(
+        respx.get(f"{BASE}/stable/holidays-by-exchange").mock(
             return_value=httpx.Response(200, json=[])
         )
         mcp, fmp = _make_server(register_macro)

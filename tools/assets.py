@@ -131,7 +131,7 @@ async def _fetch_asset_quotes(
             "asset_type": asset_type,
             "price": quote.get("price"),
             "change": quote.get("change"),
-            "change_pct": quote.get("changesPercentage"),
+            "change_pct": quote.get("changePercentage") or quote.get("changesPercentage"),
             "day_low": quote.get("dayLow"),
             "day_high": quote.get("dayHigh"),
             "year_low": quote.get("yearLow"),
@@ -157,10 +157,19 @@ async def _fetch_asset_quotes(
 
     quotes = []
     for q in batch_list[:limit]:
+        # Compute change_pct from change and price when not provided
+        change = q.get("change")
+        price = q.get("price")
+        change_pct = q.get("changePercentage") or q.get("changesPercentage")
+        if change_pct is None and change is not None and price is not None:
+            prev = price - change
+            if prev != 0:
+                change_pct = round(change / prev * 100, 2)
         quotes.append({
             "symbol": q.get("symbol"),
-            "price": q.get("price"),
-            "change": q.get("change"),
+            "price": price,
+            "change": change,
+            "change_pct": change_pct,
             "volume": q.get("volume"),
         })
 

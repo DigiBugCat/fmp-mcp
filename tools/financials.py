@@ -134,35 +134,65 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
 
         # Build time series
         time_series = []
-        for r in ratios_list:
-            date = r.get("date", "")
-            m = metrics_by_date.get(date, {})
 
-            # Extract all ratios
-            entry = {
-                "date": date,
-                "period": r.get("period"),
-                # Profitability
-                "roic": m.get("roic"),
-                "roe": r.get("returnOnEquity"),
-                "roa": r.get("returnOnAssets"),
-                "gross_margin": r.get("grossProfitMargin"),
-                "operating_margin": r.get("operatingProfitMargin"),
-                "net_margin": r.get("netProfitMargin"),
-                # Efficiency
-                "asset_turnover": r.get("assetTurnover"),
-                "inventory_turnover": r.get("inventoryTurnover"),
-                "cash_conversion_cycle": r.get("cashConversionCycle"),
-                # Leverage
-                "debt_to_equity": r.get("debtEquityRatio"),
-                "interest_coverage": r.get("interestCoverage"),
-                # Liquidity
-                "current_ratio": r.get("currentRatio"),
-                "quick_ratio": r.get("quickRatio"),
-                # FCF
-                "fcf_to_revenue": _pct(m.get("freeCashFlowPerShare"), m.get("revenuePerShare")),
-            }
-            time_series.append(entry)
+        if ratios_list:
+            # Primary path: use financial-ratios with key-metrics supplementation
+            for r in ratios_list:
+                date = r.get("date", "")
+                m = metrics_by_date.get(date, {})
+
+                entry = {
+                    "date": date,
+                    "period": r.get("period"),
+                    # Profitability
+                    "roic": m.get("roic"),
+                    "roe": r.get("returnOnEquity"),
+                    "roa": r.get("returnOnAssets"),
+                    "gross_margin": r.get("grossProfitMargin"),
+                    "operating_margin": r.get("operatingProfitMargin"),
+                    "net_margin": r.get("netProfitMargin"),
+                    # Efficiency
+                    "asset_turnover": r.get("assetTurnover"),
+                    "inventory_turnover": r.get("inventoryTurnover"),
+                    "cash_conversion_cycle": r.get("cashConversionCycle"),
+                    # Leverage
+                    "debt_to_equity": r.get("debtEquityRatio"),
+                    "interest_coverage": r.get("interestCoverage"),
+                    # Liquidity
+                    "current_ratio": r.get("currentRatio"),
+                    "quick_ratio": r.get("quickRatio"),
+                    # FCF
+                    "fcf_to_revenue": _pct(m.get("freeCashFlowPerShare"), m.get("revenuePerShare")),
+                }
+                time_series.append(entry)
+        else:
+            # Fallback: build from key-metrics alone (some symbols like GOOG
+            # return empty financial-ratios but populated key-metrics)
+            for m in metrics_list:
+                entry = {
+                    "date": m.get("date", ""),
+                    "period": m.get("period"),
+                    # Profitability
+                    "roic": m.get("roic"),
+                    "roe": m.get("returnOnEquity"),
+                    "roa": m.get("returnOnAssets"),
+                    "gross_margin": None,
+                    "operating_margin": None,
+                    "net_margin": m.get("netIncomePerShare") and m.get("revenuePerShare") and round(m["netIncomePerShare"] / m["revenuePerShare"], 4) if m.get("netIncomePerShare") and m.get("revenuePerShare") and m["revenuePerShare"] != 0 else None,
+                    # Efficiency
+                    "asset_turnover": None,
+                    "inventory_turnover": None,
+                    "cash_conversion_cycle": None,
+                    # Leverage
+                    "debt_to_equity": None,
+                    "interest_coverage": m.get("interestCoverage"),
+                    # Liquidity
+                    "current_ratio": m.get("currentRatio"),
+                    "quick_ratio": None,
+                    # FCF
+                    "fcf_to_revenue": _pct(m.get("freeCashFlowPerShare"), m.get("revenuePerShare")),
+                }
+                time_series.append(entry)
 
         # Calculate trends for each metric
         def _extract_series(key: str) -> list[float | None]:

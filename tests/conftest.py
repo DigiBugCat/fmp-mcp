@@ -466,10 +466,10 @@ AAPL_SHORT_INTEREST = [{
 # --- Earnings Calendar ---
 
 EARNINGS_CALENDAR = [
-    {"symbol": "AAPL", "date": "2026-02-14", "time": "amc", "fiscalDateEnding": "2025-12-27", "epsEstimated": 2.35, "revenueEstimated": 118700000000, "eps": None, "revenue": None},
-    {"symbol": "MSFT", "date": "2026-02-12", "time": "bmo", "fiscalDateEnding": "2025-12-31", "epsEstimated": 3.10, "revenueEstimated": 68500000000, "eps": None, "revenue": None},
-    {"symbol": "GOOGL", "date": "2026-02-13", "time": "amc", "fiscalDateEnding": "2025-12-31", "epsEstimated": 2.05, "revenueEstimated": 95000000000, "eps": None, "revenue": None},
-    {"symbol": "TSLA", "date": "2026-02-15", "time": "--", "fiscalDateEnding": "2025-12-31", "epsEstimated": 0.85, "revenueEstimated": 27500000000, "eps": None, "revenue": None},
+    {"symbol": "AAPL", "date": "2026-02-14", "time": "amc", "fiscalDateEnding": "2025-12-27", "epsEstimated": 2.35, "revenueEstimated": 118700000000, "epsActual": None, "revenueActual": None},
+    {"symbol": "MSFT", "date": "2026-02-12", "time": "bmo", "fiscalDateEnding": "2025-12-31", "epsEstimated": 3.10, "revenueEstimated": 68500000000, "epsActual": None, "revenueActual": None},
+    {"symbol": "GOOGL", "date": "2026-02-13", "time": "amc", "fiscalDateEnding": "2025-12-31", "epsEstimated": 2.05, "revenueEstimated": 95000000000, "epsActual": None, "revenueActual": None},
+    {"symbol": "TSLA", "date": "2026-02-15", "time": "--", "fiscalDateEnding": "2025-12-31", "epsEstimated": 0.85, "revenueEstimated": 27500000000, "epsActual": None, "revenueActual": None},
 ]
 
 # --- ETF Holdings & Exposure ---
@@ -501,14 +501,14 @@ AAPL_EARNINGS = [
     # Future estimate (next earnings)
     {"date": "2026-04-30", "symbol": "AAPL", "epsEstimated": 1.68, "revenueEstimated": 98500000000, "fiscalDateEnding": "2026-03-28", "numberOfAnalysts": 28},
     # Recent actuals
-    {"date": "2026-01-29", "symbol": "AAPL", "eps": 2.42, "epsEstimated": 2.35, "revenue": 124300000000, "revenueEstimated": 118700000000, "fiscalDateEnding": "2025-12-27"},
-    {"date": "2025-10-30", "symbol": "AAPL", "eps": 1.64, "epsEstimated": 1.60, "revenue": 94930000000, "revenueEstimated": 94300000000, "fiscalDateEnding": "2025-09-27"},
-    {"date": "2025-07-31", "symbol": "AAPL", "eps": 1.40, "epsEstimated": 1.35, "revenue": 85777000000, "revenueEstimated": 84500000000, "fiscalDateEnding": "2025-06-28"},
-    {"date": "2025-05-01", "symbol": "AAPL", "eps": 1.53, "epsEstimated": 1.50, "revenue": 95367000000, "revenueEstimated": 94200000000, "fiscalDateEnding": "2025-03-29"},
-    {"date": "2025-01-30", "symbol": "AAPL", "eps": 2.40, "epsEstimated": 2.36, "revenue": 124000000000, "revenueEstimated": 120500000000, "fiscalDateEnding": "2024-12-28"},
-    {"date": "2024-10-31", "symbol": "AAPL", "eps": 1.64, "epsEstimated": 1.58, "revenue": 94900000000, "revenueEstimated": 93000000000, "fiscalDateEnding": "2024-09-28"},
-    {"date": "2024-08-01", "symbol": "AAPL", "eps": 1.40, "epsEstimated": 1.34, "revenue": 85800000000, "revenueEstimated": 84300000000, "fiscalDateEnding": "2024-06-29"},
-    {"date": "2024-05-02", "symbol": "AAPL", "eps": 1.53, "epsEstimated": 1.50, "revenue": 90753000000, "revenueEstimated": 90000000000, "fiscalDateEnding": "2024-03-30"},
+    {"date": "2026-01-29", "symbol": "AAPL", "epsActual": 2.42, "epsEstimated": 2.35, "revenueActual": 124300000000, "revenueEstimated": 118700000000, "fiscalDateEnding": "2025-12-27"},
+    {"date": "2025-10-30", "symbol": "AAPL", "epsActual": 1.64, "epsEstimated": 1.60, "revenueActual": 94930000000, "revenueEstimated": 94300000000, "fiscalDateEnding": "2025-09-27"},
+    {"date": "2025-07-31", "symbol": "AAPL", "epsActual": 1.40, "epsEstimated": 1.35, "revenueActual": 85777000000, "revenueEstimated": 84500000000, "fiscalDateEnding": "2025-06-28"},
+    {"date": "2025-05-01", "symbol": "AAPL", "epsActual": 1.53, "epsEstimated": 1.50, "revenueActual": 95367000000, "revenueEstimated": 94200000000, "fiscalDateEnding": "2025-03-29"},
+    {"date": "2025-01-30", "symbol": "AAPL", "epsActual": 2.40, "epsEstimated": 2.36, "revenueActual": 124000000000, "revenueEstimated": 120500000000, "fiscalDateEnding": "2024-12-28"},
+    {"date": "2024-10-31", "symbol": "AAPL", "epsActual": 1.64, "epsEstimated": 1.58, "revenueActual": 94900000000, "revenueEstimated": 93000000000, "fiscalDateEnding": "2024-09-28"},
+    {"date": "2024-08-01", "symbol": "AAPL", "epsActual": 1.40, "epsEstimated": 1.34, "revenueActual": 85800000000, "revenueEstimated": 84300000000, "fiscalDateEnding": "2024-06-29"},
+    {"date": "2024-05-02", "symbol": "AAPL", "epsActual": 1.53, "epsEstimated": 1.50, "revenueActual": 90753000000, "revenueEstimated": 90000000000, "fiscalDateEnding": "2024-03-30"},
 ]
 
 # --- Key Executives ---
@@ -640,7 +640,7 @@ GOLD_QUOTE = [{
     "name": "Gold",
     "price": 2045.30,
     "change": 12.50,
-    "changesPercentage": 0.61,
+    "changePercentage": 0.61,
     "dayLow": 2030.00,
     "dayHigh": 2050.00,
     "yearLow": 1810.00,
@@ -659,7 +659,7 @@ BTCUSD_QUOTE = [{
     "name": "Bitcoin",
     "price": 97500.00,
     "change": 1250.00,
-    "changesPercentage": 1.30,
+    "changePercentage": 1.30,
     "dayLow": 95800.00,
     "dayHigh": 98200.00,
     "yearLow": 38000.00,
@@ -678,7 +678,7 @@ EURUSD_QUOTE = [{
     "name": "EUR/USD",
     "price": 1.0842,
     "change": 0.0023,
-    "changesPercentage": 0.21,
+    "changePercentage": 0.21,
     "dayLow": 1.0810,
     "dayHigh": 1.0855,
     "yearLow": 1.0200,
@@ -708,11 +708,11 @@ AAPL_GRADES_DETAIL = [
 # --- Historical Key Metrics & Financial Ratios (for valuation_history and ratio_history) ---
 
 AAPL_KEY_METRICS_HISTORICAL = [
-    {"date": "2025-09-27", "period": "FY", "peRatio": 34.27, "priceToSalesRatio": 9.23, "pbRatio": 45.77, "enterpriseValueOverEBITDA": 27.5, "evToFreeCashFlow": 32.62},
-    {"date": "2024-09-28", "period": "FY", "peRatio": 31.50, "priceToSalesRatio": 8.80, "pbRatio": 42.30, "enterpriseValueOverEBITDA": 25.20, "evToFreeCashFlow": 30.10},
-    {"date": "2023-09-30", "period": "FY", "peRatio": 29.80, "priceToSalesRatio": 7.50, "pbRatio": 38.90, "enterpriseValueOverEBITDA": 23.50, "evToFreeCashFlow": 28.40},
-    {"date": "2022-09-24", "period": "FY", "peRatio": 25.40, "priceToSalesRatio": 6.30, "pbRatio": 35.20, "enterpriseValueOverEBITDA": 21.10, "evToFreeCashFlow": 25.80},
-    {"date": "2021-09-25", "period": "FY", "peRatio": 28.90, "priceToSalesRatio": 7.80, "pbRatio": 40.50, "enterpriseValueOverEBITDA": 24.30, "evToFreeCashFlow": 29.20},
+    {"date": "2025-09-27", "period": "FY", "earningsYield": 0.02918, "evToSales": 9.23, "pbRatio": 45.77, "evToEBITDA": 27.5, "evToFreeCashFlow": 32.62, "returnOnEquity": 1.56, "returnOnAssets": 0.33, "currentRatio": 0.97, "roic": 0.55},
+    {"date": "2024-09-28", "period": "FY", "earningsYield": 0.03175, "evToSales": 8.80, "pbRatio": 42.30, "evToEBITDA": 25.20, "evToFreeCashFlow": 30.10, "returnOnEquity": 1.48, "returnOnAssets": 0.31, "currentRatio": 0.95, "roic": 0.50},
+    {"date": "2023-09-30", "period": "FY", "earningsYield": 0.03356, "evToSales": 7.50, "pbRatio": 38.90, "evToEBITDA": 23.50, "evToFreeCashFlow": 28.40, "returnOnEquity": 1.72, "returnOnAssets": 0.35, "currentRatio": 0.93, "roic": 0.52},
+    {"date": "2022-09-24", "period": "FY", "earningsYield": 0.03937, "evToSales": 6.30, "pbRatio": 35.20, "evToEBITDA": 21.10, "evToFreeCashFlow": 25.80, "returnOnEquity": 1.95, "returnOnAssets": 0.38, "currentRatio": 0.91, "roic": 0.58},
+    {"date": "2021-09-25", "period": "FY", "earningsYield": 0.03460, "evToSales": 7.80, "pbRatio": 40.50, "evToEBITDA": 24.30, "evToFreeCashFlow": 29.20, "returnOnEquity": 1.85, "returnOnAssets": 0.36, "currentRatio": 0.89, "roic": 0.54},
 ]
 
 AAPL_FINANCIAL_RATIOS_HISTORICAL = [
@@ -835,20 +835,18 @@ INDEX_HISTORICAL = [
 
 # Market hours
 MARKET_HOURS_DATA = [{
-    "stockExchange": "NYSE",
-    "isTheStockMarketOpen": True,
-    "openingHour": "09:30:00",
-    "closingHour": "16:00:00",
-    "preMarketOpen": "04:00:00",
-    "preMarketClose": "09:30:00",
-    "afterMarketOpen": "16:00:00",
-    "afterMarketClose": "20:00:00",
+    "exchange": "NYSE",
+    "name": "New York Stock Exchange",
+    "isMarketOpen": True,
+    "openingHour": "09:30 AM -05:00",
+    "closingHour": "04:00 PM -05:00",
+    "timezone": "America/New_York",
 }]
 
 MARKET_HOLIDAYS = [
-    {"date": "2026-02-16", "holiday": "Presidents Day", "stockExchange": "NYSE"},
-    {"date": "2026-04-03", "holiday": "Good Friday", "stockExchange": "NYSE"},
-    {"date": "2026-05-25", "holiday": "Memorial Day", "stockExchange": "NYSE"},
+    {"exchange": "NYSE", "date": "2026-02-16", "name": "Presidents Day", "isClosed": True, "adjOpenTime": None, "adjCloseTime": None},
+    {"exchange": "NYSE", "date": "2026-04-03", "name": "Good Friday", "isClosed": True, "adjOpenTime": None, "adjCloseTime": None},
+    {"exchange": "NYSE", "date": "2026-05-25", "name": "Memorial Day", "isClosed": True, "adjOpenTime": None, "adjCloseTime": None},
 ]
 
 # Industry performance

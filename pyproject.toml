@@ -23,7 +23,13 @@ build-backend = "hatchling.build"
 [dependency-groups]
 dev = [
     "pytest-cov>=7.0.0",
+    "pytest-xdist>=3.8.0",
 ]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+markers = [
+    "live: live integration tests against real APIs",
+    "live_smoke: fast representative subset of live tests",
+    "live_full: full live e2e coverage including all tools and branch cases",
+]

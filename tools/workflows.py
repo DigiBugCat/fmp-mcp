@@ -501,9 +501,9 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         historical_earnings = []
         for e in earnings_list:
             edate = e.get("date", "")
-            if edate > today_str and e.get("eps") is None:
+            if edate > today_str and e.get("epsActual") is None:
                 future_earnings.append(e)
-            elif e.get("eps") is not None and e.get("epsEstimated") is not None:
+            elif e.get("epsActual") is not None and e.get("epsEstimated") is not None:
                 historical_earnings.append(e)
 
         # Sort: future ascending, historical descending
@@ -534,7 +534,7 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         last_8 = historical_earnings[:8]
         surprise_list = []
         for e in last_8:
-            actual = e.get("eps")
+            actual = e.get("epsActual")
             estimated = e.get("epsEstimated")
             if actual is not None and estimated is not None and estimated != 0:
                 surprise_pct = round((actual - estimated) / abs(estimated) * 100, 2)
@@ -1003,7 +1003,7 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
 
         # Find the target earnings report
         today_str = date.today().isoformat()
-        actual_earnings = [e for e in earnings_list if e.get("eps") is not None and (e.get("date") or "") <= today_str]
+        actual_earnings = [e for e in earnings_list if e.get("epsActual") is not None and (e.get("date") or "") <= today_str]
         actual_earnings.sort(key=lambda e: e.get("date", ""), reverse=True)
 
         target_report = None
@@ -1027,9 +1027,9 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             return {"error": f"No completed earnings found for '{symbol}'"}
 
         earnings_date = target_report.get("date", "")
-        actual_eps = target_report.get("eps")
+        actual_eps = target_report.get("epsActual")
         est_eps = target_report.get("epsEstimated")
-        actual_rev = target_report.get("revenue")
+        actual_rev = target_report.get("revenueActual")
         est_rev = target_report.get("revenueEstimated")
 
         # Surprises

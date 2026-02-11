@@ -1119,7 +1119,7 @@ class TestETFLookup:
     @pytest.mark.asyncio
     @respx.mock
     async def test_holdings_mode(self):
-        respx.get(f"{BASE}/stable/etf-holdings").mock(
+        respx.get(f"{BASE}/stable/etf/holdings").mock(
             return_value=httpx.Response(200, json=QQQ_HOLDINGS)
         )
 
@@ -1141,7 +1141,7 @@ class TestETFLookup:
     @pytest.mark.asyncio
     @respx.mock
     async def test_exposure_mode(self):
-        respx.get(f"{BASE}/stable/etf-stock-exposure").mock(
+        respx.get(f"{BASE}/stable/etf/asset-exposure").mock(
             return_value=httpx.Response(200, json=AAPL_ETF_EXPOSURE)
         )
 
@@ -1161,10 +1161,10 @@ class TestETFLookup:
     @pytest.mark.asyncio
     @respx.mock
     async def test_auto_mode_finds_holdings(self):
-        respx.get(f"{BASE}/stable/etf-holdings").mock(
+        respx.get(f"{BASE}/stable/etf/holdings").mock(
             return_value=httpx.Response(200, json=QQQ_HOLDINGS)
         )
-        respx.get(f"{BASE}/stable/etf-stock-exposure").mock(
+        respx.get(f"{BASE}/stable/etf/asset-exposure").mock(
             return_value=httpx.Response(200, json=[])
         )
 
@@ -1180,10 +1180,10 @@ class TestETFLookup:
     @pytest.mark.asyncio
     @respx.mock
     async def test_auto_mode_falls_back_to_exposure(self):
-        respx.get(f"{BASE}/stable/etf-holdings").mock(
+        respx.get(f"{BASE}/stable/etf/holdings").mock(
             return_value=httpx.Response(200, json=[])
         )
-        respx.get(f"{BASE}/stable/etf-stock-exposure").mock(
+        respx.get(f"{BASE}/stable/etf/asset-exposure").mock(
             return_value=httpx.Response(200, json=AAPL_ETF_EXPOSURE)
         )
 
@@ -1199,10 +1199,10 @@ class TestETFLookup:
     @pytest.mark.asyncio
     @respx.mock
     async def test_no_data(self):
-        respx.get(f"{BASE}/stable/etf-holdings").mock(
+        respx.get(f"{BASE}/stable/etf/holdings").mock(
             return_value=httpx.Response(200, json=[])
         )
-        respx.get(f"{BASE}/stable/etf-stock-exposure").mock(
+        respx.get(f"{BASE}/stable/etf/asset-exposure").mock(
             return_value=httpx.Response(200, json=[])
         )
 
@@ -1228,7 +1228,7 @@ class TestETFLookup:
     @pytest.mark.asyncio
     @respx.mock
     async def test_limit_applied(self):
-        respx.get(f"{BASE}/stable/etf-holdings").mock(
+        respx.get(f"{BASE}/stable/etf/holdings").mock(
             return_value=httpx.Response(200, json=QQQ_HOLDINGS)
         )
 
@@ -1390,10 +1390,7 @@ class TestSecFilings:
     @pytest.mark.asyncio
     @respx.mock
     async def test_full_filings(self):
-        respx.get(f"{BASE}/stable/profile").mock(
-            return_value=httpx.Response(200, json=AAPL_PROFILE_WITH_CIK)
-        )
-        respx.get(f"{BASE}/stable/sec-filings-search/cik").mock(
+        respx.get(f"{BASE}/stable/sec-filings-search/symbol").mock(
             return_value=httpx.Response(200, json=AAPL_SEC_FILINGS)
         )
 
@@ -1403,7 +1400,6 @@ class TestSecFilings:
 
         data = result.data
         assert data["symbol"] == "AAPL"
-        assert data["cik"] == "0000320193"
         assert data["count"] == 4
         # Sorted by date descending
         assert data["filings"][0]["form_type"] == "10-Q"
@@ -1413,10 +1409,7 @@ class TestSecFilings:
     @pytest.mark.asyncio
     @respx.mock
     async def test_type_filter(self):
-        respx.get(f"{BASE}/stable/profile").mock(
-            return_value=httpx.Response(200, json=AAPL_PROFILE_WITH_CIK)
-        )
-        respx.get(f"{BASE}/stable/sec-filings-search/cik").mock(
+        respx.get(f"{BASE}/stable/sec-filings-search/symbol").mock(
             return_value=httpx.Response(200, json=AAPL_SEC_FILINGS)
         )
 
@@ -1431,8 +1424,8 @@ class TestSecFilings:
 
     @pytest.mark.asyncio
     @respx.mock
-    async def test_no_cik(self):
-        respx.get(f"{BASE}/stable/profile").mock(
+    async def test_no_filings(self):
+        respx.get(f"{BASE}/stable/sec-filings-search/symbol").mock(
             return_value=httpx.Response(200, json=[])
         )
 

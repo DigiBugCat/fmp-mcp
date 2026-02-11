@@ -93,21 +93,27 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         if key_metrics:
             latest = key_metrics[0]
             if current_ttm["ev_revenue_ttm"] is None:
-                current_ttm["ev_revenue_ttm"] = latest.get("enterpriseValueOverEBITDA")  # Fallback
+                current_ttm["ev_revenue_ttm"] = latest.get("evToSales")
             if current_ttm["ev_fcf_ttm"] is None:
                 current_ttm["ev_fcf_ttm"] = latest.get("evToFreeCashFlow")
 
         # Build historical series
+        # key-metrics uses earningsYield (1/PE), evToSales, evToEBITDA
+        # pbRatio is absent from key-metrics
         historical = []
         for m in key_metrics:
+            # Compute PE from earningsYield if available
+            earnings_yield = m.get("earningsYield")
+            pe = round(1.0 / earnings_yield, 2) if earnings_yield and earnings_yield != 0 else m.get("peRatio")
+
             historical.append({
                 "date": m.get("date"),
                 "period": m.get("period"),
-                "pe": m.get("peRatio"),
-                "ps": m.get("priceToSalesRatio"),
-                "pb": m.get("pbRatio"),
-                "ev_ebitda": m.get("enterpriseValueOverEBITDA"),
-                "ev_revenue": None,  # Not typically in key-metrics
+                "pe": pe,
+                "ps": m.get("evToSales") or m.get("priceToSalesRatio"),
+                "pb": m.get("pbRatio"),  # may be None from key-metrics
+                "ev_ebitda": m.get("evToEBITDA") or m.get("enterpriseValueOverEBITDA"),
+                "ev_revenue": m.get("evToSales"),
                 "ev_fcf": m.get("evToFreeCashFlow"),
             })
 
@@ -570,15 +576,15 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         }
 
         # --- Earnings track record ---
-        # Filter to actuals only (entries with eps field populated)
-        actuals = [e for e in earnings_list if e.get("eps") is not None]
+        # Filter to actuals only (entries with epsActual field populated)
+        actuals = [e for e in earnings_list if e.get("epsActual") is not None]
         track = []
         beats = 0
         surprise_pcts = []
         for e in actuals:
-            eps_actual = e.get("eps")
+            eps_actual = e.get("epsActual")
             eps_est = e.get("epsEstimated")
-            rev_actual = e.get("revenue")
+            rev_actual = e.get("revenueActual")
             rev_est = e.get("revenueEstimated")
 
             eps_surprise_pct = None

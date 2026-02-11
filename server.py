@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from fastmcp import FastMCP
 
 from fmp_client import FMPClient
-from tools import assets, financials, macro, market, news, overview, ownership, transcripts, valuation, workflows
+from tools import assets, financials, macro, market, meta, news, overview, ownership, transcripts, valuation, workflows
 
 
 @asynccontextmanager
@@ -42,7 +42,8 @@ mcp = FastMCP(
         "financial_health, ipo_calendar, splits_calendar, "
         "dividends_calendar, index_constituents, sector_valuation, "
         "historical_market_cap, mna_activity, commodity_quotes, "
-        "crypto_quotes, forex_quotes, valuation_history, ratio_history."
+        "crypto_quotes, forex_quotes, valuation_history, ratio_history, "
+        "fmp_coverage_gaps."
     ),
     lifespan=lifespan,
 )
@@ -66,3 +67,4 @@ macro.register(mcp, client)
 transcripts.register(mcp, client)
 assets.register(mcp, client)
 workflows.register(mcp, client)
+meta.register(mcp, client)

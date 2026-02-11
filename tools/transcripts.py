@@ -138,5 +138,9 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         }
         if truncated:
             result["next_offset"] = end
+            result["_warnings"] = [
+                f"Transcript truncated ({len(chunk)}/{total_chars} chars shown). "
+                f"Call again with offset={end} to continue reading."
+            ]
 
         return result

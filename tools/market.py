@@ -533,8 +533,8 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
                 "fiscal_date_ending": e.get("fiscalDateEnding"),
                 "eps_estimate": e.get("epsEstimated"),
                 "revenue_estimate": e.get("revenueEstimated"),
-                "eps_actual": e.get("eps"),
-                "revenue_actual": e.get("revenue"),
+                "eps_actual": e.get("epsActual"),
+                "revenue_actual": e.get("revenueActual"),
             })
 
         return {
@@ -577,7 +577,7 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
 
         async def _try_holdings() -> list | None:
             data = await client.get_safe(
-                "/stable/etf-holdings",
+                "/stable/etf/holdings",
                 params={"symbol": symbol},
                 cache_ttl=client.TTL_DAILY,
                 default=[],
@@ -587,7 +587,7 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
 
         async def _try_exposure() -> list | None:
             data = await client.get_safe(
-                "/stable/etf-stock-exposure",
+                "/stable/etf/asset-exposure",
                 params={"symbol": symbol},
                 cache_ttl=client.TTL_DAILY,
                 default=[],
@@ -599,25 +599,25 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         if mode == "profile":
             info_data, holdings_data, sector_data, country_data = await asyncio.gather(
                 client.get_safe(
-                    "/stable/etf-info",
+                    "/stable/etf/info",
                     params={"symbol": symbol},
                     cache_ttl=client.TTL_DAILY,
                     default=[],
                 ),
                 client.get_safe(
-                    "/stable/etf-holdings",
+                    "/stable/etf/holdings",
                     params={"symbol": symbol},
                     cache_ttl=client.TTL_DAILY,
                     default=[],
                 ),
                 client.get_safe(
-                    "/stable/etf-sector-weighting",
+                    "/stable/etf/sector-weightings",
                     params={"symbol": symbol},
                     cache_ttl=client.TTL_DAILY,
                     default=[],
                 ),
                 client.get_safe(
-                    "/stable/etf-country-allocation",
+                    "/stable/etf/country-weightings",
                     params={"symbol": symbol},
                     cache_ttl=client.TTL_DAILY,
                     default=[],
@@ -858,8 +858,8 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         limit = max(1, min(limit, 100))
 
         data = await client.get_safe(
-            "/stable/historical-market-cap",
-            params={"symbol": symbol},
+            "/stable/historical-market-capitalization",
+            params={"symbol": symbol, "limit": limit},
             cache_ttl=client.TTL_12H,
             default=[],
         )

@@ -727,67 +727,54 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         """
         exchange = exchange.upper().strip()
 
-        # Try /stable/market-hours endpoint
+        # Use /stable/exchange-market-hours with exchange param
         hours_data = await client.get_safe(
-            "/stable/market-hours",
+            "/stable/exchange-market-hours",
+            params={"exchange": exchange},
             cache_ttl=client.TTL_HOURLY,
             default=[],
         )
 
         hours_list = hours_data if isinstance(hours_data, list) else []
-
-        # Filter to requested exchange
-        exchange_hours = None
-        for entry in hours_list:
-            if entry.get("stockExchange", "").upper() == exchange:
-                exchange_hours = entry
-                break
-
-        if not exchange_hours:
-            # Try without filtering
-            exchange_hours = _safe_first(hours_list)
+        exchange_hours = _safe_first(hours_list)
 
         # Get upcoming holidays
         today = date.today()
-        end_date = today + timedelta(days=90)
 
         holidays_data = await client.get_safe(
-            "/stable/market-holidays",
-            params={
-                "from": today.isoformat(),
-                "to": end_date.isoformat(),
-            },
+            "/stable/holidays-by-exchange",
+            params={"exchange": exchange},
             cache_ttl=client.TTL_DAILY,
             default=[],
         )
 
         holidays_list = holidays_data if isinstance(holidays_data, list) else []
 
-        # Sort holidays by date and take next 5
-        holidays_list.sort(key=lambda h: h.get("date") or "")
+        # Filter to future dates and sort ascending
         upcoming_holidays = []
-        for h in holidays_list[:5]:
-            upcoming_holidays.append({
-                "date": h.get("date"),
-                "name": h.get("holiday"),
-                "exchange": h.get("stockExchange"),
-            })
+        today_str = today.isoformat()
+        for h in holidays_list:
+            h_date = h.get("date") or ""
+            if h_date >= today_str:
+                upcoming_holidays.append({
+                    "date": h_date,
+                    "name": h.get("name"),
+                    "is_closed": h.get("isClosed"),
+                })
+        upcoming_holidays.sort(key=lambda h: h.get("date") or "")
+        upcoming_holidays = upcoming_holidays[:5]
 
         result = {
             "exchange": exchange,
         }
 
         if exchange_hours:
-            result["is_open"] = exchange_hours.get("isTheStockMarketOpen")
+            result["is_open"] = exchange_hours.get("isMarketOpen") or exchange_hours.get("isTheStockMarketOpen")
+            result["name"] = exchange_hours.get("name")
+            result["timezone"] = exchange_hours.get("timezone")
             result["regular_hours"] = {
                 "open": exchange_hours.get("openingHour"),
                 "close": exchange_hours.get("closingHour"),
-            }
-            result["extended_hours"] = {
-                "pre_market_open": exchange_hours.get("preMarketOpen"),
-                "pre_market_close": exchange_hours.get("preMarketClose"),
-                "after_market_open": exchange_hours.get("afterMarketOpen"),
-                "after_market_close": exchange_hours.get("afterMarketClose"),
             }
 
         result["upcoming_holidays"] = upcoming_holidays

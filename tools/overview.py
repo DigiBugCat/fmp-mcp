@@ -572,22 +572,19 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         symbol = symbol.upper().strip()
         limit = max(1, min(limit, 100))
 
-        # Fetch profile for CIK (needed for filings lookup)
-        profile_data = await client.get_safe(
-            "/stable/profile",
-            params={"symbol": symbol},
-            cache_ttl=client.TTL_DAILY,
-            default=[],
-        )
-        profile = _safe_first(profile_data)
-        cik = profile.get("cik")
+        # Use symbol-based search with date range (required by /stable/ API)
+        from datetime import date, timedelta
 
-        if not cik:
-            return {"error": f"Could not find CIK for '{symbol}'"}
+        to_date = date.today()
+        from_date = to_date - timedelta(days=365 * 2)  # 2 years of filings
 
         data = await client.get_safe(
-            "/stable/sec-filings-search/cik",
-            params={"cik": cik, "limit": limit},
+            "/stable/sec-filings-search/symbol",
+            params={
+                "symbol": symbol,
+                "from": from_date.isoformat(),
+                "to": to_date.isoformat(),
+            },
             cache_ttl=client.TTL_HOURLY,
             default=[],
         )
@@ -595,7 +592,7 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         filings_list = data if isinstance(data, list) else []
 
         if not filings_list:
-            return {"error": f"No SEC filings found for '{symbol}' (CIK: {cik})"}
+            return {"error": f"No SEC filings found for '{symbol}'"}
 
         # Client-side form type filter
         if form_type:
@@ -617,7 +614,6 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
 
         return {
             "symbol": symbol,
-            "cik": cik,
             "form_type_filter": form_type,
             "count": len(filings),
             "filings": filings,
@@ -647,15 +643,14 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         type_lower = type.lower().strip()
 
         if type_lower == "cik":
-            endpoint = "/stable/cik-search"
+            endpoint = "/stable/search-cik"
             param_key = "cik"
         elif type_lower == "cusip":
-            endpoint = "/stable/cusip-search"
+            endpoint = "/stable/search-cusip"
             param_key = "cusip"
         else:
-            # Default to name search
-            endpoint = "/stable/cik-search"
-            param_key = "name"
+            endpoint = "/stable/search-name"
+            param_key = "query"
 
         data = await client.get_safe(
             endpoint,
@@ -665,6 +660,17 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         )
 
         results_list = data if isinstance(data, list) else []
+
+        # If search-name returned nothing and we're doing a name search,
+        # try search-symbol as fallback
+        if not results_list and type_lower == "name":
+            data = await client.get_safe(
+                "/stable/search-symbol",
+                params={"query": query},
+                cache_ttl=client.TTL_DAILY,
+                default=[],
+            )
+            results_list = data if isinstance(data, list) else []
 
         if not results_list:
             return {"error": f"No results found for {type} '{query}'"}
@@ -676,7 +682,8 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
                 "company_name": item.get("companyName") or item.get("name"),
                 "cik": item.get("cik"),
                 "cusip": item.get("cusip"),
-                "exchange": item.get("exchange") or item.get("exchangeShortName"),
+                "exchange": item.get("exchange") or item.get("exchangeShortName") or item.get("exchangeFullName"),
+                "currency": item.get("currency"),
             })
 
         return {

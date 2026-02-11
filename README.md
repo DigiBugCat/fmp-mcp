@@ -41,6 +41,7 @@ High-level tools that orchestrate multiple API calls into single research-ready 
 | `earnings_calendar` | Upcoming earnings dates with optional symbol filter |
 | `etf_lookup` | ETF holdings or stock ETF exposure (dual-mode with auto-detect) |
 | `estimate_revisions` | Analyst sentiment momentum: forward estimates, grade changes, beat rate |
+| `fmp_coverage_gaps` | Docs parity introspection: endpoint families not yet implemented in this MCP server |
 
 ## Setup
 
@@ -101,6 +102,12 @@ uv run pytest tests/ -v
 ```
 
 All tools are tested with mocked API responses using [respx](https://github.com/lundberg/respx).
+
+Live e2e tests (real API) can be run in pooled parallel mode:
+
+```bash
+uv run pytest tests/test_live.py -m live_full -n 4 -q
+```
 
 ## Architecture
 
