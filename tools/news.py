@@ -15,6 +15,9 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         annotations={
             "title": "Stock News",
             "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True,
         }
     )
     async def stock_news(symbol: str, limit: int = 20) -> dict:

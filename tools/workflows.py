@@ -73,7 +73,7 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
     # ================================================================
 
     @mcp.tool(
-        annotations={"title": "Stock Brief", "readOnlyHint": True}
+        annotations={"title": "Stock Brief", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True}
     )
     async def stock_brief(symbol: str) -> dict:
         """Quick comprehensive stock snapshot: profile, price action, valuation, analyst consensus, insider signals, and top headlines.
@@ -270,7 +270,7 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
     # ================================================================
 
     @mcp.tool(
-        annotations={"title": "Market Context", "readOnlyHint": True}
+        annotations={"title": "Market Context", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True}
     )
     async def market_context() -> dict:
         """Full market environment: rates, yield curve, sector rotation, breadth, movers, and economic calendar.
@@ -460,7 +460,7 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
     # ================================================================
 
     @mcp.tool(
-        annotations={"title": "Earnings Setup", "readOnlyHint": True}
+        annotations={"title": "Earnings Setup", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True}
     )
     async def earnings_setup(symbol: str) -> dict:
         """Pre-earnings positioning analysis: consensus estimates, historical beat/miss rate, analyst momentum, price drift, and insider signals.
@@ -715,7 +715,7 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
     # ================================================================
 
     @mcp.tool(
-        annotations={"title": "Fair Value Estimate", "readOnlyHint": True}
+        annotations={"title": "Fair Value Estimate", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True}
     )
     async def fair_value_estimate(symbol: str) -> dict:
         """Multi-method fair value estimate with peer context.
@@ -968,7 +968,7 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
     # ================================================================
 
     @mcp.tool(
-        annotations={"title": "Earnings Postmortem", "readOnlyHint": True}
+        annotations={"title": "Earnings Postmortem", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True}
     )
     async def earnings_postmortem(symbol: str, quarter: int | None = None, year: int | None = None) -> dict:
         """Post-earnings synthesis: beat/miss, trend comparison, analyst reaction, market response, and guidance tone.

@@ -21,6 +21,9 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         annotations={
             "title": "Analyst Consensus",
             "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True,
         }
     )
     async def analyst_consensus(symbol: str) -> dict:
@@ -125,6 +128,9 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         annotations={
             "title": "Peer Comparison",
             "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True,
         }
     )
     async def peer_comparison(symbol: str) -> dict:

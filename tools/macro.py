@@ -22,6 +22,9 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         annotations={
             "title": "Treasury Rates",
             "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True,
         }
     )
     async def treasury_rates() -> dict:
@@ -106,6 +109,9 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         annotations={
             "title": "Economic Calendar",
             "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True,
         }
     )
     async def economic_calendar(days_ahead: int = 14) -> dict:
@@ -188,6 +194,9 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         annotations={
             "title": "Market Overview",
             "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True,
         }
     )
     async def market_overview() -> dict:

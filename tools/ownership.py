@@ -37,6 +37,9 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         annotations={
             "title": "Insider Activity",
             "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True,
         }
     )
     async def insider_activity(symbol: str) -> dict:
@@ -189,6 +192,9 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         annotations={
             "title": "Institutional Ownership",
             "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True,
         }
     )
     async def institutional_ownership(symbol: str) -> dict:

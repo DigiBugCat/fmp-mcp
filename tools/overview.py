@@ -22,6 +22,9 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         annotations={
             "title": "Company Overview",
             "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True,
         }
     )
     async def company_overview(symbol: str) -> dict:
@@ -126,6 +129,9 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         annotations={
             "title": "Stock Search",
             "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True,
         }
     )
     async def stock_search(

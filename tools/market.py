@@ -69,6 +69,9 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         annotations={
             "title": "Price History",
             "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True,
         }
     )
     async def price_history(
@@ -169,6 +172,9 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         annotations={
             "title": "Earnings Info",
             "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True,
         }
     )
     async def earnings_info(symbol: str) -> dict:
@@ -254,6 +260,9 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         annotations={
             "title": "Dividends Info",
             "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True,
         }
     )
     async def dividends_info(symbol: str) -> dict:

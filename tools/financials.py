@@ -66,6 +66,9 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         annotations={
             "title": "Financial Statements",
             "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True,
         }
     )
     async def financial_statements(
@@ -173,6 +176,9 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         annotations={
             "title": "Revenue Segments",
             "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True,
         }
     )
     async def revenue_segments(symbol: str) -> dict:
