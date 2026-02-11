@@ -14,6 +14,8 @@ from tests.conftest import (
     AAPL_PRICE_TARGET, AAPL_GRADES, AAPL_HISTORICAL,
     AAPL_ANALYST_ESTIMATES, AAPL_QUARTERLY_INCOME,
     AAPL_INSIDER_TRADES, AAPL_INSIDER_STATS, AAPL_SHARES_FLOAT,
+    AAPL_INSTITUTIONAL_SUMMARY, AAPL_INSTITUTIONAL_HOLDERS,
+    AAPL_SHORT_INTEREST,
     AAPL_NEWS, AAPL_KEY_METRICS,
     AAPL_PEERS, AAPL_EARNINGS, AAPL_GRADES_DETAIL,
     AAPL_TRANSCRIPT_DATES, AAPL_TRANSCRIPT,
@@ -23,6 +25,7 @@ from tests.conftest import (
     MSFT_RATIOS, MSFT_KEY_METRICS,
     GOOGL_RATIOS, GOOGL_KEY_METRICS,
     AMZN_RATIOS, AMZN_KEY_METRICS,
+    INDUSTRY_PE_NYSE, INDUSTRY_PE_NASDAQ,
 )
 from tools.workflows import register as register_workflows
 
@@ -464,4 +467,315 @@ class TestEarningsPostmortem:
 
         data = result.data
         assert "error" in data
+        await fmp.close()
+
+
+# ================================================================
+# ownership_deep_dive
+# ================================================================
+
+
+class TestOwnershipDeepDive:
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_full_ownership(self):
+        # Mock FMP endpoints
+        respx.get(f"{BASE}/stable/shares-float").mock(return_value=httpx.Response(200, json=AAPL_SHARES_FLOAT))
+        respx.get(f"{BASE}/stable/profile").mock(return_value=httpx.Response(200, json=AAPL_PROFILE))
+        respx.get(f"{BASE}/stable/quote").mock(return_value=httpx.Response(200, json=AAPL_QUOTE))
+        respx.get(f"{BASE}/stable/insider-trading/search").mock(return_value=httpx.Response(200, json=AAPL_INSIDER_TRADES))
+        respx.get(f"{BASE}/stable/insider-trading/statistics").mock(return_value=httpx.Response(200, json=AAPL_INSIDER_STATS))
+        respx.get(f"{BASE}/stable/institutional-ownership/symbol-positions-summary").mock(return_value=httpx.Response(200, json=AAPL_INSTITUTIONAL_SUMMARY))
+        respx.get(f"{BASE}/stable/institutional-ownership/extract-analytics/holder").mock(return_value=httpx.Response(200, json=AAPL_INSTITUTIONAL_HOLDERS))
+
+        # Mock FINRA short interest endpoints (external)
+        # The workflow tries multiple settlement dates via POST
+        respx.post("https://api.finra.org/data/group/otcMarket/name/consolidatedShortInterest").mock(
+            return_value=httpx.Response(200, json=AAPL_SHORT_INTEREST)
+        )
+
+        mcp, fmp = _make_server()
+        async with Client(mcp) as c:
+            result = await c.call_tool("ownership_deep_dive", {"symbol": "AAPL"})
+
+        data = result.data
+        assert data["symbol"] == "AAPL"
+        assert data["company_name"] == "Apple Inc."
+
+        # Ownership structure
+        assert data["ownership_structure"]["outstanding_shares"] == 15200000000
+        assert data["ownership_structure"]["float_shares"] == 14700000000
+        assert data["ownership_structure"]["insider_pct"] > 0
+        assert data["ownership_structure"]["institutional_pct"] > 0
+
+        # Insider activity
+        assert data["insider_activity"]["signal"] in ("net_buying", "net_selling", "neutral")
+        assert isinstance(data["insider_activity"]["notable_trades"], list)
+
+        # Institutional ownership
+        assert data["institutional_ownership"]["total_shares"] > 0
+        assert len(data["institutional_ownership"]["top_holders"]) > 0
+
+        # Short interest
+        assert data["short_interest"]["shares_short"] > 0
+        assert data["short_interest"]["pct_of_float"] is not None
+
+        # Ownership analysis
+        assert data["ownership_analysis"]["signal"] in ("bullish", "neutral", "bearish")
+        assert isinstance(data["ownership_analysis"]["key_insights"], list)
+        assert "_warnings" not in data
+
+        await fmp.close()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_partial_ownership(self):
+        # Mock with some failures
+        respx.get(f"{BASE}/stable/shares-float").mock(return_value=httpx.Response(200, json=AAPL_SHARES_FLOAT))
+        respx.get(f"{BASE}/stable/profile").mock(return_value=httpx.Response(200, json=AAPL_PROFILE))
+        respx.get(f"{BASE}/stable/quote").mock(return_value=httpx.Response(200, json=AAPL_QUOTE))
+        respx.get(f"{BASE}/stable/insider-trading/search").mock(return_value=httpx.Response(500, text="error"))
+        respx.get(f"{BASE}/stable/insider-trading/statistics").mock(return_value=httpx.Response(500, text="error"))
+        respx.get(f"{BASE}/stable/institutional-ownership/symbol-positions-summary").mock(return_value=httpx.Response(500, text="error"))
+        respx.get(f"{BASE}/stable/institutional-ownership/extract-analytics/holder").mock(return_value=httpx.Response(200, json=[]))
+        respx.post("https://api.finra.org/data/group/otcMarket/name/consolidatedShortInterest").mock(
+            return_value=httpx.Response(500, text="error")
+        )
+
+        mcp, fmp = _make_server()
+        async with Client(mcp) as c:
+            result = await c.call_tool("ownership_deep_dive", {"symbol": "AAPL"})
+
+        data = result.data
+        assert data["symbol"] == "AAPL"
+        assert data["ownership_structure"]["outstanding_shares"] == 15200000000  # from float data
+        assert "insider trades unavailable" in data["_warnings"]
+        assert "institutional summary unavailable" in data["_warnings"]
+        assert "FINRA short interest unavailable" in data["_warnings"]
+
+        await fmp.close()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_unknown_symbol_ownership(self):
+        respx.get(f"{BASE}/stable/shares-float").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/profile").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/quote").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/insider-trading/search").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/insider-trading/statistics").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/institutional-ownership/symbol-positions-summary").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/institutional-ownership/extract-analytics/holder").mock(return_value=httpx.Response(200, json=[]))
+        respx.post("https://api.finra.org/data/group/otcMarket/name/consolidatedShortInterest").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+
+        mcp, fmp = _make_server()
+        async with Client(mcp) as c:
+            result = await c.call_tool("ownership_deep_dive", {"symbol": "ZZZZ"})
+
+        data = result.data
+        assert "error" in data
+
+        await fmp.close()
+
+
+# ================================================================
+# industry_analysis
+# ================================================================
+
+# Test fixtures for industry analysis
+SOFTWARE_SCREENER = [
+    {"symbol": "MSFT", "companyName": "Microsoft Corporation", "marketCap": 3100000000000, "sector": "Technology", "industry": "Software", "price": 420.50},
+    {"symbol": "ORCL", "companyName": "Oracle Corporation", "marketCap": 350000000000, "sector": "Technology", "industry": "Software", "price": 130.25},
+    {"symbol": "SAP", "companyName": "SAP SE", "marketCap": 180000000000, "sector": "Technology", "industry": "Software", "price": 155.00},
+]
+
+INDUSTRY_PERFORMANCE_NYSE = [
+    {"date": "2026-02-11", "industry": "Software", "sector": "Technology", "exchange": "NYSE", "averageChange": 1.25},
+    {"date": "2026-02-11", "industry": "Banks", "sector": "Financial Services", "exchange": "NYSE", "averageChange": -0.35},
+]
+
+INDUSTRY_PERFORMANCE_NASDAQ = [
+    {"date": "2026-02-11", "industry": "Software", "sector": "Technology", "exchange": "NASDAQ", "averageChange": 1.45},
+    {"date": "2026-02-11", "industry": "Biotechnology", "sector": "Healthcare", "exchange": "NASDAQ", "averageChange": 0.80},
+]
+
+MSFT_INCOME = [
+    {"date": "2025-12-31", "revenue": 68500000000, "netIncome": 24800000000},
+    {"date": "2025-09-30", "revenue": 65300000000, "netIncome": 22100000000},
+    {"date": "2025-06-30", "revenue": 64700000000, "netIncome": 21900000000},
+    {"date": "2024-12-31", "revenue": 62000000000, "netIncome": 20500000000},
+]
+
+ORCL_INCOME = [
+    {"date": "2025-11-30", "revenue": 13500000000, "netIncome": 3200000000},
+    {"date": "2025-08-31", "revenue": 13200000000, "netIncome": 3100000000},
+    {"date": "2025-05-31", "revenue": 14100000000, "netIncome": 3500000000},
+    {"date": "2024-11-30", "revenue": 12800000000, "netIncome": 2900000000},
+]
+
+SAP_INCOME = [
+    {"date": "2025-12-31", "revenue": 8900000000, "netIncome": 1800000000},
+    {"date": "2025-09-30", "revenue": 8500000000, "netIncome": 1600000000},
+    {"date": "2025-06-30", "revenue": 8200000000, "netIncome": 1500000000},
+    {"date": "2024-12-31", "revenue": 8100000000, "netIncome": 1400000000},
+]
+
+
+class TestIndustryAnalysis:
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_full_industry(self):
+        # Mock industry performance
+        respx.get(f"{BASE}/stable/industry-performance-snapshot", params__contains={"exchange": "NYSE"}).mock(
+            return_value=httpx.Response(200, json=INDUSTRY_PERFORMANCE_NYSE)
+        )
+        respx.get(f"{BASE}/stable/industry-performance-snapshot", params__contains={"exchange": "NASDAQ"}).mock(
+            return_value=httpx.Response(200, json=INDUSTRY_PERFORMANCE_NASDAQ)
+        )
+
+        # Mock industry PE
+        respx.get(f"{BASE}/stable/industry-pe-snapshot", params__contains={"exchange": "NYSE"}).mock(
+            return_value=httpx.Response(200, json=INDUSTRY_PE_NYSE)
+        )
+        respx.get(f"{BASE}/stable/industry-pe-snapshot", params__contains={"exchange": "NASDAQ"}).mock(
+            return_value=httpx.Response(200, json=INDUSTRY_PE_NASDAQ)
+        )
+
+        # Mock screener
+        respx.get(f"{BASE}/stable/company-screener").mock(
+            return_value=httpx.Response(200, json=SOFTWARE_SCREENER)
+        )
+
+        # Mock stock data for top stocks
+        respx.get(f"{BASE}/stable/ratios-ttm", params__contains={"symbol": "MSFT"}).mock(
+            return_value=httpx.Response(200, json=MSFT_RATIOS)
+        )
+        respx.get(f"{BASE}/stable/income-statement", params__contains={"symbol": "MSFT"}).mock(
+            return_value=httpx.Response(200, json=MSFT_INCOME)
+        )
+        respx.get(f"{BASE}/stable/quote", params__contains={"symbol": "MSFT"}).mock(
+            return_value=httpx.Response(200, json=[{"symbol": "MSFT", "price": 420.50, "changePercentage": 1.2}])
+        )
+
+        respx.get(f"{BASE}/stable/ratios-ttm", params__contains={"symbol": "ORCL"}).mock(
+            return_value=httpx.Response(200, json=[{"symbol": "ORCL", "priceToEarningsRatioTTM": 28.5, "priceToSalesRatioTTM": 6.8, "returnOnEquityTTM": 0.35}])
+        )
+        respx.get(f"{BASE}/stable/income-statement", params__contains={"symbol": "ORCL"}).mock(
+            return_value=httpx.Response(200, json=ORCL_INCOME)
+        )
+        respx.get(f"{BASE}/stable/quote", params__contains={"symbol": "ORCL"}).mock(
+            return_value=httpx.Response(200, json=[{"symbol": "ORCL", "price": 130.25, "changePercentage": 0.5}])
+        )
+
+        respx.get(f"{BASE}/stable/ratios-ttm", params__contains={"symbol": "SAP"}).mock(
+            return_value=httpx.Response(200, json=[{"symbol": "SAP", "priceToEarningsRatioTTM": 22.1, "priceToSalesRatioTTM": 5.2, "returnOnEquityTTM": 0.28}])
+        )
+        respx.get(f"{BASE}/stable/income-statement", params__contains={"symbol": "SAP"}).mock(
+            return_value=httpx.Response(200, json=SAP_INCOME)
+        )
+        respx.get(f"{BASE}/stable/quote", params__contains={"symbol": "SAP"}).mock(
+            return_value=httpx.Response(200, json=[{"symbol": "SAP", "price": 155.00, "changePercentage": -0.3}])
+        )
+
+        # Mock sector performance for rotation signal
+        respx.get(f"{BASE}/stable/sector-performance-snapshot", params__contains={"exchange": "NYSE"}).mock(
+            return_value=httpx.Response(200, json=SECTOR_PERFORMANCE_NYSE)
+        )
+        respx.get(f"{BASE}/stable/sector-performance-snapshot", params__contains={"exchange": "NASDAQ"}).mock(
+            return_value=httpx.Response(200, json=SECTOR_PERFORMANCE_NASDAQ)
+        )
+
+        mcp, fmp = _make_server()
+        async with Client(mcp) as c:
+            result = await c.call_tool("industry_analysis", {"industry": "Software", "limit": 10})
+
+        data = result.data
+        assert data["industry"] == "Software"
+        assert data["sector"] == "Technology"
+
+        # Overview
+        assert data["overview"]["performance_pct"] is not None
+        assert data["overview"]["median_pe"] is not None
+
+        # Top stocks
+        assert len(data["top_stocks"]) > 0
+        assert data["top_stocks"][0]["symbol"] == "MSFT"  # highest market cap
+
+        # Medians
+        assert data["industry_medians"]["pe"] is not None
+        assert data["industry_medians"]["ps"] is not None
+
+        # Valuation spread
+        assert data["valuation_spread"]["cheapest"] is not None
+        assert data["valuation_spread"]["most_expensive"] is not None
+
+        # Rotation
+        assert data["rotation"]["signal"] in ("money_flowing_in", "money_flowing_out", "neutral")
+
+        assert "_warnings" not in data
+        await fmp.close()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_partial_industry(self):
+        # Mock with some failures
+        respx.get(f"{BASE}/stable/industry-performance-snapshot").mock(
+            return_value=httpx.Response(500, text="error")
+        )
+        respx.get(f"{BASE}/stable/industry-pe-snapshot").mock(
+            return_value=httpx.Response(500, text="error")
+        )
+        respx.get(f"{BASE}/stable/company-screener").mock(
+            return_value=httpx.Response(200, json=SOFTWARE_SCREENER)
+        )
+
+        # Mock stock data
+        respx.get(f"{BASE}/stable/ratios-ttm").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        respx.get(f"{BASE}/stable/income-statement").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        respx.get(f"{BASE}/stable/quote").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        respx.get(f"{BASE}/stable/sector-performance-snapshot").mock(
+            return_value=httpx.Response(500, text="error")
+        )
+
+        mcp, fmp = _make_server()
+        async with Client(mcp) as c:
+            result = await c.call_tool("industry_analysis", {"industry": "Software"})
+
+        data = result.data
+        assert data["industry"] == "Software"
+        assert "industry performance unavailable" in data["_warnings"]
+        assert "sector performance unavailable for rotation signal" in data["_warnings"]
+
+        await fmp.close()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_unknown_industry(self):
+        respx.get(f"{BASE}/stable/industry-performance-snapshot").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        respx.get(f"{BASE}/stable/industry-pe-snapshot").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        respx.get(f"{BASE}/stable/company-screener").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        respx.get(f"{BASE}/stable/sector-performance-snapshot").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+
+        mcp, fmp = _make_server()
+        async with Client(mcp) as c:
+            result = await c.call_tool("industry_analysis", {"industry": "NonExistent"})
+
+        data = result.data
+        assert "error" in data
+
         await fmp.close()

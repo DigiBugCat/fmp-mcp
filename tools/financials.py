@@ -61,7 +61,161 @@ def _pct(numerator, denominator) -> float | None:
     return round(numerator / denominator * 100, 2)
 
 
+def _trend_direction(values: list[float | None]) -> str | None:
+    """Determine trend direction from a time series (newest first)."""
+    clean = [v for v in values if v is not None and isinstance(v, (int, float))]
+    if len(clean) < 2:
+        return None
+    # Compare recent average to earlier average
+    mid = len(clean) // 2
+    recent_avg = sum(clean[:mid]) / mid
+    earlier_avg = sum(clean[mid:]) / (len(clean) - mid)
+    if recent_avg > earlier_avg * 1.05:  # 5% threshold
+        return "improving"
+    elif recent_avg < earlier_avg * 0.95:
+        return "deteriorating"
+    return "stable"
+
+
 def register(mcp: FastMCP, client: FMPClient) -> None:
+    @mcp.tool(
+        annotations={
+            "title": "Ratio History",
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True,
+        }
+    )
+    async def ratio_history(
+        symbol: str,
+        period: str = "annual",
+        limit: int = 10,
+    ) -> dict:
+        """Get historical financial ratios with trend analysis.
+
+        Returns time series and trend direction (improving/deteriorating/stable) for
+        profitability (ROIC, ROE, ROA, margins), efficiency (asset/inventory turnover,
+        cash conversion cycle), leverage (D/E, interest coverage), and liquidity
+        (current/quick ratios).
+
+        Args:
+            symbol: Stock ticker symbol (e.g. "AAPL")
+            period: "annual" or "quarter" (default "annual")
+            limit: Number of historical periods to fetch (default 10)
+        """
+        symbol = symbol.upper().strip()
+        params = {"symbol": symbol, "period": period, "limit": limit}
+
+        # Fetch financial ratios and key metrics
+        ratios_data, metrics_data = await asyncio.gather(
+            client.get_safe(
+                "/stable/financial-ratios",
+                params=params,
+                cache_ttl=client.TTL_HOURLY,
+                default=[],
+            ),
+            client.get_safe(
+                "/stable/key-metrics",
+                params=params,
+                cache_ttl=client.TTL_HOURLY,
+                default=[],
+            ),
+        )
+
+        ratios_list = ratios_data if isinstance(ratios_data, list) else []
+        metrics_list = metrics_data if isinstance(metrics_data, list) else []
+
+        if not ratios_list and not metrics_list:
+            return {"error": f"No ratio data found for '{symbol}'"}
+
+        # Build indexed lookups by date
+        metrics_by_date = {m["date"]: m for m in metrics_list} if metrics_list else {}
+
+        # Build time series
+        time_series = []
+        for r in ratios_list:
+            date = r.get("date", "")
+            m = metrics_by_date.get(date, {})
+
+            # Extract all ratios
+            entry = {
+                "date": date,
+                "period": r.get("period"),
+                # Profitability
+                "roic": m.get("roic"),
+                "roe": r.get("returnOnEquity"),
+                "roa": r.get("returnOnAssets"),
+                "gross_margin": r.get("grossProfitMargin"),
+                "operating_margin": r.get("operatingProfitMargin"),
+                "net_margin": r.get("netProfitMargin"),
+                # Efficiency
+                "asset_turnover": r.get("assetTurnover"),
+                "inventory_turnover": r.get("inventoryTurnover"),
+                "cash_conversion_cycle": r.get("cashConversionCycle"),
+                # Leverage
+                "debt_to_equity": r.get("debtEquityRatio"),
+                "interest_coverage": r.get("interestCoverage"),
+                # Liquidity
+                "current_ratio": r.get("currentRatio"),
+                "quick_ratio": r.get("quickRatio"),
+                # FCF
+                "fcf_to_revenue": _pct(m.get("freeCashFlowPerShare"), m.get("revenuePerShare")),
+            }
+            time_series.append(entry)
+
+        # Calculate trends for each metric
+        def _extract_series(key: str) -> list[float | None]:
+            return [t.get(key) for t in time_series]
+
+        trends = {
+            "profitability": {
+                "roic": _trend_direction(_extract_series("roic")),
+                "roe": _trend_direction(_extract_series("roe")),
+                "roa": _trend_direction(_extract_series("roa")),
+                "gross_margin": _trend_direction(_extract_series("gross_margin")),
+                "operating_margin": _trend_direction(_extract_series("operating_margin")),
+                "net_margin": _trend_direction(_extract_series("net_margin")),
+            },
+            "efficiency": {
+                "asset_turnover": _trend_direction(_extract_series("asset_turnover")),
+                "inventory_turnover": _trend_direction(_extract_series("inventory_turnover")),
+                "cash_conversion_cycle": _trend_direction([
+                    -v if v is not None else None for v in _extract_series("cash_conversion_cycle")
+                ]),  # Lower is better, so invert
+            },
+            "leverage": {
+                "debt_to_equity": _trend_direction([
+                    -v if v is not None else None for v in _extract_series("debt_to_equity")
+                ]),  # Lower is better
+                "interest_coverage": _trend_direction(_extract_series("interest_coverage")),
+            },
+            "liquidity": {
+                "current_ratio": _trend_direction(_extract_series("current_ratio")),
+                "quick_ratio": _trend_direction(_extract_series("quick_ratio")),
+            },
+            "fcf": {
+                "fcf_to_revenue": _trend_direction(_extract_series("fcf_to_revenue")),
+            },
+        }
+
+        result = {
+            "symbol": symbol,
+            "period_type": period,
+            "time_series": time_series,
+            "trends": trends,
+        }
+
+        _warnings = []
+        if not ratios_list:
+            _warnings.append("financial ratios unavailable")
+        if not metrics_list:
+            _warnings.append("key metrics unavailable")
+        if _warnings:
+            result["_warnings"] = _warnings
+
+        return result
+
     @mcp.tool(
         annotations={
             "title": "Financial Statements",

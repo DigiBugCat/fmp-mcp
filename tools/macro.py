@@ -355,7 +355,8 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
     async def ipo_calendar(days_ahead: int = 14) -> dict:
         """Get upcoming IPOs within a date window.
 
-        Returns company, expected date, price range, shares offered, and exchange.
+        Returns company, expected date, price range, shares offered, exchange,
+        and links to prospectus/disclosure documents.
 
         Args:
             days_ahead: Number of days to look ahead (default 14, max 90)
@@ -364,17 +365,40 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         today = date.today()
         end_date = today + timedelta(days=days_ahead)
 
-        data = await client.get_safe(
-            "/stable/ipos-calendar",
-            params={
-                "from": today.isoformat(),
-                "to": end_date.isoformat(),
-            },
-            cache_ttl=client.TTL_HOURLY,
-            default=[],
+        # Fetch IPO calendar, prospectus, and disclosures in parallel
+        calendar_data, prospectus_data, disclosure_data = await asyncio.gather(
+            client.get_safe(
+                "/stable/ipos-calendar",
+                params={
+                    "from": today.isoformat(),
+                    "to": end_date.isoformat(),
+                },
+                cache_ttl=client.TTL_HOURLY,
+                default=[],
+            ),
+            client.get_safe(
+                "/stable/ipos-prospectus",
+                params={
+                    "from": today.isoformat(),
+                    "to": end_date.isoformat(),
+                },
+                cache_ttl=client.TTL_HOURLY,
+                default=[],
+            ),
+            client.get_safe(
+                "/stable/ipos-disclosure",
+                params={
+                    "from": today.isoformat(),
+                    "to": end_date.isoformat(),
+                },
+                cache_ttl=client.TTL_HOURLY,
+                default=[],
+            ),
         )
 
-        ipo_list = data if isinstance(data, list) else []
+        ipo_list = calendar_data if isinstance(calendar_data, list) else []
+        prospectus_list = prospectus_data if isinstance(prospectus_data, list) else []
+        disclosure_list = disclosure_data if isinstance(disclosure_data, list) else []
 
         if not ipo_list:
             return {
@@ -383,13 +407,35 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
                 "period": f"{today.isoformat()} to {end_date.isoformat()}",
             }
 
+        # Build prospectus and disclosure maps by symbol
+        prospectus_map: dict[str, list] = {}
+        for p in prospectus_list:
+            symbol = p.get("symbol")
+            if symbol:
+                prospectus_map.setdefault(symbol, []).append({
+                    "url": p.get("url"),
+                    "title": p.get("title"),
+                    "date": p.get("date"),
+                })
+
+        disclosure_map: dict[str, list] = {}
+        for d in disclosure_list:
+            symbol = d.get("symbol")
+            if symbol:
+                disclosure_map.setdefault(symbol, []).append({
+                    "url": d.get("url"),
+                    "title": d.get("title"),
+                    "date": d.get("date"),
+                })
+
         # Sort by date ascending
         ipo_list.sort(key=lambda x: x.get("date") or "")
 
         ipos = []
         for ipo in ipo_list:
-            ipos.append({
-                "symbol": ipo.get("symbol"),
+            symbol = ipo.get("symbol")
+            entry = {
+                "symbol": symbol,
                 "company": ipo.get("company"),
                 "date": ipo.get("date"),
                 "exchange": ipo.get("exchange"),
@@ -397,13 +443,33 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
                 "shares": ipo.get("shares"),
                 "market_cap": ipo.get("marketCap"),
                 "actions": ipo.get("actions"),
-            })
+            }
 
-        return {
+            # Add prospectus links if available
+            if symbol in prospectus_map:
+                entry["prospectus"] = prospectus_map[symbol]
+
+            # Add disclosure links if available
+            if symbol in disclosure_map:
+                entry["disclosures"] = disclosure_map[symbol]
+
+            ipos.append(entry)
+
+        result = {
             "ipos": ipos,
             "count": len(ipos),
             "period": f"{today.isoformat()} to {end_date.isoformat()}",
         }
+
+        _warnings = []
+        if not prospectus_list:
+            _warnings.append("prospectus data unavailable")
+        if not disclosure_list:
+            _warnings.append("disclosure data unavailable")
+        if _warnings:
+            result["_warnings"] = _warnings
+
+        return result
 
     @mcp.tool(
         annotations={
@@ -531,6 +597,389 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             "count": len(constituents),
             "constituents": constituents,
             "sector_breakdown": dict(sorted(sector_counts.items(), key=lambda x: x[1], reverse=True)),
+        }
+
+    @mcp.tool(
+        annotations={
+            "title": "Index Performance",
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True,
+        }
+    )
+    async def index_performance(
+        indices: list[str] | None = None,
+    ) -> dict:
+        """Get current prices and performance for major market indices.
+
+        Returns per-index current price, change, and performance across
+        multiple timeframes (1d, 1w, 1m, 3m, ytd, 1y).
+
+        Args:
+            indices: List of index symbols (default: ["^GSPC", "^DJI", "^IXIC", "^RUT"])
+        """
+        if indices is None:
+            indices = ["^GSPC", "^DJI", "^IXIC", "^RUT"]
+
+        # Clean up symbols
+        indices = [idx.upper().strip() for idx in indices]
+
+        # Get current quotes
+        symbols_str = ",".join(indices)
+        quote_data = await client.get_safe(
+            "/stable/batch-quote",
+            params={"symbols": symbols_str},
+            cache_ttl=client.TTL_REALTIME,
+            default=[],
+        )
+
+        quotes = quote_data if isinstance(quote_data, list) else []
+
+        if not quotes:
+            return {"error": f"No quote data found for indices: {', '.join(indices)}"}
+
+        # Get historical data for each index
+        today = date.today()
+        one_year_ago = today - timedelta(days=365)
+
+        # Fetch historical data for all indices
+        historical_tasks = []
+        for idx in indices:
+            historical_tasks.append(
+                client.get_safe(
+                    "/stable/historical-price-eod/full",
+                    params={
+                        "symbol": idx,
+                        "from": one_year_ago.isoformat(),
+                        "to": today.isoformat(),
+                    },
+                    cache_ttl=client.TTL_12H,
+                    default=[],
+                )
+            )
+
+        historical_results = await asyncio.gather(*historical_tasks)
+
+        # Build quote map
+        quote_map = {q.get("symbol"): q for q in quotes}
+
+        # Calculate performance for each index
+        index_data = []
+        for i, idx in enumerate(indices):
+            quote = quote_map.get(idx, {})
+            historical = historical_results[i] if i < len(historical_results) else []
+            historical = historical if isinstance(historical, list) else []
+
+            current_price = quote.get("price")
+            day_change = quote.get("changesPercentage")
+
+            # Calculate performance across timeframes
+            from tools.market import _calc_performance
+            performance = {}
+            if current_price and historical:
+                for period, days in [("1w", 5), ("1m", 21), ("3m", 63), ("ytd", None), ("1y", 252)]:
+                    if days is None:
+                        # YTD calculation
+                        ytd_start = date(today.year, 1, 1)
+                        ytd_history = [h for h in historical if h.get("date", "") >= ytd_start.isoformat()]
+                        if ytd_history:
+                            ytd_start_price = ytd_history[-1].get("close")
+                            if ytd_start_price and ytd_start_price > 0:
+                                performance["ytd"] = round((current_price / ytd_start_price - 1) * 100, 2)
+                    else:
+                        perf = _calc_performance(current_price, historical, days)
+                        if perf is not None:
+                            performance[period] = perf
+
+            index_data.append({
+                "symbol": idx,
+                "name": quote.get("name"),
+                "price": current_price,
+                "change_pct": day_change,
+                "performance": performance,
+            })
+
+        return {
+            "indices": index_data,
+            "count": len(index_data),
+        }
+
+    @mcp.tool(
+        annotations={
+            "title": "Market Hours",
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True,
+        }
+    )
+    async def market_hours(
+        exchange: str = "NYSE",
+    ) -> dict:
+        """Get current market status and trading hours.
+
+        Returns market open/close status, regular trading hours,
+        extended hours, and upcoming holidays.
+
+        Args:
+            exchange: Exchange name (default "NYSE")
+        """
+        exchange = exchange.upper().strip()
+
+        # Try /stable/market-hours endpoint
+        hours_data = await client.get_safe(
+            "/stable/market-hours",
+            cache_ttl=client.TTL_HOURLY,
+            default=[],
+        )
+
+        hours_list = hours_data if isinstance(hours_data, list) else []
+
+        # Filter to requested exchange
+        exchange_hours = None
+        for entry in hours_list:
+            if entry.get("stockExchange", "").upper() == exchange:
+                exchange_hours = entry
+                break
+
+        if not exchange_hours:
+            # Try without filtering
+            exchange_hours = _safe_first(hours_list)
+
+        # Get upcoming holidays
+        today = date.today()
+        end_date = today + timedelta(days=90)
+
+        holidays_data = await client.get_safe(
+            "/stable/market-holidays",
+            params={
+                "from": today.isoformat(),
+                "to": end_date.isoformat(),
+            },
+            cache_ttl=client.TTL_DAILY,
+            default=[],
+        )
+
+        holidays_list = holidays_data if isinstance(holidays_data, list) else []
+
+        # Sort holidays by date and take next 5
+        holidays_list.sort(key=lambda h: h.get("date") or "")
+        upcoming_holidays = []
+        for h in holidays_list[:5]:
+            upcoming_holidays.append({
+                "date": h.get("date"),
+                "name": h.get("holiday"),
+                "exchange": h.get("stockExchange"),
+            })
+
+        result = {
+            "exchange": exchange,
+        }
+
+        if exchange_hours:
+            result["is_open"] = exchange_hours.get("isTheStockMarketOpen")
+            result["regular_hours"] = {
+                "open": exchange_hours.get("openingHour"),
+                "close": exchange_hours.get("closingHour"),
+            }
+            result["extended_hours"] = {
+                "pre_market_open": exchange_hours.get("preMarketOpen"),
+                "pre_market_close": exchange_hours.get("preMarketClose"),
+                "after_market_open": exchange_hours.get("afterMarketOpen"),
+                "after_market_close": exchange_hours.get("afterMarketClose"),
+            }
+
+        result["upcoming_holidays"] = upcoming_holidays
+
+        _warnings = []
+        if not exchange_hours:
+            _warnings.append(f"market hours data unavailable for {exchange}")
+        if not upcoming_holidays:
+            _warnings.append("holiday calendar unavailable")
+        if _warnings:
+            result["_warnings"] = _warnings
+
+        return result
+
+    @mcp.tool(
+        annotations={
+            "title": "Industry Performance",
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True,
+        }
+    )
+    async def industry_performance(
+        sector: str | None = None,
+    ) -> dict:
+        """Get industry performance rankings with valuation context.
+
+        Returns industries ranked by performance with median P/E ratios.
+        Optionally filter to a specific sector.
+
+        Args:
+            sector: Optional sector to filter by (e.g. "Technology")
+        """
+        today_str = date.today().isoformat()
+
+        # Fetch industry performance from NYSE + NASDAQ
+        nyse_perf, nasdaq_perf, nyse_pe, nasdaq_pe = await asyncio.gather(
+            client.get_safe(
+                "/stable/industry-performance-snapshot",
+                params={"date": today_str, "exchange": "NYSE"},
+                cache_ttl=client.TTL_REALTIME,
+                default=[],
+            ),
+            client.get_safe(
+                "/stable/industry-performance-snapshot",
+                params={"date": today_str, "exchange": "NASDAQ"},
+                cache_ttl=client.TTL_REALTIME,
+                default=[],
+            ),
+            client.get_safe(
+                "/stable/industry-pe-snapshot",
+                params={"date": today_str, "exchange": "NYSE"},
+                cache_ttl=client.TTL_DAILY,
+                default=[],
+            ),
+            client.get_safe(
+                "/stable/industry-pe-snapshot",
+                params={"date": today_str, "exchange": "NASDAQ"},
+                cache_ttl=client.TTL_DAILY,
+                default=[],
+            ),
+        )
+
+        nyse_perf_list = nyse_perf if isinstance(nyse_perf, list) else []
+        nasdaq_perf_list = nasdaq_perf if isinstance(nasdaq_perf, list) else []
+        nyse_pe_list = nyse_pe if isinstance(nyse_pe, list) else []
+        nasdaq_pe_list = nasdaq_pe if isinstance(nasdaq_pe, list) else []
+
+        # Build performance map (average across exchanges)
+        perf_map: dict[str, list[float]] = {}
+        sector_map: dict[str, str] = {}
+
+        for entry in nyse_perf_list + nasdaq_perf_list:
+            industry = entry.get("industry")
+            change = entry.get("averageChange")
+            industry_sector = entry.get("sector")
+            if industry and change is not None:
+                perf_map.setdefault(industry, []).append(change)
+                if industry_sector:
+                    sector_map[industry] = industry_sector
+
+        # Build PE map
+        pe_map: dict[str, list[float]] = {}
+        for entry in nyse_pe_list + nasdaq_pe_list:
+            industry = entry.get("industry")
+            pe = entry.get("pe")
+            if industry and pe is not None and pe > 0:
+                pe_map.setdefault(industry, []).append(pe)
+
+        # Combine into industry data
+        industries = []
+        for industry, changes in perf_map.items():
+            avg_change = round(sum(changes) / len(changes), 4)
+            industry_sector = sector_map.get(industry)
+
+            # Filter by sector if specified
+            if sector and industry_sector and industry_sector.lower() != sector.lower():
+                continue
+
+            avg_pe = None
+            if industry in pe_map:
+                avg_pe = round(sum(pe_map[industry]) / len(pe_map[industry]), 2)
+
+            industries.append({
+                "industry": industry,
+                "sector": industry_sector,
+                "change_pct": avg_change,
+                "median_pe": avg_pe,
+            })
+
+        if not industries:
+            msg = "No industry performance data available"
+            if sector:
+                msg += f" for sector '{sector}'"
+            return {"error": msg}
+
+        # Sort by performance descending
+        industries.sort(key=lambda x: x.get("change_pct") or 0, reverse=True)
+
+        result = {
+            "date": today_str,
+            "industries": industries,
+            "count": len(industries),
+        }
+
+        if sector:
+            result["sector_filter"] = sector
+
+        return result
+
+    @mcp.tool(
+        annotations={
+            "title": "Splits Calendar",
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True,
+        }
+    )
+    async def splits_calendar(days_ahead: int = 30) -> dict:
+        """Get upcoming stock splits calendar.
+
+        Returns companies with announced stock splits in the specified window.
+
+        Args:
+            days_ahead: Number of days to look ahead (default 30, max 90)
+        """
+        days_ahead = min(max(days_ahead, 1), 90)
+        today = date.today()
+        end_date = today + timedelta(days=days_ahead)
+
+        data = await client.get_safe(
+            "/stable/stock-splits-calendar",
+            params={
+                "from": today.isoformat(),
+                "to": end_date.isoformat(),
+            },
+            cache_ttl=client.TTL_HOURLY,
+            default=[],
+        )
+
+        splits_list = data if isinstance(data, list) else []
+
+        if not splits_list:
+            return {
+                "splits": [],
+                "count": 0,
+                "period": f"{today.isoformat()} to {end_date.isoformat()}",
+            }
+
+        # Sort by date ascending
+        splits_list.sort(key=lambda s: s.get("date") or "")
+
+        splits = []
+        for s in splits_list:
+            num = s.get("numerator")
+            den = s.get("denominator")
+            label = f"{num}:{den}" if num and den else None
+
+            splits.append({
+                "symbol": s.get("symbol"),
+                "date": s.get("date"),
+                "numerator": num,
+                "denominator": den,
+                "label": label,
+            })
+
+        return {
+            "splits": splits,
+            "count": len(splits),
+            "period": f"{today.isoformat()} to {end_date.isoformat()}",
         }
 
     @mcp.tool(

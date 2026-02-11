@@ -1,8 +1,7 @@
-"""Stock news, press release, and M&A activity tools."""
+"""Market news, press release, and M&A activity tools."""
 
 from __future__ import annotations
 
-import asyncio
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -10,126 +9,140 @@ if TYPE_CHECKING:
     from fmp_client import FMPClient
 
 
-# Event keywords for flagging important news
-_EVENT_KEYWORDS = {
-    "earnings": ["earnings", "quarterly results", "q1 ", "q2 ", "q3 ", "q4 ", "fiscal"],
-    "guidance": ["guidance", "outlook", "forecast", "raises", "lowers"],
-    "fda": ["fda", "approval", "clinical trial", "phase "],
-    "merger_acquisition": ["acquisition", "acquire", "merger", "takeover", "buyout"],
-    "dividend": ["dividend", "distribution", "payout"],
-    "restructuring": ["restructuring", "layoff", "cost cutting", "reorganization"],
-    "leadership": ["ceo", "cfo", "appoints", "resignation", "board of directors"],
-    "regulatory": ["sec", "lawsuit", "investigation", "compliance", "settlement"],
+# Routing table: category -> (search endpoint, latest endpoint, supports symbol?)
+_NEWS_ROUTES = {
+    "stock": {
+        "search": "/stable/news/stock",
+        "latest": "/stable/news/stock-latest",
+        "has_symbol": True,
+    },
+    "press_releases": {
+        "search": "/stable/news/press-releases",
+        "latest": "/stable/news/press-releases-latest",
+        "has_symbol": True,
+    },
+    "crypto": {
+        "search": "/stable/news/crypto",
+        "latest": "/stable/news/crypto-latest",
+        "has_symbol": True,
+    },
+    "forex": {
+        "search": "/stable/news/forex",
+        "latest": "/stable/news/forex-latest",
+        "has_symbol": True,
+    },
+    "general": {
+        "search": None,
+        "latest": "/stable/news/general-latest",
+        "has_symbol": False,
+    },
 }
-
-
-def _detect_event(title: str) -> str | None:
-    """Detect major event type from headline."""
-    title_lower = title.lower()
-    for event_type, keywords in _EVENT_KEYWORDS.items():
-        if any(kw in title_lower for kw in keywords):
-            return event_type
-    return None
 
 
 def register(mcp: FastMCP, client: FMPClient) -> None:
     @mcp.tool(
         annotations={
-            "title": "Stock News",
+            "title": "Market News",
             "readOnlyHint": True,
             "destructiveHint": False,
             "idempotentHint": True,
             "openWorldHint": True,
         }
     )
-    async def stock_news(symbol: str, limit: int = 20) -> dict:
-        """Get recent news articles and press releases for a stock.
+    async def market_news(
+        category: str = "stock",
+        symbol: str | None = None,
+        page: int = 0,
+        limit: int = 20,
+    ) -> dict:
+        """Get news articles across stocks, crypto, forex, and macro.
 
-        Merges news and press releases, deduplicates by title similarity,
-        and sorts by date. Flags major event types (earnings, FDA, M&A, etc.).
+        Pick a category based on what you need:
+
+        - "stock": Equity market news — analyst commentary, price targets,
+          regulatory developments. Sources: Motley Fool, Zacks, MarketWatch,
+          Reuters, CNBC, SeekingAlpha. Pass a symbol for company-specific news,
+          or omit for the latest firehose across all tickers.
+
+        - "press_releases": Official corporate filings from wire services —
+          earnings reports, dividend announcements, M&A disclosures. Sources:
+          Business Wire, PRNewsWire, GlobeNewsWire. Pass a symbol to filter
+          (note: FMP's symbol matching is loose, expect some noise).
+
+        - "crypto": Cryptocurrency news — ETF flows, protocol updates, token
+          analysis. Sources: NewsBTC, CoinTelegraph, CryptoPotato, CoinDesk.
+          Pass a crypto symbol like "BTCUSD" or "ETHUSD" to filter.
+
+        - "forex": Currency pair and precious metals news — central bank
+          commentary, technical analysis, pair-specific forecasts. Sources:
+          FXStreet, Orbex, FXEmpire. Pass a pair like "EURUSD" or "XAUUSD".
+          Also covers gold (XAUUSD) and silver (XAGUSD).
+
+        - "general": Macro and market-wide news with no specific ticker —
+          jobs reports, Fed decisions, yield movements, broad sentiment.
+          Sources: WSJ, CNBC, Reuters, Benzinga. Symbol param is ignored.
+
+        Use page param to paginate through results (0-indexed).
 
         Args:
-            symbol: Stock ticker symbol (e.g. "AAPL")
-            limit: Max total items to return (default 20)
+            category: News category - "stock", "press_releases", "crypto", "forex", "general"
+            symbol: Optional ticker to search for (ignored for "general")
+            page: Page number for pagination (default 0)
+            limit: Max articles per page (default 20)
         """
-        symbol = symbol.upper().strip()
+        category = category.lower().strip()
+        if category not in _NEWS_ROUTES:
+            return {"error": f"Invalid category '{category}'. Use: {', '.join(_NEWS_ROUTES.keys())}"}
 
-        news_data, press_data = await asyncio.gather(
-            client.get_safe(
-                "/stable/news/stock",
-                params={"symbol": symbol, "limit": limit},
-                cache_ttl=client.TTL_REALTIME,
-                default=[],
-            ),
-            client.get_safe(
-                "/stable/news/press-releases",
-                params={"symbol": symbol, "limit": 10},
-                cache_ttl=client.TTL_HOURLY,
-                default=[],
-            ),
+        route = _NEWS_ROUTES[category]
+        limit = max(1, min(limit, 50))
+        page = max(0, page)
+
+        # Decide which endpoint to hit
+        if symbol and route["has_symbol"]:
+            symbol = symbol.upper().strip()
+            path = route["search"]
+            params: dict = {"symbol": symbol, "page": page, "limit": limit}
+        else:
+            path = route["latest"]
+            params = {"page": page, "limit": limit}
+            if symbol and not route["has_symbol"]:
+                symbol = None  # general doesn't support symbol
+
+        data = await client.get_safe(
+            path,
+            params=params,
+            cache_ttl=client.TTL_REALTIME,
+            default=[],
         )
 
-        news_list = news_data if isinstance(news_data, list) else []
-        press_list = press_data if isinstance(press_data, list) else []
+        articles_list = data if isinstance(data, list) else []
 
-        if not news_list and not press_list:
-            return {"error": f"No news found for '{symbol}'"}
+        if not articles_list:
+            msg = f"No {category} news found"
+            if symbol:
+                msg += f" for '{symbol}'"
+            msg += f" (page {page})"
+            return {"error": msg}
 
-        # Normalize both sources into common format
-        items = []
-        seen_titles = set()
-
-        for n in news_list:
-            title = n.get("title", "")
-            title_key = title.lower().strip()[:80]
-            if title_key in seen_titles:
-                continue
-            seen_titles.add(title_key)
-            items.append({
-                "title": title,
-                "date": n.get("publishedDate"),
-                "source": n.get("site") or n.get("source"),
-                "url": n.get("url"),
-                "snippet": (n.get("text") or "")[:300],
-                "type": "news",
-                "event_flag": _detect_event(title),
+        articles = []
+        for a in articles_list:
+            articles.append({
+                "title": a.get("title"),
+                "date": a.get("publishedDate"),
+                "symbol": a.get("symbol"),
+                "source": a.get("site") or a.get("publisher"),
+                "url": a.get("url"),
+                "snippet": (a.get("text") or "")[:300],
             })
 
-        for p in press_list:
-            title = p.get("title", "")
-            title_key = title.lower().strip()[:80]
-            if title_key in seen_titles:
-                continue
-            seen_titles.add(title_key)
-            items.append({
-                "title": title,
-                "date": p.get("publishedDate") or p.get("date"),
-                "source": p.get("publisher") or "Press Release",
-                "url": p.get("url"),
-                "snippet": (p.get("text") or "")[:300],
-                "type": "press_release",
-                "event_flag": _detect_event(title),
-            })
-
-        # Sort by date descending (newest first)
-        items.sort(key=lambda x: x.get("date") or "", reverse=True)
-        items = items[:limit]
-
-        result = {
+        return {
+            "category": category,
             "symbol": symbol,
-            "articles": items,
-            "count": len(items),
+            "page": page,
+            "count": len(articles),
+            "articles": articles,
         }
-
-        _warnings = []
-        if not news_list:
-            _warnings.append("news articles unavailable")
-        if not press_list:
-            _warnings.append("press releases unavailable")
-        if _warnings:
-            result["_warnings"] = _warnings
-
-        return result
 
     @mcp.tool(
         annotations={

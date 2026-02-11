@@ -234,14 +234,14 @@ AAPL_INSTITUTIONAL_HOLDERS = [
 # --- Stock News ---
 
 AAPL_NEWS = [
-    {"title": "Apple Reports Record Q1 Earnings", "publishedDate": "2026-02-10T16:30:00.000Z", "site": "Bloomberg", "url": "https://example.com/1", "text": "Apple Inc. reported record first quarter results..."},
-    {"title": "Apple Unveils New AI Features", "publishedDate": "2026-02-08T10:00:00.000Z", "site": "TechCrunch", "url": "https://example.com/2", "text": "Apple announced a suite of new AI-powered features..."},
-    {"title": "Apple Stock Rises on Strong Guidance", "publishedDate": "2026-02-07T14:00:00.000Z", "site": "CNBC", "url": "https://example.com/3", "text": "Shares of Apple rose 3% following strong guidance..."},
+    {"symbol": "AAPL", "title": "Apple Reports Record Q1 Earnings", "publishedDate": "2026-02-10T16:30:00.000Z", "site": "Bloomberg", "url": "https://example.com/1", "text": "Apple Inc. reported record first quarter results..."},
+    {"symbol": "AAPL", "title": "Apple Unveils New AI Features", "publishedDate": "2026-02-08T10:00:00.000Z", "site": "TechCrunch", "url": "https://example.com/2", "text": "Apple announced a suite of new AI-powered features..."},
+    {"symbol": "AAPL", "title": "Apple Stock Rises on Strong Guidance", "publishedDate": "2026-02-07T14:00:00.000Z", "site": "CNBC", "url": "https://example.com/3", "text": "Shares of Apple rose 3% following strong guidance..."},
 ]
 
 AAPL_PRESS_RELEASES = [
-    {"title": "Apple Announces Dividend Increase", "date": "2026-02-05T09:00:00.000Z", "url": "https://example.com/pr1", "text": "Apple today announced an increase to its quarterly dividend..."},
-    {"title": "Apple Reports Record Q1 Earnings", "date": "2026-02-03T16:30:00.000Z", "url": "https://example.com/pr2", "text": "Apple today announced financial results for Q1 FY2026..."},
+    {"title": "Apple Announces Dividend Increase", "publishedDate": "2026-02-05T09:00:00.000Z", "site": "Business Wire", "url": "https://example.com/pr1", "text": "Apple today announced an increase to its quarterly dividend..."},
+    {"title": "Apple Reports Record Q1 Earnings", "publishedDate": "2026-02-03T16:30:00.000Z", "site": "GlobeNewsWire", "url": "https://example.com/pr2", "text": "Apple today announced financial results for Q1 FY2026..."},
 ]
 
 # --- Treasury Rates & Macro ---
@@ -704,3 +704,188 @@ AAPL_GRADES_DETAIL = [
     {"symbol": "AAPL", "date": "2025-11-20", "gradingCompany": "Wells Fargo", "previousGrade": "Equal Weight", "newGrade": "Underweight", "action": "downgrade"},
     {"symbol": "AAPL", "date": "2025-11-01", "gradingCompany": "Citi", "previousGrade": "Neutral", "newGrade": "Buy", "action": "upgrade"},
 ]
+
+# --- Historical Key Metrics & Financial Ratios (for valuation_history and ratio_history) ---
+
+AAPL_KEY_METRICS_HISTORICAL = [
+    {"date": "2025-09-27", "period": "FY", "peRatio": 34.27, "priceToSalesRatio": 9.23, "pbRatio": 45.77, "enterpriseValueOverEBITDA": 27.5, "evToFreeCashFlow": 32.62},
+    {"date": "2024-09-28", "period": "FY", "peRatio": 31.50, "priceToSalesRatio": 8.80, "pbRatio": 42.30, "enterpriseValueOverEBITDA": 25.20, "evToFreeCashFlow": 30.10},
+    {"date": "2023-09-30", "period": "FY", "peRatio": 29.80, "priceToSalesRatio": 7.50, "pbRatio": 38.90, "enterpriseValueOverEBITDA": 23.50, "evToFreeCashFlow": 28.40},
+    {"date": "2022-09-24", "period": "FY", "peRatio": 25.40, "priceToSalesRatio": 6.30, "pbRatio": 35.20, "enterpriseValueOverEBITDA": 21.10, "evToFreeCashFlow": 25.80},
+    {"date": "2021-09-25", "period": "FY", "peRatio": 28.90, "priceToSalesRatio": 7.80, "pbRatio": 40.50, "enterpriseValueOverEBITDA": 24.30, "evToFreeCashFlow": 29.20},
+]
+
+AAPL_FINANCIAL_RATIOS_HISTORICAL = [
+    {"date": "2025-09-27", "period": "FY", "returnOnEquity": 1.56, "returnOnAssets": 0.33, "grossProfitMargin": 0.469, "operatingProfitMargin": 0.320, "netProfitMargin": 0.269, "assetTurnover": 1.05, "inventoryTurnover": 38.2, "cashConversionCycle": 45, "debtEquityRatio": 1.03, "interestCoverage": 25.5, "currentRatio": 0.97, "quickRatio": 0.85},
+    {"date": "2024-09-28", "period": "FY", "returnOnEquity": 1.48, "returnOnAssets": 0.31, "grossProfitMargin": 0.462, "operatingProfitMargin": 0.315, "netProfitMargin": 0.240, "assetTurnover": 1.02, "inventoryTurnover": 36.5, "cashConversionCycle": 48, "debtEquityRatio": 1.15, "interestCoverage": 24.2, "currentRatio": 0.95, "quickRatio": 0.83},
+    {"date": "2023-09-30", "period": "FY", "returnOnEquity": 1.72, "returnOnAssets": 0.35, "grossProfitMargin": 0.441, "operatingProfitMargin": 0.298, "netProfitMargin": 0.253, "assetTurnover": 0.99, "inventoryTurnover": 35.1, "cashConversionCycle": 51, "debtEquityRatio": 1.28, "interestCoverage": 22.8, "currentRatio": 0.93, "quickRatio": 0.81},
+    {"date": "2022-09-24", "period": "FY", "returnOnEquity": 1.95, "returnOnAssets": 0.38, "grossProfitMargin": 0.433, "operatingProfitMargin": 0.302, "netProfitMargin": 0.256, "assetTurnover": 0.96, "inventoryTurnover": 34.3, "cashConversionCycle": 53, "debtEquityRatio": 1.42, "interestCoverage": 21.5, "currentRatio": 0.91, "quickRatio": 0.79},
+    {"date": "2021-09-25", "period": "FY", "returnOnEquity": 1.85, "returnOnAssets": 0.36, "grossProfitMargin": 0.418, "operatingProfitMargin": 0.297, "netProfitMargin": 0.258, "assetTurnover": 0.94, "inventoryTurnover": 33.8, "cashConversionCycle": 55, "debtEquityRatio": 1.58, "interestCoverage": 20.3, "currentRatio": 0.89, "quickRatio": 0.77},
+]
+
+# --- NEW TOOL FIXTURES (for enhanced/new tools) ---
+
+# Executive compensation breakdown
+AAPL_EXECUTIVE_COMPENSATION = [
+    {"nameOfExecutive": "Timothy D. Cook", "filingDate": "2025-11-01", "acceptedDate": "2025-11-01 16:30:00", "year": 2025, "salary": 3000000, "bonus": 0, "stockAward": 10000000, "incentivePlanCompensation": 3425933, "allOtherCompensation": 0, "total": 16425933},
+    {"nameOfExecutive": "Luca Maestri", "filingDate": "2025-11-01", "acceptedDate": "2025-11-01 16:30:00", "year": 2025, "salary": 1000000, "bonus": 0, "stockAward": 4000000, "incentivePlanCompensation": 1012461, "allOtherCompensation": 0, "total": 6012461},
+]
+
+# Executive compensation industry benchmarks
+AAPL_EXECUTIVE_COMPENSATION_BENCHMARK = [
+    {"industry": "Consumer Electronics", "year": 2025, "averageSalary": 1500000, "averageBonus": 500000, "averageStockAward": 5000000, "averageIncentivePlanCompensation": 1500000, "averageTotal": 8500000, "percentile25": 5000000, "percentile50": 8000000, "percentile75": 12000000},
+]
+
+# Employee count history
+AAPL_EMPLOYEE_COUNT = [
+    {"periodDate": "2025-09-27", "filingDate": "2025-11-01", "employeeCount": 164000, "source": "10-K", "formType": "10-K"},
+    {"periodDate": "2024-09-28", "filingDate": "2024-11-01", "employeeCount": 161000, "source": "10-K", "formType": "10-K"},
+    {"periodDate": "2023-09-30", "filingDate": "2023-11-01", "employeeCount": 150000, "source": "10-K", "formType": "10-K"},
+    {"periodDate": "2022-09-24", "filingDate": "2022-11-01", "employeeCount": 147000, "source": "10-K", "formType": "10-K"},
+]
+
+# Delisted companies
+DELISTED_COMPANIES = [
+    {"symbol": "OLDCO", "companyName": "OldCo Technologies", "exchange": "NASDAQ", "delistedDate": "2025-01-15", "ipoDate": "2010-05-20"},
+    {"symbol": "GONE", "companyName": "Gone Corp", "exchange": "NYSE", "delistedDate": "2024-12-01", "ipoDate": "2015-03-10"},
+]
+
+# CIK/CUSIP search results
+CIK_SEARCH_RESULTS = [
+    {"symbol": "AAPL", "companyName": "Apple Inc.", "cik": "0000320193", "cusip": "037833100", "exchange": "NASDAQ"},
+]
+
+# Fund holdings (institutional portfolio by CIK)
+VANGUARD_HOLDINGS = [
+    {"symbol": "AAPL", "companyName": "Apple Inc.", "shares": 1300000000, "value": 356200000000, "changeInShares": 50000000, "date": "2025-12-31"},
+    {"symbol": "MSFT", "companyName": "Microsoft Corporation", "shares": 900000000, "value": 372000000000, "changeInShares": -10000000, "date": "2025-12-31"},
+    {"symbol": "AMZN", "companyName": "Amazon.com, Inc.", "shares": 500000000, "value": 116400000000, "changeInShares": 20000000, "date": "2025-12-31"},
+]
+
+VANGUARD_PERFORMANCE = [
+    {"totalValue": 10000000000000, "totalHoldings": 5000, "oneYearReturn": 15.2, "threeYearReturn": 28.5, "fiveYearReturn": 65.8},
+]
+
+VANGUARD_INDUSTRY_BREAKDOWN = [
+    {"industry": "Software", "value": 1500000000000, "percentage": 15.0, "holdingsCount": 250},
+    {"industry": "Internet Retail", "value": 1000000000000, "percentage": 10.0, "holdingsCount": 180},
+    {"industry": "Semiconductors", "value": 800000000000, "percentage": 8.0, "holdingsCount": 120},
+]
+
+# Intraday prices
+AAPL_INTRADAY_5M = [
+    {"date": "2026-02-11 15:55:00", "open": 275.20, "high": 275.50, "low": 275.10, "close": 275.40, "volume": 1200000},
+    {"date": "2026-02-11 15:50:00", "open": 275.00, "high": 275.30, "low": 274.90, "close": 275.20, "volume": 1100000},
+    {"date": "2026-02-11 15:45:00", "open": 274.80, "high": 275.10, "low": 274.70, "close": 275.00, "volume": 1300000},
+]
+
+# Historical market cap
+AAPL_HISTORICAL_MARKET_CAP = [
+    {"date": "2026-02-11", "marketCap": 4022528102504},
+    {"date": "2026-02-10", "marketCap": 4010000000000},
+    {"date": "2026-02-07", "marketCap": 3995000000000},
+    {"date": "2026-01-31", "marketCap": 3950000000000},
+    {"date": "2026-01-15", "marketCap": 3900000000000},
+]
+
+# ETF profile/info
+QQQ_INFO = [{
+    "symbol": "QQQ",
+    "name": "Invesco QQQ Trust",
+    "inceptionDate": "1999-03-10",
+    "expenseRatio": 0.0020,
+    "aum": 250000000000,
+    "nav": 420.50,
+    "avgVolume": 45000000,
+    "holdingsCount": 103,
+    "description": "The Invesco QQQ Trust is an exchange-traded fund based on the Nasdaq-100 Index.",
+}]
+
+QQQ_SECTOR_WEIGHTING = [
+    {"sector": "Technology", "weightPercentage": 55.2},
+    {"sector": "Consumer Discretionary", "weightPercentage": 15.8},
+    {"sector": "Communication Services", "weightPercentage": 12.3},
+    {"sector": "Healthcare", "weightPercentage": 7.5},
+]
+
+QQQ_COUNTRY_ALLOCATION = [
+    {"country": "United States", "weightPercentage": 92.5},
+    {"country": "China", "weightPercentage": 4.2},
+    {"country": "Other", "weightPercentage": 3.3},
+]
+
+# Index quotes for index_performance
+INDEX_QUOTES = [
+    {"symbol": "^GSPC", "name": "S&P 500", "price": 5500.00, "changesPercentage": 0.75},
+    {"symbol": "^DJI", "name": "Dow Jones Industrial Average", "price": 43000.00, "changesPercentage": 0.50},
+    {"symbol": "^IXIC", "name": "NASDAQ Composite", "price": 17500.00, "changesPercentage": 1.20},
+    {"symbol": "^RUT", "name": "Russell 2000", "price": 2100.00, "changesPercentage": -0.30},
+]
+
+# Index historical data for performance calculation (simple stub)
+INDEX_HISTORICAL = [
+    {"symbol": "^GSPC", "date": "2026-02-11", "close": 5500.00, "volume": 0},
+    {"symbol": "^GSPC", "date": "2026-02-10", "close": 5480.00, "volume": 0},
+    {"symbol": "^GSPC", "date": "2026-02-07", "close": 5460.00, "volume": 0},
+    # Add more history as needed for performance calculations
+] + [
+    {"symbol": "^GSPC", "date": f"2025-{12 if i > 30 else '02'}-{max(1, 11 - i):02d}", "close": 5400 - i * 5, "volume": 0}
+    for i in range(365)
+]
+
+# Market hours
+MARKET_HOURS_DATA = [{
+    "stockExchange": "NYSE",
+    "isTheStockMarketOpen": True,
+    "openingHour": "09:30:00",
+    "closingHour": "16:00:00",
+    "preMarketOpen": "04:00:00",
+    "preMarketClose": "09:30:00",
+    "afterMarketOpen": "16:00:00",
+    "afterMarketClose": "20:00:00",
+}]
+
+MARKET_HOLIDAYS = [
+    {"date": "2026-02-16", "holiday": "Presidents Day", "stockExchange": "NYSE"},
+    {"date": "2026-04-03", "holiday": "Good Friday", "stockExchange": "NYSE"},
+    {"date": "2026-05-25", "holiday": "Memorial Day", "stockExchange": "NYSE"},
+]
+
+# Industry performance
+INDUSTRY_PERFORMANCE_NYSE = [
+    {"date": "2026-02-11", "industry": "Software", "sector": "Technology", "exchange": "NYSE", "averageChange": 1.25},
+    {"date": "2026-02-11", "industry": "Banks", "sector": "Financial Services", "exchange": "NYSE", "averageChange": -0.50},
+]
+
+INDUSTRY_PERFORMANCE_NASDAQ = [
+    {"date": "2026-02-11", "industry": "Software", "sector": "Technology", "exchange": "NASDAQ", "averageChange": 1.45},
+    {"date": "2026-02-11", "industry": "Biotechnology", "sector": "Healthcare", "exchange": "NASDAQ", "averageChange": 2.10},
+]
+
+# Stock splits calendar
+SPLITS_CALENDAR = [
+    {"symbol": "NVDA", "date": "2026-02-20", "numerator": 10, "denominator": 1},
+    {"symbol": "TSLA", "date": "2026-02-25", "numerator": 3, "denominator": 1},
+]
+
+# IPO prospectus and disclosures
+IPO_PROSPECTUS = [
+    {"symbol": "NEWCO", "url": "https://example.com/prospectus1", "title": "S-1 Registration", "date": "2026-02-10"},
+]
+
+IPO_DISCLOSURES = [
+    {"symbol": "NEWCO", "url": "https://example.com/disclosure1", "title": "Risk Factors", "date": "2026-02-10"},
+]
+
+# Key metrics TTM (for peer_comparison forward calculations)
+AAPL_KEY_METRICS_TTM = [{
+    "symbol": "AAPL",
+    "marketCapTTM": 4022528102504,
+    "revenuePerShareTTM": 27.05,
+}]
+
+MSFT_KEY_METRICS_TTM = [{
+    "symbol": "MSFT",
+    "marketCapTTM": 3100000000000,
+    "revenuePerShareTTM": 33.15,
+}]

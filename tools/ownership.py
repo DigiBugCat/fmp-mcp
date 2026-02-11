@@ -462,3 +462,269 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             result["_warnings"] = _warnings
 
         return result
+
+    @mcp.tool(
+        annotations={
+            "title": "Fund Holdings",
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True,
+        }
+    )
+    async def fund_holdings(cik: str, year: int | None = None, quarter: int | None = None) -> dict:
+        """Get institutional investor's portfolio by CIK.
+
+        Query a fund's holdings, performance track record, and sector allocation.
+        Returns top 50 holdings with position changes, fund performance metrics,
+        and industry breakdown.
+
+        Args:
+            cik: Central Index Key (CIK) for the institutional investor
+            year: Year for holdings (defaults to latest available quarter)
+            quarter: Quarter (1-4) for holdings (defaults to latest available)
+        """
+        cik = cik.strip()
+
+        # Default to latest quarter if not specified
+        if year is None or quarter is None:
+            year_default, quarter_default = _latest_quarter()
+            if year is None:
+                year = year_default
+            if quarter is None:
+                quarter = quarter_default
+
+        cik_params = {"cik": cik}
+        period_params = {**cik_params, "year": year, "quarter": quarter}
+
+        # Fetch all 3 endpoints in parallel
+        holdings_data, performance_data, industry_data = await asyncio.gather(
+            client.get_safe(
+                "/stable/institutional-ownership/extract",
+                params={**period_params, "limit": 50},
+                cache_ttl=client.TTL_6H,
+                default=[],
+            ),
+            client.get_safe(
+                "/stable/institutional-ownership/holder-performance-summary",
+                params=cik_params,
+                cache_ttl=client.TTL_6H,
+                default=[],
+            ),
+            client.get_safe(
+                "/stable/institutional-ownership/holder-industry-breakdown",
+                params=period_params,
+                cache_ttl=client.TTL_6H,
+                default=[],
+            ),
+        )
+
+        holdings_list = holdings_data if isinstance(holdings_data, list) else []
+        performance_list = performance_data if isinstance(performance_data, list) else []
+        industry_list = industry_data if isinstance(industry_data, list) else []
+
+        if not holdings_list and not performance_list and not industry_list:
+            return {"error": f"No fund data found for CIK '{cik}'"}
+
+        # Process holdings - top 50 with position changes
+        top_holdings = []
+        total_portfolio_value = 0
+        for h in holdings_list[:50]:
+            shares = h.get("shares") or 0
+            value = h.get("value") or 0
+            change = h.get("changeInShares") or 0
+            total_portfolio_value += value
+
+            top_holdings.append({
+                "symbol": h.get("symbol"),
+                "company_name": h.get("companyName"),
+                "shares": shares,
+                "value": value,
+                "change_in_shares": change,
+                "change_type": "increased" if change > 0 else "decreased" if change < 0 else "unchanged",
+                "date_reported": h.get("date"),
+            })
+
+        # Calculate portfolio concentration (% held in top 10)
+        top_10_value = sum(h["value"] for h in top_holdings[:10])
+        concentration_pct = round(top_10_value / total_portfolio_value * 100, 2) if total_portfolio_value > 0 else None
+
+        # Performance summary
+        performance_summary = {}
+        perf = _safe_first(performance_list)
+        if perf:
+            performance_summary = {
+                "total_value": perf.get("totalValue"),
+                "total_holdings": perf.get("totalHoldings"),
+                "avg_return_1y": perf.get("oneYearReturn"),
+                "avg_return_3y": perf.get("threeYearReturn"),
+                "avg_return_5y": perf.get("fiveYearReturn"),
+            }
+
+        # Industry breakdown
+        industry_breakdown = []
+        for ind in industry_list:
+            industry_breakdown.append({
+                "industry": ind.get("industry") or ind.get("sector"),
+                "value": ind.get("value"),
+                "percentage": ind.get("percentage"),
+                "holdings_count": ind.get("holdingsCount"),
+            })
+
+        # Sort by percentage descending
+        industry_breakdown.sort(key=lambda x: x.get("percentage") or 0, reverse=True)
+
+        result = {
+            "cik": cik,
+            "reporting_period": f"Q{quarter} {year}",
+            "portfolio_summary": {
+                "total_value": total_portfolio_value,
+                "holdings_count": len(holdings_list),
+                "top_10_concentration_pct": concentration_pct,
+            },
+            "top_holdings": top_holdings,
+            "performance": performance_summary,
+            "industry_allocation": industry_breakdown[:10],  # Top 10 industries
+        }
+
+        _warnings = []
+        if not holdings_list:
+            _warnings.append("holdings data unavailable")
+        if not performance_list:
+            _warnings.append("performance data unavailable")
+        if not industry_list:
+            _warnings.append("industry breakdown unavailable")
+        if _warnings:
+            result["_warnings"] = _warnings
+
+        return result
+
+    @mcp.tool(
+        annotations={
+            "title": "Ownership Structure",
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True,
+        }
+    )
+    async def ownership_structure(symbol: str) -> dict:
+        """Get comprehensive ownership structure analysis.
+
+        Combined view of float, insider ownership, institutional ownership,
+        and short interest. Returns shares outstanding breakdown, ownership
+        percentages, and implied retail ownership.
+
+        Args:
+            symbol: Stock ticker symbol (e.g. "AAPL")
+        """
+        symbol = symbol.upper().strip()
+        sym_params = {"symbol": symbol}
+        year, quarter = _latest_quarter()
+
+        # Fetch float, insider stats, institutional summary, and short interest in parallel
+        float_data, insider_stats_data, institutional_data, finra_results = await asyncio.gather(
+            client.get_safe(
+                "/stable/shares-float",
+                params=sym_params,
+                cache_ttl=client.TTL_DAILY,
+                default=[],
+            ),
+            client.get_safe(
+                "/stable/insider-trading/statistics",
+                params=sym_params,
+                cache_ttl=client.TTL_HOURLY,
+                default=[],
+            ),
+            client.get_safe(
+                "/stable/institutional-ownership/symbol-positions-summary",
+                params={**sym_params, "year": year, "quarter": quarter},
+                cache_ttl=client.TTL_6H,
+                default=[],
+            ),
+            # For short interest, use the existing helper
+            asyncio.gather(
+                *[_fetch_finra_short_interest(symbol, d) for d in _short_interest_dates()]
+            ),
+        )
+
+        float_info = _safe_first(float_data)
+        insider_stats = _safe_first(insider_stats_data)
+        institutional_summary = _safe_first(institutional_data)
+
+        # Process FINRA results
+        finra = None
+        for r in finra_results:
+            if r is not None:
+                finra = r
+                break
+
+        if not float_info:
+            return {"error": f"No ownership data found for '{symbol}'"}
+
+        # Float metrics
+        outstanding_shares = float_info.get("outstandingShares") or 0
+        float_shares = float_info.get("floatShares") or 0
+
+        # Insider ownership (derived from float vs outstanding)
+        insider_shares = outstanding_shares - float_shares if outstanding_shares > float_shares else 0
+        insider_pct = round(insider_shares / outstanding_shares * 100, 2) if outstanding_shares > 0 else 0
+
+        # Institutional ownership
+        institutional_shares = institutional_summary.get("numberOf13Fshares") or 0
+        institutional_pct = round(institutional_shares / outstanding_shares * 100, 2) if outstanding_shares > 0 else 0
+        institutional_investors = institutional_summary.get("investorsHolding") or 0
+        institutional_change = institutional_summary.get("investorsHoldingChange") or 0
+
+        # Short interest
+        shares_short = (finra or {}).get("currentShortPositionQuantity") or 0
+        short_pct_float = round(shares_short / float_shares * 100, 2) if float_shares > 0 else 0
+        short_pct_outstanding = round(shares_short / outstanding_shares * 100, 2) if outstanding_shares > 0 else 0
+
+        # Implied retail ownership (float - institutional - short, as proxy)
+        # Note: institutional and short can overlap, so this is an approximation
+        retail_implied_shares = max(0, float_shares - institutional_shares)
+        retail_implied_pct = round(retail_implied_shares / outstanding_shares * 100, 2) if outstanding_shares > 0 else 0
+
+        result = {
+            "symbol": symbol,
+            "reporting_period": f"Q{quarter} {year}",
+            "shares_breakdown": {
+                "outstanding_shares": outstanding_shares,
+                "float_shares": float_shares,
+                "insider_shares": insider_shares,
+                "institutional_shares": institutional_shares,
+                "short_shares": shares_short,
+                "retail_implied_shares": retail_implied_shares,
+            },
+            "ownership_percentages": {
+                "insider_pct": insider_pct,
+                "institutional_pct": institutional_pct,
+                "short_pct_float": short_pct_float,
+                "short_pct_outstanding": short_pct_outstanding,
+                "retail_implied_pct": retail_implied_pct,
+            },
+            "institutional_details": {
+                "investors_holding": institutional_investors,
+                "investors_change_qoq": institutional_change,
+            },
+            "short_interest_details": {
+                "settlement_date": (finra or {}).get("settlementDate"),
+                "days_to_cover": (finra or {}).get("daysToCoverQuantity"),
+                "change_pct": (finra or {}).get("changePercent"),
+            },
+        }
+
+        _warnings = []
+        if not float_info:
+            _warnings.append("float data unavailable")
+        if not insider_stats:
+            _warnings.append("insider statistics unavailable")
+        if not institutional_summary:
+            _warnings.append("institutional summary unavailable")
+        if finra is None:
+            _warnings.append("FINRA short interest unavailable")
+        if _warnings:
+            result["_warnings"] = _warnings
+
+        return result

@@ -17,7 +17,148 @@ def _safe_first(data: list | None) -> dict:
     return {}
 
 
+def _percentile(values: list[float], target: float | None) -> float | None:
+    """Calculate percentile rank of target value in a list."""
+    if target is None or not values:
+        return None
+    clean = [v for v in values if v is not None and isinstance(v, (int, float))]
+    if not clean:
+        return None
+    below = sum(1 for v in clean if v < target)
+    return round(below / len(clean) * 100, 1)
+
+
 def register(mcp: FastMCP, client: FMPClient) -> None:
+    @mcp.tool(
+        annotations={
+            "title": "Valuation History",
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True,
+        }
+    )
+    async def valuation_history(
+        symbol: str,
+        period: str = "annual",
+        limit: int = 10,
+    ) -> dict:
+        """Get historical valuation multiples with percentile analysis.
+
+        Returns current TTM multiples, historical time series, and percentile
+        positioning (min, p25, median, p75, max, current_percentile) for
+        P/E, P/S, P/B, EV/EBITDA, EV/Revenue, EV/FCF.
+
+        Args:
+            symbol: Stock ticker symbol (e.g. "AAPL")
+            period: "annual" or "quarter" (default "annual")
+            limit: Number of historical periods to fetch (default 10)
+        """
+        symbol = symbol.upper().strip()
+        params = {"symbol": symbol, "period": period, "limit": limit}
+
+        # Fetch historical metrics and current TTM ratios
+        key_metrics_data, ratios_ttm_data = await asyncio.gather(
+            client.get_safe(
+                "/stable/key-metrics",
+                params=params,
+                cache_ttl=client.TTL_HOURLY,
+                default=[],
+            ),
+            client.get_safe(
+                "/stable/ratios-ttm",
+                params={"symbol": symbol},
+                cache_ttl=client.TTL_HOURLY,
+                default=[],
+            ),
+        )
+
+        key_metrics = key_metrics_data if isinstance(key_metrics_data, list) else []
+        ratios_ttm = _safe_first(ratios_ttm_data)
+
+        if not key_metrics and not ratios_ttm:
+            return {"error": f"No valuation data found for '{symbol}'"}
+
+        # Extract current TTM multiples
+        current_ttm = {
+            "pe_ttm": ratios_ttm.get("priceToEarningsRatioTTM"),
+            "ps_ttm": ratios_ttm.get("priceToSalesRatioTTM"),
+            "pb_ttm": ratios_ttm.get("priceToBookRatioTTM"),
+            "ev_ebitda_ttm": ratios_ttm.get("enterpriseValueMultipleTTM"),
+            "ev_revenue_ttm": None,  # Calculated below
+            "ev_fcf_ttm": None,  # Calculated below
+        }
+
+        # Some EV ratios might be in key-metrics-ttm
+        if key_metrics:
+            latest = key_metrics[0]
+            if current_ttm["ev_revenue_ttm"] is None:
+                current_ttm["ev_revenue_ttm"] = latest.get("enterpriseValueOverEBITDA")  # Fallback
+            if current_ttm["ev_fcf_ttm"] is None:
+                current_ttm["ev_fcf_ttm"] = latest.get("evToFreeCashFlow")
+
+        # Build historical series
+        historical = []
+        for m in key_metrics:
+            historical.append({
+                "date": m.get("date"),
+                "period": m.get("period"),
+                "pe": m.get("peRatio"),
+                "ps": m.get("priceToSalesRatio"),
+                "pb": m.get("pbRatio"),
+                "ev_ebitda": m.get("enterpriseValueOverEBITDA"),
+                "ev_revenue": None,  # Not typically in key-metrics
+                "ev_fcf": m.get("evToFreeCashFlow"),
+            })
+
+        # Calculate percentiles for each metric
+        def _calc_percentiles(values: list[float | None], current: float | None) -> dict:
+            clean = [v for v in values if v is not None and isinstance(v, (int, float))]
+            if not clean:
+                return {}
+            clean.sort()
+            n = len(clean)
+            return {
+                "min": round(clean[0], 2),
+                "p25": round(clean[n // 4], 2) if n > 1 else clean[0],
+                "median": round(clean[n // 2], 2),
+                "p75": round(clean[3 * n // 4], 2) if n > 2 else clean[-1],
+                "max": round(clean[-1], 2),
+                "current_percentile": _percentile(clean, current),
+            }
+
+        pe_values = [h["pe"] for h in historical]
+        ps_values = [h["ps"] for h in historical]
+        pb_values = [h["pb"] for h in historical]
+        ev_ebitda_values = [h["ev_ebitda"] for h in historical]
+        ev_fcf_values = [h["ev_fcf"] for h in historical]
+
+        percentiles = {
+            "pe": _calc_percentiles(pe_values, current_ttm["pe_ttm"]),
+            "ps": _calc_percentiles(ps_values, current_ttm["ps_ttm"]),
+            "pb": _calc_percentiles(pb_values, current_ttm["pb_ttm"]),
+            "ev_ebitda": _calc_percentiles(ev_ebitda_values, current_ttm["ev_ebitda_ttm"]),
+            "ev_fcf": _calc_percentiles(ev_fcf_values, current_ttm["ev_fcf_ttm"]),
+        }
+
+        result = {
+            "symbol": symbol,
+            "period_type": period,
+            "current_ttm": current_ttm,
+            "historical": historical,
+            "percentiles": percentiles,
+        }
+
+        _warnings = []
+        if not ratios_ttm:
+            _warnings.append("TTM ratios unavailable")
+        if not key_metrics:
+            _warnings.append("historical key metrics unavailable")
+        if _warnings:
+            result["_warnings"] = _warnings
+
+        return result
+
     @mcp.tool(
         annotations={
             "title": "Analyst Consensus",
@@ -134,44 +275,49 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             "openWorldHint": True,
         }
     )
-    async def peer_comparison(symbol: str) -> dict:
+    async def peer_comparison(symbol: str, peer_symbols: list[str] | None = None) -> dict:
         """Compare a stock's valuation and growth metrics against its peers.
 
-        Finds FMP-identified peers, then compares P/E, P/S, EV/EBITDA,
-        growth rates, and margins. Shows target's premium/discount to peer median
-        and rank within the group.
+        Finds FMP-identified peers (or uses custom peer list), then compares P/E, P/S,
+        EV/EBITDA, forward P/E, forward P/S, revenue/EPS growth, PEG ratio, dividend yield,
+        and margins. Shows target's premium/discount to peer median and rank within the group.
 
         Args:
             symbol: Stock ticker symbol (e.g. "AAPL")
+            peer_symbols: Optional custom peer list (skips FMP auto-peers if provided)
         """
         symbol = symbol.upper().strip()
 
-        # Step 1: Get peer list
-        # /stable/stock-peers returns a flat list of peer companies
-        peers_data = await client.get_safe(
-            "/stable/stock-peers",
-            params={"symbol": symbol},
-            cache_ttl=client.TTL_DAILY,
-            default=[],
-        )
+        # Step 1: Get peer list (either custom or FMP auto-peers)
+        if peer_symbols:
+            # Use custom peer list
+            peer_symbols = [p.upper().strip() for p in peer_symbols]
+        else:
+            # /stable/stock-peers returns a flat list of peer companies
+            peers_data = await client.get_safe(
+                "/stable/stock-peers",
+                params={"symbol": symbol},
+                cache_ttl=client.TTL_DAILY,
+                default=[],
+            )
 
-        peers_list = peers_data if isinstance(peers_data, list) else []
-        if not peers_list:
-            return {"error": f"No peer data found for '{symbol}'"}
+            peers_list = peers_data if isinstance(peers_data, list) else []
+            if not peers_list:
+                return {"error": f"No peer data found for '{symbol}'"}
 
-        # Extract peer symbols from the flat list
-        peer_symbols = [p.get("symbol") for p in peers_list if p.get("symbol")]
-        if not peer_symbols:
-            return {"error": f"No peers identified for '{symbol}'"}
+            # Extract peer symbols from the flat list
+            peer_symbols = [p.get("symbol") for p in peers_list if p.get("symbol")]
+            if not peer_symbols:
+                return {"error": f"No peers identified for '{symbol}'"}
 
-        # Limit to 10 peers to avoid excessive API calls
-        peer_symbols = peer_symbols[:10]
+            # Limit to 10 peers to avoid excessive API calls
+            peer_symbols = peer_symbols[:10]
 
-        # Step 2: Fetch ratios and key metrics for target + all peers in parallel
+        # Step 2: Fetch ratios, key metrics, forward estimates, and income statements for target + all peers
         all_symbols = [symbol] + peer_symbols
 
         async def _fetch_metrics(sym: str) -> dict:
-            ratios, metrics = await asyncio.gather(
+            ratios, metrics, estimates, income = await asyncio.gather(
                 client.get_safe(
                     "/stable/ratios-ttm",
                     params={"symbol": sym},
@@ -184,19 +330,72 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
                     cache_ttl=client.TTL_HOURLY,
                     default=[],
                 ),
+                client.get_safe(
+                    "/stable/analyst-estimates",
+                    params={"symbol": sym, "period": "quarter", "limit": 1},
+                    cache_ttl=client.TTL_6H,
+                    default=[],
+                ),
+                client.get_safe(
+                    "/stable/income-statement",
+                    params={"symbol": sym, "period": "annual", "limit": 2},
+                    cache_ttl=client.TTL_HOURLY,
+                    default=[],
+                ),
             )
             r = _safe_first(ratios)
             m = _safe_first(metrics)
+            est = _safe_first(estimates)
+            inc_list = income if isinstance(income, list) else []
+
+            # Calculate 1Y growth rates
+            revenue_growth_1y = None
+            eps_growth_1y = None
+            if len(inc_list) >= 2:
+                latest = inc_list[0]
+                prior = inc_list[1]
+                if latest.get("revenue") and prior.get("revenue") and prior["revenue"] > 0:
+                    revenue_growth_1y = round((latest["revenue"] / prior["revenue"] - 1) * 100, 2)
+                if latest.get("epsDiluted") and prior.get("epsDiluted") and prior["epsDiluted"] > 0:
+                    eps_growth_1y = round((latest["epsDiluted"] / prior["epsDiluted"] - 1) * 100, 2)
+
+            # Forward P/E and P/S
+            forward_pe = None
+            forward_ps = None
+            if est.get("epsAvg") and est["epsAvg"] > 0 and m.get("marketCapTTM"):
+                # Approximate: market_cap / (forward_eps * shares)
+                # We don't have shares easily, so use ratio of current P/E
+                pe_current = r.get("priceToEarningsRatioTTM")
+                eps_current = r.get("earningsYield")  # Inverse of P/E
+                if pe_current:
+                    forward_pe = pe_current * (est["epsAvg"] / (1 / eps_current if eps_current else 1))
+            if est.get("revenueAvg") and est["revenueAvg"] > 0 and m.get("marketCapTTM"):
+                forward_ps = m["marketCapTTM"] / est["revenueAvg"]
+
+            # PEG ratio
+            peg = None
+            pe_ttm = r.get("priceToEarningsRatioTTM")
+            if pe_ttm and eps_growth_1y and eps_growth_1y > 0:
+                peg = round(pe_ttm / eps_growth_1y, 2)
+
+            # Dividend yield
+            div_yield = r.get("dividendYielTTM") or r.get("dividendYieldTTM")
+
             return {
                 "symbol": sym,
-                "pe_ttm": r.get("priceToEarningsRatioTTM"),
+                "pe_ttm": pe_ttm,
                 "ps_ttm": r.get("priceToSalesRatioTTM"),
                 "ev_ebitda_ttm": r.get("enterpriseValueMultipleTTM"),
                 "pb_ttm": r.get("priceToBookRatioTTM"),
+                "forward_pe": forward_pe,
+                "forward_ps": forward_ps,
+                "revenue_growth_1y": revenue_growth_1y,
+                "eps_growth_1y": eps_growth_1y,
+                "peg": peg,
+                "dividend_yield": div_yield,
                 "roe_ttm": r.get("returnOnEquityTTM"),
                 "gross_margin_ttm": r.get("grossProfitMarginTTM"),
                 "net_margin_ttm": r.get("netProfitMarginTTM"),
-                "revenue_growth_ttm": m.get("revenuePerShareTTM"),
                 "market_cap": m.get("marketCapTTM"),
             }
 
@@ -238,8 +437,12 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
                     return f"{rank}/{len(clean)}"
             return None
 
-        comparison_metrics = ["pe_ttm", "ps_ttm", "ev_ebitda_ttm", "pb_ttm", "roe_ttm", "gross_margin_ttm", "net_margin_ttm"]
-        higher_better = {"roe_ttm", "gross_margin_ttm", "net_margin_ttm"}
+        comparison_metrics = [
+            "pe_ttm", "ps_ttm", "ev_ebitda_ttm", "pb_ttm", "forward_pe", "forward_ps",
+            "revenue_growth_1y", "eps_growth_1y", "peg", "dividend_yield",
+            "roe_ttm", "gross_margin_ttm", "net_margin_ttm"
+        ]
+        higher_better = {"revenue_growth_1y", "eps_growth_1y", "dividend_yield", "roe_ttm", "gross_margin_ttm", "net_margin_ttm"}
 
         comparisons = {}
         for metric in comparison_metrics:

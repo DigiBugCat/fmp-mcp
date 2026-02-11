@@ -561,19 +561,19 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
     ) -> dict:
         """Look up ETF holdings or find which ETFs hold a stock.
 
-        Dual-mode tool: pass an ETF ticker to see its holdings, or a stock
-        ticker to see which ETFs hold it. Use mode="auto" to detect automatically.
+        Multi-mode tool: "holdings" shows ETF contents, "exposure" shows which ETFs
+        hold a stock, "profile" gives comprehensive ETF analysis, "auto" detects automatically.
 
         Args:
             symbol: ETF ticker (e.g. "QQQ") or stock ticker (e.g. "AAPL")
-            mode: "holdings" (what's inside this ETF), "exposure" (which ETFs hold this stock), or "auto" (try both)
+            mode: "holdings", "exposure", "profile", or "auto" (default "auto")
             limit: Max results to return (default 25)
         """
         symbol = symbol.upper().strip()
         limit = max(1, min(limit, 100))
 
-        if mode not in ("holdings", "exposure", "auto"):
-            return {"error": f"Invalid mode '{mode}'. Use: holdings, exposure, auto"}
+        if mode not in ("holdings", "exposure", "profile", "auto"):
+            return {"error": f"Invalid mode '{mode}'. Use: holdings, exposure, profile, auto"}
 
         async def _try_holdings() -> list | None:
             data = await client.get_safe(
@@ -594,6 +594,107 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             )
             result = data if isinstance(data, list) else []
             return result if result else None
+
+        # Profile mode: comprehensive ETF analysis
+        if mode == "profile":
+            info_data, holdings_data, sector_data, country_data = await asyncio.gather(
+                client.get_safe(
+                    "/stable/etf-info",
+                    params={"symbol": symbol},
+                    cache_ttl=client.TTL_DAILY,
+                    default=[],
+                ),
+                client.get_safe(
+                    "/stable/etf-holdings",
+                    params={"symbol": symbol},
+                    cache_ttl=client.TTL_DAILY,
+                    default=[],
+                ),
+                client.get_safe(
+                    "/stable/etf-sector-weighting",
+                    params={"symbol": symbol},
+                    cache_ttl=client.TTL_DAILY,
+                    default=[],
+                ),
+                client.get_safe(
+                    "/stable/etf-country-allocation",
+                    params={"symbol": symbol},
+                    cache_ttl=client.TTL_DAILY,
+                    default=[],
+                ),
+            )
+
+            info = _safe_first(info_data)
+            holdings_list = holdings_data if isinstance(holdings_data, list) else []
+            sectors = sector_data if isinstance(sector_data, list) else []
+            countries = country_data if isinstance(country_data, list) else []
+
+            if not info and not holdings_list:
+                return {"error": f"No ETF profile data found for '{symbol}'. Is it an ETF ticker?"}
+
+            # ETF info
+            etf_info = {
+                "name": info.get("name"),
+                "inception_date": info.get("inceptionDate"),
+                "expense_ratio": info.get("expenseRatio"),
+                "aum": info.get("aum"),
+                "nav": info.get("nav"),
+                "avg_volume": info.get("avgVolume"),
+                "holdings_count": info.get("holdingsCount"),
+                "description": info.get("description"),
+            }
+
+            # Top holdings
+            holdings_list.sort(key=lambda h: h.get("weightPercentage") or 0, reverse=True)
+            top_holdings = []
+            for h in holdings_list[:limit]:
+                top_holdings.append({
+                    "symbol": h.get("asset"),
+                    "name": h.get("name"),
+                    "weight_pct": h.get("weightPercentage"),
+                    "shares": h.get("sharesNumber"),
+                })
+
+            # Sector weights
+            sectors.sort(key=lambda s: s.get("weightPercentage") or 0, reverse=True)
+            sector_weights = []
+            for s in sectors:
+                sector_weights.append({
+                    "sector": s.get("sector"),
+                    "weight_pct": s.get("weightPercentage"),
+                })
+
+            # Country allocation
+            countries.sort(key=lambda c: c.get("weightPercentage") or 0, reverse=True)
+            country_allocation = []
+            for c in countries:
+                country_allocation.append({
+                    "country": c.get("country"),
+                    "weight_pct": c.get("weightPercentage"),
+                })
+
+            result = {
+                "symbol": symbol,
+                "mode": "profile",
+                "info": etf_info,
+                "top_holdings": top_holdings,
+                "sector_weights": sector_weights,
+                "country_allocation": country_allocation,
+            }
+
+            _warnings = []
+            if not info:
+                _warnings.append("ETF info unavailable")
+            if not holdings_list:
+                _warnings.append("holdings data unavailable")
+            if not sectors:
+                _warnings.append("sector weighting unavailable")
+            if not countries:
+                _warnings.append("country allocation unavailable")
+            if _warnings:
+                result["_warnings"] = _warnings
+
+            return result
 
         if mode == "holdings":
             holdings = await _try_holdings()
@@ -618,7 +719,183 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         if exposure:
             return _format_exposure(symbol, exposure, limit)
 
-        return {"error": f"No ETF data found for '{symbol}'. Try specifying mode='holdings' or mode='exposure'."}
+        return {"error": f"No ETF data found for '{symbol}'. Try specifying mode='holdings', 'exposure', or 'profile'."}
+
+    @mcp.tool(
+        annotations={
+            "title": "Intraday Prices",
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True,
+        }
+    )
+    async def intraday_prices(
+        symbol: str,
+        interval: str = "5m",
+        days_back: int = 1,
+    ) -> dict:
+        """Get intraday price candles with summary statistics.
+
+        Returns OHLCV candles (max 500) plus volume, VWAP, range statistics.
+        Useful for intraday analysis and trading.
+
+        Args:
+            symbol: Stock ticker symbol (e.g. "AAPL")
+            interval: Candle interval - "1m", "5m", "15m", "30m", "1h", "4h" (default "5m")
+            days_back: Number of days to look back (default 1, max 7)
+        """
+        symbol = symbol.upper().strip()
+        interval_map = {
+            "1m": "1min",
+            "5m": "5min",
+            "15m": "15min",
+            "30m": "30min",
+            "1h": "1hour",
+            "4h": "4hour",
+        }
+
+        if interval not in interval_map:
+            return {"error": f"Invalid interval '{interval}'. Use: {', '.join(interval_map.keys())}"}
+
+        days_back = max(1, min(days_back, 7))
+
+        # Calculate date range
+        today = date.today()
+        from_date = today - timedelta(days=days_back)
+
+        # FMP endpoint: /stable/historical-chart/{interval}?symbol=X&from=Y&to=Z
+        data = await client.get_safe(
+            f"/stable/historical-chart/{interval_map[interval]}",
+            params={
+                "symbol": symbol,
+                "from": from_date.isoformat(),
+                "to": today.isoformat(),
+            },
+            cache_ttl=client.TTL_REALTIME,
+            default=[],
+        )
+
+        candles = data if isinstance(data, list) else []
+
+        if not candles:
+            return {"error": f"No intraday data found for '{symbol}' with interval {interval}"}
+
+        # Sort newest first
+        candles.sort(key=lambda c: c.get("date") or "", reverse=True)
+
+        # Limit to 500 most recent candles
+        trimmed = candles[:500]
+
+        # Calculate summary statistics
+        total_volume = sum(c.get("volume") or 0 for c in trimmed)
+        high_prices = [c.get("high") for c in trimmed if c.get("high")]
+        low_prices = [c.get("low") for c in trimmed if c.get("low")]
+
+        period_high = max(high_prices) if high_prices else None
+        period_low = min(low_prices) if low_prices else None
+
+        range_pct = None
+        if period_high and period_low and period_low > 0:
+            range_pct = round((period_high / period_low - 1) * 100, 2)
+
+        # Calculate VWAP (volume-weighted average price)
+        vwap = None
+        if total_volume > 0:
+            vwap_sum = sum((c.get("close") or 0) * (c.get("volume") or 0) for c in trimmed)
+            vwap = round(vwap_sum / total_volume, 2)
+
+        # Format candles for output
+        formatted_candles = []
+        for c in trimmed:
+            formatted_candles.append({
+                "date": c.get("date"),
+                "open": c.get("open"),
+                "high": c.get("high"),
+                "low": c.get("low"),
+                "close": c.get("close"),
+                "volume": c.get("volume"),
+            })
+
+        return {
+            "symbol": symbol,
+            "interval": interval,
+            "days_back": days_back,
+            "candle_count": len(formatted_candles),
+            "summary": {
+                "total_volume": total_volume,
+                "vwap": vwap,
+                "period_high": period_high,
+                "period_low": period_low,
+                "range_pct": range_pct,
+            },
+            "candles": formatted_candles,
+        }
+
+    @mcp.tool(
+        annotations={
+            "title": "Historical Market Cap",
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True,
+        }
+    )
+    async def historical_market_cap(
+        symbol: str,
+        limit: int = 10,
+    ) -> dict:
+        """Get historical market capitalization time series for a stock.
+
+        Returns market cap values over time, useful for tracking company
+        growth and size changes.
+
+        Args:
+            symbol: Stock ticker symbol (e.g. "AAPL")
+            limit: Number of data points to return (default 10, max 100)
+        """
+        symbol = symbol.upper().strip()
+        limit = max(1, min(limit, 100))
+
+        data = await client.get_safe(
+            "/stable/historical-market-cap",
+            params={"symbol": symbol},
+            cache_ttl=client.TTL_12H,
+            default=[],
+        )
+
+        history = data if isinstance(data, list) else []
+
+        if not history:
+            return {"error": f"No historical market cap data found for '{symbol}'"}
+
+        # Sort newest first and apply limit
+        history.sort(key=lambda h: h.get("date") or "", reverse=True)
+        trimmed = history[:limit]
+
+        # Format data points
+        data_points = []
+        for entry in trimmed:
+            data_points.append({
+                "date": entry.get("date"),
+                "market_cap": entry.get("marketCap"),
+            })
+
+        # Calculate change from oldest to newest in the trimmed set
+        change_pct = None
+        if len(data_points) >= 2:
+            oldest_mc = data_points[-1].get("market_cap")
+            newest_mc = data_points[0].get("market_cap")
+            if oldest_mc and newest_mc and oldest_mc > 0:
+                change_pct = round((newest_mc / oldest_mc - 1) * 100, 2)
+
+        return {
+            "symbol": symbol,
+            "current_market_cap": data_points[0].get("market_cap") if data_points else None,
+            "data_points": len(data_points),
+            "change_pct": change_pct,
+            "history": data_points,
+        }
 
     VALID_INDICATORS = {"sma", "ema", "rsi", "adx", "wma", "dema", "tema", "williams", "standarddeviation"}
 

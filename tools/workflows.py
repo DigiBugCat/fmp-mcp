@@ -1249,3 +1249,493 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             result["_warnings"] = _warnings
 
         return result
+
+    # ================================================================
+    # 6. ownership_deep_dive — "Who owns this stock?"
+    # ================================================================
+
+    @mcp.tool(
+        annotations={"title": "Ownership Deep Dive", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True}
+    )
+    async def ownership_deep_dive(symbol: str) -> dict:
+        """Comprehensive ownership analysis orchestrating multiple ownership endpoints.
+
+        Combines ownership structure, insider activity, institutional ownership,
+        and short interest into a unified analysis with ownership insights and signals.
+
+        Args:
+            symbol: Stock ticker symbol (e.g. "AAPL")
+        """
+        symbol = symbol.upper().strip()
+
+        # Import ownership tools from the ownership module
+        from tools.ownership import (
+            _latest_quarter,
+            _safe_first,
+            _short_interest_dates,
+            _fetch_finra_short_interest,
+        )
+
+        sym_params = {"symbol": symbol}
+        year, quarter = _latest_quarter()
+
+        # Fetch all ownership-related endpoints in parallel
+        (
+            float_data, profile_data, quote_data,
+            insider_trades_data, insider_stats_data,
+            institutional_summary_data, institutional_holders_data,
+            finra_tasks,
+        ) = await asyncio.gather(
+            client.get_safe("/stable/shares-float", params=sym_params, cache_ttl=client.TTL_DAILY, default=[]),
+            client.get_safe("/stable/profile", params=sym_params, cache_ttl=client.TTL_DAILY, default=[]),
+            client.get_safe("/stable/quote", params=sym_params, cache_ttl=client.TTL_REALTIME, default=[]),
+            client.get_safe("/stable/insider-trading/search", params={**sym_params, "limit": 100}, cache_ttl=client.TTL_HOURLY, default=[]),
+            client.get_safe("/stable/insider-trading/statistics", params=sym_params, cache_ttl=client.TTL_HOURLY, default=[]),
+            client.get_safe("/stable/institutional-ownership/symbol-positions-summary", params={**sym_params, "year": year, "quarter": quarter}, cache_ttl=client.TTL_6H, default=[]),
+            client.get_safe("/stable/institutional-ownership/extract-analytics/holder", params={**sym_params, "year": year, "quarter": quarter, "limit": 20}, cache_ttl=client.TTL_6H, default=[]),
+            asyncio.gather(*[_fetch_finra_short_interest(symbol, d) for d in _short_interest_dates()]),
+        )
+
+        float_info = _safe_first(float_data)
+        profile = _safe_first(profile_data)
+        quote = _safe_first(quote_data)
+        insider_trades = insider_trades_data if isinstance(insider_trades_data, list) else []
+        insider_stats = _safe_first(insider_stats_data)
+        institutional_summary = _safe_first(institutional_summary_data)
+        institutional_holders = institutional_holders_data if isinstance(institutional_holders_data, list) else []
+
+        # Process FINRA short interest
+        finra = None
+        for r in finra_tasks:
+            if r is not None:
+                finra = r
+                break
+
+        if not float_info and not profile:
+            return {"error": f"No data found for symbol '{symbol}'"}
+
+        # --- Ownership Structure ---
+        outstanding_shares = float_info.get("outstandingShares") or 0
+        float_shares = float_info.get("floatShares") or 0
+        insider_shares = outstanding_shares - float_shares if outstanding_shares > float_shares else 0
+        insider_pct = round(insider_shares / outstanding_shares * 100, 2) if outstanding_shares > 0 else 0
+
+        institutional_shares = institutional_summary.get("numberOf13Fshares") or 0
+        institutional_pct = round(institutional_shares / outstanding_shares * 100, 2) if outstanding_shares > 0 else 0
+
+        shares_short = (finra or {}).get("currentShortPositionQuantity") or 0
+        short_pct_float = round(shares_short / float_shares * 100, 2) if float_shares > 0 else 0
+        short_pct_outstanding = round(shares_short / outstanding_shares * 100, 2) if outstanding_shares > 0 else 0
+
+        retail_implied_shares = max(0, float_shares - institutional_shares)
+        retail_implied_pct = round(retail_implied_shares / outstanding_shares * 100, 2) if outstanding_shares > 0 else 0
+
+        # --- Insider Activity Analysis ---
+        from datetime import date, timedelta
+        today = date.today()
+        cutoff_30 = (today - timedelta(days=30)).isoformat()
+        cutoff_90 = (today - timedelta(days=90)).isoformat()
+
+        buys_30, sells_30, buys_90, sells_90 = 0, 0, 0, 0
+        cluster_buyers = set()
+        notable_insider_trades = []
+
+        for t in insider_trades:
+            trade_date = t.get("filingDate", t.get("transactionDate", ""))
+            tx_type = (t.get("transactionType") or "").lower()
+            shares = t.get("securitiesTransacted") or 0
+            price = t.get("price") or 0
+            name = t.get("reportingName", "")
+            title = t.get("typeOfOwner", "")
+
+            is_buy = "purchase" in tx_type or "p-purchase" in tx_type
+            is_sell = "sale" in tx_type or "s-sale" in tx_type
+
+            if trade_date >= cutoff_90:
+                if is_buy:
+                    buys_90 += shares
+                elif is_sell:
+                    sells_90 += shares
+
+                if trade_date >= cutoff_30:
+                    if is_buy:
+                        buys_30 += shares
+                        cluster_buyers.add(name)
+                    elif is_sell:
+                        sells_30 += shares
+
+            # C-suite trades
+            title_lower = title.lower() if title else ""
+            if any(t in title_lower for t in ["ceo", "cfo", "coo", "director", "officer"]):
+                if (is_buy or is_sell) and trade_date >= cutoff_90:
+                    notable_insider_trades.append({
+                        "name": name,
+                        "title": title,
+                        "type": "buy" if is_buy else "sell",
+                        "shares": shares,
+                        "price": price,
+                        "date": trade_date,
+                        "value": round(shares * price, 2) if shares and price else None,
+                    })
+
+        net_30 = buys_30 - sells_30
+        net_90 = buys_90 - sells_90
+        cluster_buying = len(cluster_buyers) >= 3
+        insider_signal = "net_buying" if net_30 > 0 else "net_selling" if net_30 < 0 else "neutral"
+
+        # --- Institutional Ownership Details ---
+        top_institutional = []
+        for h in institutional_holders[:10]:
+            shares_held = h.get("sharesNumber") or h.get("shares") or 0
+            pct = round(shares_held / outstanding_shares * 100, 2) if outstanding_shares > 0 else None
+            change = h.get("changeInSharesNumber") or h.get("changeInShares") or 0
+            top_institutional.append({
+                "holder": h.get("investorName") or h.get("name") or h.get("holder"),
+                "shares": shares_held,
+                "ownership_pct": pct,
+                "change_in_shares": change,
+                "change_type": "increased" if change > 0 else "decreased" if change < 0 else "unchanged",
+            })
+
+        institutional_investors = institutional_summary.get("investorsHolding") or 0
+        institutional_change = institutional_summary.get("investorsHoldingChange") or 0
+
+        # --- Short Interest Context ---
+        short_interest_context = {
+            "shares_short": shares_short,
+            "pct_of_float": short_pct_float,
+            "pct_of_outstanding": short_pct_outstanding,
+            "settlement_date": (finra or {}).get("settlementDate"),
+            "days_to_cover": (finra or {}).get("daysToCoverQuantity"),
+            "change_pct": (finra or {}).get("changePercent"),
+        }
+
+        # --- Ownership Insights & Signals ---
+        insights = []
+        ownership_score = 0
+        risk_factors = []
+
+        # High insider ownership is positive
+        if insider_pct > 20:
+            insights.append(f"high insider ownership ({insider_pct:.1f}%) suggests alignment with shareholders")
+            ownership_score += 1
+        elif insider_pct < 1:
+            risk_factors.append(f"very low insider ownership ({insider_pct:.1f}%)")
+            ownership_score -= 0.5
+
+        # Insider buying signal
+        if cluster_buying or net_30 > 0:
+            insights.append(f"insider buying activity: {buys_30:,} shares bought (30d)" + (" - cluster buying" if cluster_buying else ""))
+            ownership_score += 0.5
+        elif net_30 < 0 and abs(net_30) > buys_30 * 2:
+            risk_factors.append(f"heavy insider selling: {sells_30:,} shares sold (30d)")
+            ownership_score -= 0.5
+
+        # Institutional concentration
+        institutional_pct_float = round(institutional_shares / float_shares * 100, 2) if float_shares > 0 else 0
+        if institutional_pct_float > 100:
+            insights.append(f"institutional ownership exceeds float ({institutional_pct_float:.1f}% of float) - high conviction")
+            ownership_score += 0.5
+        elif institutional_pct < 20:
+            risk_factors.append(f"low institutional ownership ({institutional_pct:.1f}%)")
+            ownership_score -= 0.3
+
+        # Short interest analysis
+        if short_pct_float > 20:
+            risk_factors.append(f"high short interest ({short_pct_float:.1f}% of float) - squeeze potential or bearish sentiment")
+            ownership_score -= 0.5
+        elif short_pct_float > 10:
+            insights.append(f"elevated short interest ({short_pct_float:.1f}% of float)")
+
+        # Float lock-up check
+        locked_pct = insider_pct + institutional_pct
+        if locked_pct > 80:
+            insights.append(f"tight float: {locked_pct:.1f}% locked by insiders + institutions")
+            ownership_score += 0.3
+
+        # Retail dominance check
+        if retail_implied_pct > 50:
+            insights.append(f"retail-dominated float ({retail_implied_pct:.1f}% implied retail)")
+
+        signal = _classify_signal(ownership_score, thresholds=(-0.5, 0.5))
+
+        result = {
+            "symbol": symbol,
+            "company_name": profile.get("companyName"),
+            "current_price": quote.get("price"),
+            "market_cap": quote.get("marketCap"),
+            "reporting_period": f"Q{quarter} {year}",
+            "ownership_structure": {
+                "outstanding_shares": outstanding_shares,
+                "float_shares": float_shares,
+                "insider_pct": insider_pct,
+                "institutional_pct": institutional_pct,
+                "short_pct_float": short_pct_float,
+                "short_pct_outstanding": short_pct_outstanding,
+                "retail_implied_pct": retail_implied_pct,
+            },
+            "insider_activity": {
+                "net_shares_30d": net_30,
+                "net_shares_90d": net_90,
+                "signal": insider_signal,
+                "cluster_buying": cluster_buying,
+                "notable_trades": notable_insider_trades[:10],
+            },
+            "institutional_ownership": {
+                "total_shares": institutional_shares,
+                "investors_count": institutional_investors,
+                "investors_change_qoq": institutional_change,
+                "top_holders": top_institutional,
+            },
+            "short_interest": short_interest_context,
+            "ownership_analysis": {
+                "signal": signal,
+                "score": round(ownership_score, 2),
+                "key_insights": insights,
+                "risk_factors": risk_factors,
+            },
+        }
+
+        _warnings = []
+        if not float_info:
+            _warnings.append("float data unavailable")
+        if not insider_trades:
+            _warnings.append("insider trades unavailable")
+        if not institutional_summary:
+            _warnings.append("institutional summary unavailable")
+        if finra is None:
+            _warnings.append("FINRA short interest unavailable")
+        if _warnings:
+            result["_warnings"] = _warnings
+
+        return result
+
+    # ================================================================
+    # 7. industry_analysis — "What's happening in this industry?"
+    # ================================================================
+
+    @mcp.tool(
+        annotations={"title": "Industry Analysis", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True}
+    )
+    async def industry_analysis(industry: str, limit: int = 10) -> dict:
+        """Industry analysis orchestrating performance data, top stocks by market cap, median valuation multiples, growth comparison, and rotation signal.
+
+        Orchestrates: industry performance, top stocks in industry by market cap (via screener),
+        median valuation multiples, growth comparison, rotation signal (money flow in/out),
+        valuation spread (cheapest vs most expensive).
+
+        Args:
+            industry: Industry name (e.g. "Software - Application", "Biotechnology")
+            limit: Number of top stocks to return (default 10)
+        """
+        industry = industry.strip()
+        limit = min(max(limit, 1), 50)
+        today_dt = date.today()
+        today_str = today_dt.isoformat()
+
+        # Fetch industry performance and top stocks in parallel
+        (
+            nyse_perf_data, nasdaq_perf_data,
+            nyse_pe_data, nasdaq_pe_data,
+            screener_data,
+        ) = await asyncio.gather(
+            client.get_safe("/stable/industry-performance-snapshot", params={"date": today_str, "exchange": "NYSE"}, cache_ttl=client.TTL_REALTIME, default=[]),
+            client.get_safe("/stable/industry-performance-snapshot", params={"date": today_str, "exchange": "NASDAQ"}, cache_ttl=client.TTL_REALTIME, default=[]),
+            client.get_safe("/stable/industry-pe-snapshot", params={"date": today_str, "exchange": "NYSE"}, cache_ttl=client.TTL_DAILY, default=[]),
+            client.get_safe("/stable/industry-pe-snapshot", params={"date": today_str, "exchange": "NASDAQ"}, cache_ttl=client.TTL_DAILY, default=[]),
+            client.get_safe("/stable/company-screener", params={"industry": industry, "limit": limit * 3}, cache_ttl=client.TTL_HOURLY, default=[]),
+        )
+
+        nyse_perf = nyse_perf_data if isinstance(nyse_perf_data, list) else []
+        nasdaq_perf = nasdaq_perf_data if isinstance(nasdaq_perf_data, list) else []
+        nyse_pe = nyse_pe_data if isinstance(nyse_pe_data, list) else []
+        nasdaq_pe = nasdaq_pe_data if isinstance(nasdaq_pe_data, list) else []
+        screener_list = screener_data if isinstance(screener_data, list) else []
+
+        # Industry performance (average across exchanges)
+        perf_entries = [e for e in nyse_perf + nasdaq_perf if (e.get("industry") or "").lower() == industry.lower()]
+        industry_change = None
+        industry_sector = None
+        if perf_entries:
+            changes = [e.get("averageChange") for e in perf_entries if e.get("averageChange") is not None]
+            if changes:
+                industry_change = round(sum(changes) / len(changes), 4)
+            industry_sector = perf_entries[0].get("sector")
+
+        # Industry PE (average across exchanges)
+        pe_entries = [e for e in nyse_pe + nasdaq_pe if (e.get("industry") or "").lower() == industry.lower()]
+        industry_pe = None
+        if pe_entries:
+            pe_vals = [e.get("pe") for e in pe_entries if e.get("pe") is not None and e.get("pe") > 0]
+            if pe_vals:
+                industry_pe = round(sum(pe_vals) / len(pe_vals), 2)
+
+        if not screener_list and industry_change is None:
+            return {"error": f"No data found for industry '{industry}'"}
+
+        # Sort screener results by market cap descending and take top N
+        screener_list.sort(key=lambda s: s.get("marketCap") or 0, reverse=True)
+        top_stocks = screener_list[:limit]
+
+        # Extract symbols for parallel data fetch
+        symbols = [s.get("symbol") for s in top_stocks if s.get("symbol")]
+
+        # Fetch ratios and income statements for top stocks
+        async def _fetch_stock_data(sym: str) -> tuple[str, dict, dict, dict]:
+            ratios, income, quote = await asyncio.gather(
+                client.get_safe("/stable/ratios-ttm", params={"symbol": sym}, cache_ttl=client.TTL_HOURLY, default=[]),
+                client.get_safe("/stable/income-statement", params={"symbol": sym, "limit": 4}, cache_ttl=client.TTL_HOURLY, default=[]),
+                client.get_safe("/stable/quote", params={"symbol": sym}, cache_ttl=client.TTL_REALTIME, default=[]),
+            )
+            return sym, _safe_first(ratios), income if isinstance(income, list) else [], _safe_first(quote)
+
+        stock_data_results = await asyncio.gather(*[_fetch_stock_data(s) for s in symbols]) if symbols else []
+
+        # Build stock_data map
+        stock_data_map: dict[str, tuple[dict, list, dict]] = {}
+        for sym, ratios, income, quote in stock_data_results:
+            stock_data_map[sym] = (ratios, income, quote)
+
+        # Build top stocks list with valuation and growth
+        top_stocks_list = []
+        pe_values = []
+        ps_values = []
+        rev_growth_values = []
+
+        for stock in top_stocks:
+            sym = stock.get("symbol")
+            if not sym:
+                continue
+
+            ratios, income_list, quote = stock_data_map.get(sym, ({}, [], {}))
+
+            pe = ratios.get("priceToEarningsRatioTTM")
+            ps = ratios.get("priceToSalesRatioTTM")
+            peg = ratios.get("priceToEarningsGrowthRatioTTM")
+            roe = ratios.get("returnOnEquityTTM")
+
+            # Calculate revenue growth (3-year CAGR if available)
+            rev_cagr_3y = None
+            if len(income_list) >= 4:
+                start_rev = income_list[3].get("revenue")
+                end_rev = income_list[0].get("revenue")
+                if start_rev and end_rev and start_rev > 0:
+                    try:
+                        rev_cagr_3y = round(((end_rev / start_rev) ** (1 / 3) - 1) * 100, 2)
+                    except (ZeroDivisionError, ValueError, OverflowError):
+                        pass
+
+            top_stocks_list.append({
+                "symbol": sym,
+                "name": stock.get("companyName") or stock.get("name"),
+                "market_cap": stock.get("marketCap"),
+                "price": quote.get("price") or stock.get("price"),
+                "change_pct": quote.get("changePercentage"),
+                "valuation": {
+                    "pe": pe,
+                    "ps": ps,
+                    "peg": peg,
+                },
+                "growth": {
+                    "rev_cagr_3y_pct": rev_cagr_3y,
+                },
+                "quality": {
+                    "roe": roe,
+                },
+            })
+
+            # Collect for median calculations
+            if pe is not None and pe > 0:
+                pe_values.append(pe)
+            if ps is not None and ps > 0:
+                ps_values.append(ps)
+            if rev_cagr_3y is not None:
+                rev_growth_values.append(rev_cagr_3y)
+
+        # Median multiples
+        median_pe = _median(pe_values)
+        median_ps = _median(ps_values)
+        median_rev_growth = _median(rev_growth_values)
+
+        # Valuation spread (cheapest vs most expensive by PE)
+        cheapest_stock = None
+        most_expensive_stock = None
+        if pe_values:
+            min_pe = min(pe_values)
+            max_pe = max(pe_values)
+            for s in top_stocks_list:
+                if s["valuation"]["pe"] == min_pe:
+                    cheapest_stock = {"symbol": s["symbol"], "name": s["name"], "pe": min_pe}
+                if s["valuation"]["pe"] == max_pe:
+                    most_expensive_stock = {"symbol": s["symbol"], "name": s["name"], "pe": max_pe}
+
+        # Rotation signal (compare industry performance to market)
+        # Fetch sector performance for context
+        sectors = await _fetch_sectors(client)
+        market_avg = None
+        if sectors:
+            sector_changes = [s.get("change_pct") for s in sectors if s.get("change_pct") is not None]
+            if sector_changes:
+                market_avg = round(sum(sector_changes) / len(sector_changes), 4)
+
+        rotation_signal = "neutral"
+        rotation_score = 0
+        if industry_change is not None and market_avg is not None:
+            rotation_score = industry_change - market_avg
+            if rotation_score > 0.5:
+                rotation_signal = "money_flowing_in"
+            elif rotation_score < -0.5:
+                rotation_signal = "money_flowing_out"
+
+        # Key insights
+        insights = []
+        if industry_change is not None:
+            insights.append(f"industry performance: {industry_change:+.2f}%")
+        if market_avg is not None and rotation_score != 0:
+            insights.append(f"vs market: {rotation_score:+.2f}% ({rotation_signal.replace('_', ' ')})")
+        if median_pe:
+            insights.append(f"median P/E: {median_pe:.1f}")
+        if median_rev_growth:
+            insights.append(f"median revenue growth: {median_rev_growth:.1f}%")
+
+        result = {
+            "industry": industry,
+            "sector": industry_sector,
+            "date": today_str,
+            "overview": {
+                "performance_pct": industry_change,
+                "median_pe": industry_pe or median_pe,
+                "market_avg_pct": market_avg,
+            },
+            "top_stocks": top_stocks_list,
+            "industry_medians": {
+                "pe": median_pe,
+                "ps": median_ps,
+                "rev_growth_3y_pct": median_rev_growth,
+            },
+            "valuation_spread": {
+                "cheapest": cheapest_stock,
+                "most_expensive": most_expensive_stock,
+            },
+            "rotation": {
+                "signal": rotation_signal,
+                "industry_vs_market_pct": rotation_score if market_avg is not None else None,
+            },
+            "summary": {
+                "key_insights": insights,
+            },
+        }
+
+        _warnings = []
+        if not perf_entries:
+            _warnings.append("industry performance unavailable")
+        if not pe_entries and industry_pe is None:
+            _warnings.append("industry PE unavailable")
+        if not screener_list:
+            _warnings.append("stock screener data unavailable")
+        if not sectors:
+            _warnings.append("sector performance unavailable for rotation signal")
+        if _warnings:
+            result["_warnings"] = _warnings
+
+        return result

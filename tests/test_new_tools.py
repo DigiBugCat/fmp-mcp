@@ -1,0 +1,621 @@
+"""Tests for newly added tools (employee_history, delisted_companies, symbol_lookup, fund_holdings, ownership_structure, valuation_history, ratio_history, intraday_prices, historical_market_cap, etf_lookup profile mode, index_performance, market_hours, industry_performance, splits_calendar)."""
+
+from __future__ import annotations
+
+import pytest
+import respx
+import httpx
+
+from fastmcp import FastMCP, Client
+from fmp_client import FMPClient
+from tests.conftest import (
+    AAPL_EMPLOYEE_COUNT, DELISTED_COMPANIES, CIK_SEARCH_RESULTS,
+    VANGUARD_HOLDINGS, VANGUARD_PERFORMANCE, VANGUARD_INDUSTRY_BREAKDOWN,
+    AAPL_SHARES_FLOAT, AAPL_INSIDER_STATS,
+    AAPL_INSTITUTIONAL_SUMMARY, AAPL_SHORT_INTEREST,
+    AAPL_KEY_METRICS_HISTORICAL, AAPL_RATIOS,
+    AAPL_FINANCIAL_RATIOS_HISTORICAL, AAPL_KEY_METRICS,
+    AAPL_INTRADAY_5M, AAPL_HISTORICAL_MARKET_CAP,
+    QQQ_INFO, QQQ_HOLDINGS, QQQ_SECTOR_WEIGHTING, QQQ_COUNTRY_ALLOCATION,
+    INDEX_QUOTES, INDEX_HISTORICAL,
+    MARKET_HOURS_DATA, MARKET_HOLIDAYS,
+    INDUSTRY_PERFORMANCE_NYSE, INDUSTRY_PERFORMANCE_NASDAQ,
+    INDUSTRY_PE_NYSE, INDUSTRY_PE_NASDAQ,
+    SPLITS_CALENDAR, IPO_CALENDAR, IPO_PROSPECTUS, IPO_DISCLOSURES,
+)
+from tools.ownership import FINRA_URL, _short_interest_dates
+from tools.overview import register as register_overview
+from tools.ownership import register as register_ownership
+from tools.valuation import register as register_valuation
+from tools.financials import register as register_financials
+from tools.market import register as register_market
+from tools.macro import register as register_macro
+
+BASE = "https://financialmodelingprep.com"
+
+
+def _make_server(register_fn) -> tuple[FastMCP, FMPClient]:
+    """Create a FastMCP server with registered tools."""
+    mcp = FastMCP("Test")
+    client = FMPClient(api_key="test_key")
+    register_fn(mcp, client)
+    return mcp, client
+
+
+# --- OVERVIEW TOOLS ---
+
+class TestEmployeeHistory:
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_full_data(self):
+        respx.get(f"{BASE}/stable/employee-count").mock(
+            return_value=httpx.Response(200, json=AAPL_EMPLOYEE_COUNT)
+        )
+        mcp, fmp = _make_server(register_overview)
+        async with Client(mcp) as c:
+            result = await c.call_tool("employee_history", {"symbol": "AAPL"})
+        data = result.data
+        assert data["symbol"] == "AAPL"
+        assert data["current_employee_count"] == 164000
+        assert len(data["history"]) == 4
+        # Check growth metrics are present
+        assert "growth_metrics" in data
+        await fmp.close()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_unknown_symbol(self):
+        respx.get(f"{BASE}/stable/employee-count").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        mcp, fmp = _make_server(register_overview)
+        async with Client(mcp) as c:
+            result = await c.call_tool("employee_history", {"symbol": "ZZZZ"})
+        data = result.data
+        assert "error" in data
+        await fmp.close()
+
+
+class TestDelistedCompanies:
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_search_delisted(self):
+        respx.get(f"{BASE}/stable/delisted-companies").mock(
+            return_value=httpx.Response(200, json=DELISTED_COMPANIES)
+        )
+        mcp, fmp = _make_server(register_overview)
+        async with Client(mcp) as c:
+            result = await c.call_tool("delisted_companies", {"query": "oldco"})
+        data = result.data
+        assert data["count"] == 2
+        assert data["companies"][0]["symbol"] == "OLDCO"
+        await fmp.close()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_no_results(self):
+        respx.get(f"{BASE}/stable/delisted-companies").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        mcp, fmp = _make_server(register_overview)
+        async with Client(mcp) as c:
+            result = await c.call_tool("delisted_companies", {})
+        data = result.data
+        assert "error" in data
+        await fmp.close()
+
+
+class TestSymbolLookup:
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_cik_search(self):
+        respx.get(f"{BASE}/stable/cik-search").mock(
+            return_value=httpx.Response(200, json=CIK_SEARCH_RESULTS)
+        )
+        mcp, fmp = _make_server(register_overview)
+        async with Client(mcp) as c:
+            result = await c.call_tool("symbol_lookup", {"query": "0000320193", "type": "cik"})
+        data = result.data
+        assert data["count"] == 1
+        assert data["results"][0]["symbol"] == "AAPL"
+        assert data["results"][0]["cik"] == "0000320193"
+        await fmp.close()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_no_results(self):
+        respx.get(f"{BASE}/stable/cik-search").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        mcp, fmp = _make_server(register_overview)
+        async with Client(mcp) as c:
+            result = await c.call_tool("symbol_lookup", {"query": "NONEXISTENT", "type": "name"})
+        data = result.data
+        assert "error" in data
+        await fmp.close()
+
+
+# --- OWNERSHIP TOOLS ---
+
+class TestFundHoldings:
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_full_portfolio(self):
+        respx.get(f"{BASE}/stable/institutional-ownership/extract").mock(
+            return_value=httpx.Response(200, json=VANGUARD_HOLDINGS)
+        )
+        respx.get(f"{BASE}/stable/institutional-ownership/holder-performance-summary").mock(
+            return_value=httpx.Response(200, json=VANGUARD_PERFORMANCE)
+        )
+        respx.get(f"{BASE}/stable/institutional-ownership/holder-industry-breakdown").mock(
+            return_value=httpx.Response(200, json=VANGUARD_INDUSTRY_BREAKDOWN)
+        )
+        mcp, fmp = _make_server(register_ownership)
+        async with Client(mcp) as c:
+            result = await c.call_tool("fund_holdings", {"cik": "0001166559"})
+        data = result.data
+        assert data["cik"] == "0001166559"
+        assert len(data["top_holdings"]) == 3
+        assert data["top_holdings"][0]["symbol"] == "AAPL"
+        assert "performance" in data
+        assert "industry_allocation" in data
+        await fmp.close()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_unknown_cik(self):
+        respx.get(f"{BASE}/stable/institutional-ownership/extract").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        respx.get(f"{BASE}/stable/institutional-ownership/holder-performance-summary").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        respx.get(f"{BASE}/stable/institutional-ownership/holder-industry-breakdown").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        mcp, fmp = _make_server(register_ownership)
+        async with Client(mcp) as c:
+            result = await c.call_tool("fund_holdings", {"cik": "0000000000"})
+        data = result.data
+        assert "error" in data
+        await fmp.close()
+
+
+class TestOwnershipStructure:
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_full_ownership(self):
+        respx.get(f"{BASE}/stable/shares-float").mock(
+            return_value=httpx.Response(200, json=AAPL_SHARES_FLOAT)
+        )
+        respx.get(f"{BASE}/stable/insider-trading/statistics").mock(
+            return_value=httpx.Response(200, json=AAPL_INSIDER_STATS)
+        )
+        respx.get(f"{BASE}/stable/institutional-ownership/symbol-positions-summary").mock(
+            return_value=httpx.Response(200, json=AAPL_INSTITUTIONAL_SUMMARY)
+        )
+        # Mock FINRA short interest (external API) - match any POST to FINRA_URL
+        respx.post(FINRA_URL).mock(
+            return_value=httpx.Response(200, json=AAPL_SHORT_INTEREST)
+        )
+
+        mcp, fmp = _make_server(register_ownership)
+        async with Client(mcp) as c:
+            result = await c.call_tool("ownership_structure", {"symbol": "AAPL"})
+        data = result.data
+        assert data["symbol"] == "AAPL"
+        assert "shares_breakdown" in data
+        assert "ownership_percentages" in data
+        assert data["shares_breakdown"]["outstanding_shares"] == 15200000000
+        await fmp.close()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_no_float_data(self):
+        respx.get(f"{BASE}/stable/shares-float").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        respx.get(f"{BASE}/stable/insider-trading/statistics").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        respx.get(f"{BASE}/stable/institutional-ownership/symbol-positions-summary").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        respx.post(FINRA_URL).mock(
+            return_value=httpx.Response(204, content=b"")
+        )
+
+        mcp, fmp = _make_server(register_ownership)
+        async with Client(mcp) as c:
+            result = await c.call_tool("ownership_structure", {"symbol": "ZZZZ"})
+        data = result.data
+        assert "error" in data
+        await fmp.close()
+
+
+# --- VALUATION TOOLS ---
+
+class TestValuationHistory:
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_full_history(self):
+        respx.get(f"{BASE}/stable/key-metrics").mock(
+            return_value=httpx.Response(200, json=AAPL_KEY_METRICS_HISTORICAL)
+        )
+        respx.get(f"{BASE}/stable/ratios-ttm").mock(
+            return_value=httpx.Response(200, json=AAPL_RATIOS)
+        )
+        mcp, fmp = _make_server(register_valuation)
+        async with Client(mcp) as c:
+            result = await c.call_tool("valuation_history", {"symbol": "AAPL"})
+        data = result.data
+        assert data["symbol"] == "AAPL"
+        assert "current_ttm" in data
+        assert "historical" in data
+        assert "percentiles" in data
+        assert "pe" in data["percentiles"]
+        await fmp.close()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_no_data(self):
+        respx.get(f"{BASE}/stable/key-metrics").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        respx.get(f"{BASE}/stable/ratios-ttm").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        mcp, fmp = _make_server(register_valuation)
+        async with Client(mcp) as c:
+            result = await c.call_tool("valuation_history", {"symbol": "ZZZZ"})
+        data = result.data
+        assert "error" in data
+        await fmp.close()
+
+
+# --- FINANCIALS TOOLS ---
+
+class TestRatioHistory:
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_full_ratios(self):
+        respx.get(f"{BASE}/stable/financial-ratios").mock(
+            return_value=httpx.Response(200, json=AAPL_FINANCIAL_RATIOS_HISTORICAL)
+        )
+        respx.get(f"{BASE}/stable/key-metrics").mock(
+            return_value=httpx.Response(200, json=AAPL_KEY_METRICS_HISTORICAL)
+        )
+        mcp, fmp = _make_server(register_financials)
+        async with Client(mcp) as c:
+            result = await c.call_tool("ratio_history", {"symbol": "AAPL"})
+        data = result.data
+        assert data["symbol"] == "AAPL"
+        assert "time_series" in data
+        assert "trends" in data
+        assert len(data["time_series"]) == 5
+        await fmp.close()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_no_data(self):
+        respx.get(f"{BASE}/stable/financial-ratios").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        respx.get(f"{BASE}/stable/key-metrics").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        mcp, fmp = _make_server(register_financials)
+        async with Client(mcp) as c:
+            result = await c.call_tool("ratio_history", {"symbol": "ZZZZ"})
+        data = result.data
+        assert "error" in data
+        await fmp.close()
+
+
+# --- MARKET TOOLS ---
+
+class TestIntradayPrices:
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_intraday_data(self):
+        respx.get(f"{BASE}/stable/historical-chart/5min").mock(
+            return_value=httpx.Response(200, json=AAPL_INTRADAY_5M)
+        )
+        mcp, fmp = _make_server(register_market)
+        async with Client(mcp) as c:
+            result = await c.call_tool("intraday_prices", {"symbol": "AAPL", "interval": "5m"})
+        data = result.data
+        assert data["symbol"] == "AAPL"
+        assert data["interval"] == "5m"
+        assert len(data["candles"]) == 3
+        assert "summary" in data
+        assert "vwap" in data["summary"]
+        await fmp.close()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_no_data(self):
+        respx.get(f"{BASE}/stable/historical-chart/5min").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        mcp, fmp = _make_server(register_market)
+        async with Client(mcp) as c:
+            result = await c.call_tool("intraday_prices", {"symbol": "ZZZZ", "interval": "5m"})
+        data = result.data
+        assert "error" in data
+        await fmp.close()
+
+
+class TestHistoricalMarketCap:
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_market_cap_history(self):
+        respx.get(f"{BASE}/stable/historical-market-cap").mock(
+            return_value=httpx.Response(200, json=AAPL_HISTORICAL_MARKET_CAP)
+        )
+        mcp, fmp = _make_server(register_market)
+        async with Client(mcp) as c:
+            result = await c.call_tool("historical_market_cap", {"symbol": "AAPL", "limit": 5})
+        data = result.data
+        assert data["symbol"] == "AAPL"
+        assert len(data["history"]) == 5
+        assert data["current_market_cap"] == 4022528102504
+        assert "change_pct" in data
+        await fmp.close()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_no_data(self):
+        respx.get(f"{BASE}/stable/historical-market-cap").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        mcp, fmp = _make_server(register_market)
+        async with Client(mcp) as c:
+            result = await c.call_tool("historical_market_cap", {"symbol": "ZZZZ"})
+        data = result.data
+        assert "error" in data
+        await fmp.close()
+
+
+class TestETFLookupProfile:
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_profile_mode(self):
+        respx.get(f"{BASE}/stable/etf-info").mock(
+            return_value=httpx.Response(200, json=QQQ_INFO)
+        )
+        respx.get(f"{BASE}/stable/etf-holdings").mock(
+            return_value=httpx.Response(200, json=QQQ_HOLDINGS)
+        )
+        respx.get(f"{BASE}/stable/etf-sector-weighting").mock(
+            return_value=httpx.Response(200, json=QQQ_SECTOR_WEIGHTING)
+        )
+        respx.get(f"{BASE}/stable/etf-country-allocation").mock(
+            return_value=httpx.Response(200, json=QQQ_COUNTRY_ALLOCATION)
+        )
+        mcp, fmp = _make_server(register_market)
+        async with Client(mcp) as c:
+            result = await c.call_tool("etf_lookup", {"symbol": "QQQ", "mode": "profile"})
+        data = result.data
+        assert data["symbol"] == "QQQ"
+        assert data["mode"] == "profile"
+        assert "info" in data
+        assert data["info"]["name"] == "Invesco QQQ Trust"
+        assert "top_holdings" in data
+        assert "sector_weights" in data
+        assert "country_allocation" in data
+        await fmp.close()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_no_etf_data(self):
+        respx.get(f"{BASE}/stable/etf-info").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        respx.get(f"{BASE}/stable/etf-holdings").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        respx.get(f"{BASE}/stable/etf-sector-weighting").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        respx.get(f"{BASE}/stable/etf-country-allocation").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        mcp, fmp = _make_server(register_market)
+        async with Client(mcp) as c:
+            result = await c.call_tool("etf_lookup", {"symbol": "NOTANETF", "mode": "profile"})
+        data = result.data
+        assert "error" in data
+        await fmp.close()
+
+
+# --- MACRO TOOLS ---
+
+class TestIndexPerformance:
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_index_quotes(self):
+        respx.get(f"{BASE}/stable/batch-quote").mock(
+            return_value=httpx.Response(200, json=INDEX_QUOTES)
+        )
+        # Mock historical data for each index
+        for idx in ["^GSPC", "^DJI", "^IXIC", "^RUT"]:
+            respx.get(f"{BASE}/stable/historical-price-eod/full").mock(
+                return_value=httpx.Response(200, json=INDEX_HISTORICAL)
+            )
+        mcp, fmp = _make_server(register_macro)
+        async with Client(mcp) as c:
+            result = await c.call_tool("index_performance", {})
+        data = result.data
+        assert "indices" in data
+        assert data["count"] == 4
+        assert data["indices"][0]["symbol"] == "^GSPC"
+        assert "performance" in data["indices"][0]
+        await fmp.close()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_no_quotes(self):
+        respx.get(f"{BASE}/stable/batch-quote").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        mcp, fmp = _make_server(register_macro)
+        async with Client(mcp) as c:
+            result = await c.call_tool("index_performance", {})
+        data = result.data
+        assert "error" in data
+        await fmp.close()
+
+
+class TestMarketHours:
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_market_hours_data(self):
+        respx.get(f"{BASE}/stable/market-hours").mock(
+            return_value=httpx.Response(200, json=MARKET_HOURS_DATA)
+        )
+        respx.get(f"{BASE}/stable/market-holidays").mock(
+            return_value=httpx.Response(200, json=MARKET_HOLIDAYS)
+        )
+        mcp, fmp = _make_server(register_macro)
+        async with Client(mcp) as c:
+            result = await c.call_tool("market_hours", {"exchange": "NYSE"})
+        data = result.data
+        assert data["exchange"] == "NYSE"
+        assert "is_open" in data
+        assert "regular_hours" in data
+        assert "upcoming_holidays" in data
+        await fmp.close()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_no_data(self):
+        respx.get(f"{BASE}/stable/market-hours").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        respx.get(f"{BASE}/stable/market-holidays").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        mcp, fmp = _make_server(register_macro)
+        async with Client(mcp) as c:
+            result = await c.call_tool("market_hours", {"exchange": "NYSE"})
+        data = result.data
+        assert "_warnings" in data
+        await fmp.close()
+
+
+class TestIndustryPerformance:
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_industry_data(self):
+        respx.get(f"{BASE}/stable/industry-performance-snapshot").mock(
+            side_effect=[
+                httpx.Response(200, json=INDUSTRY_PERFORMANCE_NYSE),
+                httpx.Response(200, json=INDUSTRY_PERFORMANCE_NASDAQ),
+            ]
+        )
+        respx.get(f"{BASE}/stable/industry-pe-snapshot").mock(
+            side_effect=[
+                httpx.Response(200, json=INDUSTRY_PE_NYSE),
+                httpx.Response(200, json=INDUSTRY_PE_NASDAQ),
+            ]
+        )
+        mcp, fmp = _make_server(register_macro)
+        async with Client(mcp) as c:
+            result = await c.call_tool("industry_performance", {})
+        data = result.data
+        assert "industries" in data
+        assert len(data["industries"]) >= 2
+        assert "change_pct" in data["industries"][0]
+        assert "median_pe" in data["industries"][0]
+        await fmp.close()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_no_data(self):
+        respx.get(f"{BASE}/stable/industry-performance-snapshot").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        respx.get(f"{BASE}/stable/industry-pe-snapshot").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        mcp, fmp = _make_server(register_macro)
+        async with Client(mcp) as c:
+            result = await c.call_tool("industry_performance", {})
+        data = result.data
+        assert "error" in data
+        await fmp.close()
+
+
+class TestSplitsCalendar:
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_upcoming_splits(self):
+        respx.get(f"{BASE}/stable/stock-splits-calendar").mock(
+            return_value=httpx.Response(200, json=SPLITS_CALENDAR)
+        )
+        mcp, fmp = _make_server(register_macro)
+        async with Client(mcp) as c:
+            result = await c.call_tool("splits_calendar", {"days_ahead": 30})
+        data = result.data
+        assert data["count"] == 2
+        assert data["splits"][0]["symbol"] == "NVDA"
+        assert data["splits"][0]["label"] == "10:1"
+        await fmp.close()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_no_splits(self):
+        respx.get(f"{BASE}/stable/stock-splits-calendar").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        mcp, fmp = _make_server(register_macro)
+        async with Client(mcp) as c:
+            result = await c.call_tool("splits_calendar", {})
+        data = result.data
+        assert data["count"] == 0
+        await fmp.close()
+
+
+class TestEnhancedIPOCalendar:
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_ipos_with_docs(self):
+        respx.get(f"{BASE}/stable/ipos-calendar").mock(
+            return_value=httpx.Response(200, json=IPO_CALENDAR)
+        )
+        respx.get(f"{BASE}/stable/ipos-prospectus").mock(
+            return_value=httpx.Response(200, json=IPO_PROSPECTUS)
+        )
+        respx.get(f"{BASE}/stable/ipos-disclosure").mock(
+            return_value=httpx.Response(200, json=IPO_DISCLOSURES)
+        )
+        mcp, fmp = _make_server(register_macro)
+        async with Client(mcp) as c:
+            result = await c.call_tool("ipo_calendar", {"days_ahead": 14})
+        data = result.data
+        assert data["count"] == 2
+        # Find the IPO with docs (NEWCO)
+        ipo_with_docs = [ipo for ipo in data["ipos"] if ipo["symbol"] == "NEWCO"][0]
+        assert "prospectus" in ipo_with_docs
+        assert "disclosures" in ipo_with_docs
+        await fmp.close()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_no_ipos(self):
+        respx.get(f"{BASE}/stable/ipos-calendar").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        respx.get(f"{BASE}/stable/ipos-prospectus").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        respx.get(f"{BASE}/stable/ipos-disclosure").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        mcp, fmp = _make_server(register_macro)
+        async with Client(mcp) as c:
+            result = await c.call_tool("ipo_calendar", {})
+        data = result.data
+        assert data["count"] == 0
+        await fmp.close()
