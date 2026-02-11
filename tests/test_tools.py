@@ -307,8 +307,8 @@ class TestInsiderActivity:
     @pytest.mark.asyncio
     @respx.mock
     async def test_full_insider_data(self):
-        respx.get(f"{BASE}/stable/insider-trading").mock(return_value=httpx.Response(200, json=AAPL_INSIDER_TRADES))
-        respx.get(f"{BASE}/stable/insider-trading-statistics").mock(return_value=httpx.Response(200, json=AAPL_INSIDER_STATS))
+        respx.get(f"{BASE}/stable/insider-trading/search").mock(return_value=httpx.Response(200, json=AAPL_INSIDER_TRADES))
+        respx.get(f"{BASE}/stable/insider-trading/statistics").mock(return_value=httpx.Response(200, json=AAPL_INSIDER_STATS))
         respx.get(f"{BASE}/stable/shares-float").mock(return_value=httpx.Response(200, json=AAPL_SHARES_FLOAT))
 
         mcp, fmp = _make_server(register_ownership)
@@ -327,8 +327,8 @@ class TestInsiderActivity:
     @pytest.mark.asyncio
     @respx.mock
     async def test_partial_data(self):
-        respx.get(f"{BASE}/stable/insider-trading").mock(return_value=httpx.Response(200, json=AAPL_INSIDER_TRADES))
-        respx.get(f"{BASE}/stable/insider-trading-statistics").mock(return_value=httpx.Response(500, text="error"))
+        respx.get(f"{BASE}/stable/insider-trading/search").mock(return_value=httpx.Response(200, json=AAPL_INSIDER_TRADES))
+        respx.get(f"{BASE}/stable/insider-trading/statistics").mock(return_value=httpx.Response(500, text="error"))
         respx.get(f"{BASE}/stable/shares-float").mock(return_value=httpx.Response(500, text="error"))
 
         mcp, fmp = _make_server(register_ownership)
@@ -344,8 +344,8 @@ class TestInsiderActivity:
     @pytest.mark.asyncio
     @respx.mock
     async def test_unknown_symbol(self):
-        respx.get(f"{BASE}/stable/insider-trading").mock(return_value=httpx.Response(200, json=[]))
-        respx.get(f"{BASE}/stable/insider-trading-statistics").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/insider-trading/search").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/insider-trading/statistics").mock(return_value=httpx.Response(200, json=[]))
         respx.get(f"{BASE}/stable/shares-float").mock(return_value=httpx.Response(200, json=[]))
 
         mcp, fmp = _make_server(register_ownership)
@@ -361,8 +361,8 @@ class TestInstitutionalOwnership:
     @pytest.mark.asyncio
     @respx.mock
     async def test_full_institutional(self):
-        respx.get(f"{BASE}/stable/institutional-ownership-positions-summary").mock(return_value=httpx.Response(200, json=AAPL_INSTITUTIONAL_SUMMARY))
-        respx.get(f"{BASE}/stable/institutional-ownership").mock(return_value=httpx.Response(200, json=AAPL_INSTITUTIONAL_HOLDERS))
+        respx.get(f"{BASE}/stable/institutional-ownership/symbol-positions-summary").mock(return_value=httpx.Response(200, json=AAPL_INSTITUTIONAL_SUMMARY))
+        respx.get(f"{BASE}/stable/institutional-ownership/extract-analytics/holder").mock(return_value=httpx.Response(200, json=AAPL_INSTITUTIONAL_HOLDERS))
         respx.get(f"{BASE}/stable/shares-float").mock(return_value=httpx.Response(200, json=AAPL_SHARES_FLOAT))
 
         mcp, fmp = _make_server(register_ownership)
@@ -372,8 +372,8 @@ class TestInstitutionalOwnership:
         data = result.data
         assert data["symbol"] == "AAPL"
         assert len(data["top_holders"]) == 5
-        assert data["top_holders"][0]["holder"] == "Vanguard Group"
-        assert data["position_changes"]["increased"] == 1200
+        assert data["top_holders"][0]["holder"] == "VANGUARD GROUP INC"
+        assert data["position_changes"]["investors_holding"] == 3557
         assert data["ownership_summary"]["institutional_pct_of_float"] is not None
         assert "_warnings" not in data
         await fmp.close()
@@ -381,8 +381,8 @@ class TestInstitutionalOwnership:
     @pytest.mark.asyncio
     @respx.mock
     async def test_unknown_symbol(self):
-        respx.get(f"{BASE}/stable/institutional-ownership-positions-summary").mock(return_value=httpx.Response(200, json=[]))
-        respx.get(f"{BASE}/stable/institutional-ownership").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/institutional-ownership/symbol-positions-summary").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/institutional-ownership/extract-analytics/holder").mock(return_value=httpx.Response(200, json=[]))
         respx.get(f"{BASE}/stable/shares-float").mock(return_value=httpx.Response(200, json=[]))
 
         mcp, fmp = _make_server(register_ownership)
@@ -398,8 +398,8 @@ class TestStockNews:
     @pytest.mark.asyncio
     @respx.mock
     async def test_full_news(self):
-        respx.get(f"{BASE}/stable/stock-news").mock(return_value=httpx.Response(200, json=AAPL_NEWS))
-        respx.get(f"{BASE}/stable/press-releases").mock(return_value=httpx.Response(200, json=AAPL_PRESS_RELEASES))
+        respx.get(f"{BASE}/stable/news/stock").mock(return_value=httpx.Response(200, json=AAPL_NEWS))
+        respx.get(f"{BASE}/stable/news/press-releases").mock(return_value=httpx.Response(200, json=AAPL_PRESS_RELEASES))
 
         mcp, fmp = _make_server(register_news)
         async with Client(mcp) as c:
@@ -420,8 +420,8 @@ class TestStockNews:
     @pytest.mark.asyncio
     @respx.mock
     async def test_news_only(self):
-        respx.get(f"{BASE}/stable/stock-news").mock(return_value=httpx.Response(200, json=AAPL_NEWS))
-        respx.get(f"{BASE}/stable/press-releases").mock(return_value=httpx.Response(500, text="error"))
+        respx.get(f"{BASE}/stable/news/stock").mock(return_value=httpx.Response(200, json=AAPL_NEWS))
+        respx.get(f"{BASE}/stable/news/press-releases").mock(return_value=httpx.Response(500, text="error"))
 
         mcp, fmp = _make_server(register_news)
         async with Client(mcp) as c:
@@ -435,8 +435,8 @@ class TestStockNews:
     @pytest.mark.asyncio
     @respx.mock
     async def test_unknown_symbol(self):
-        respx.get(f"{BASE}/stable/stock-news").mock(return_value=httpx.Response(200, json=[]))
-        respx.get(f"{BASE}/stable/press-releases").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/news/stock").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/news/press-releases").mock(return_value=httpx.Response(200, json=[]))
 
         mcp, fmp = _make_server(register_news)
         async with Client(mcp) as c:
@@ -585,8 +585,8 @@ class TestEarningsTranscript:
 
         data = result.data
         assert data["symbol"] == "AAPL"
-        assert data["year"] == 2025
-        assert data["quarter"] == 4
+        assert data["year"] == 2026
+        assert data["quarter"] == 1
         assert "Tim Cook" in data["content"]
         assert data["length_chars"] > 0
         await fmp.close()
@@ -684,7 +684,7 @@ class TestPeerComparison:
     @pytest.mark.asyncio
     @respx.mock
     async def test_full_peer_comparison(self):
-        respx.get(f"{BASE}/stable/company-peer").mock(return_value=httpx.Response(200, json=AAPL_PEERS))
+        respx.get(f"{BASE}/stable/stock-peers").mock(return_value=httpx.Response(200, json=AAPL_PEERS))
         # Target (AAPL) ratios & metrics
         respx.get(f"{BASE}/stable/ratios-ttm", params__contains={"symbol": "AAPL"}).mock(return_value=httpx.Response(200, json=AAPL_RATIOS))
         respx.get(f"{BASE}/stable/key-metrics-ttm", params__contains={"symbol": "AAPL"}).mock(return_value=httpx.Response(200, json=AAPL_KEY_METRICS))
@@ -702,7 +702,7 @@ class TestPeerComparison:
 
         data = result.data
         assert data["symbol"] == "AAPL"
-        assert data["peers"] == ["MSFT", "GOOGL", "AMZN"]
+        assert set(data["peers"]) == {"MSFT", "GOOGL", "AMZN"}
         assert data["peer_count"] == 3
         # Check comparisons structure
         pe_comp = data["comparisons"]["pe_ttm"]
@@ -716,7 +716,7 @@ class TestPeerComparison:
     @pytest.mark.asyncio
     @respx.mock
     async def test_no_peers(self):
-        respx.get(f"{BASE}/stable/company-peer").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/stock-peers").mock(return_value=httpx.Response(200, json=[]))
 
         mcp, fmp = _make_server(register_valuation)
         async with Client(mcp) as c:

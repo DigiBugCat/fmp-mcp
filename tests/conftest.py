@@ -195,10 +195,13 @@ AAPL_INSIDER_TRADES = [
 
 AAPL_INSIDER_STATS = [{
     "symbol": "AAPL",
-    "totalBought": 23000,
-    "totalSold": 70000,
-    "buyCount": 3,
-    "sellCount": 2,
+    "cik": "0000320193",
+    "year": 2026,
+    "quarter": 1,
+    "acquiredTransactions": 3,
+    "disposedTransactions": 2,
+    "totalAcquired": 23000,
+    "totalDisposed": 70000,
 }]
 
 AAPL_SHARES_FLOAT = [{
@@ -211,18 +214,21 @@ AAPL_SHARES_FLOAT = [{
 
 AAPL_INSTITUTIONAL_SUMMARY = [{
     "symbol": "AAPL",
-    "totalIncreasedPositions": 1200,
-    "totalDecreasedPositions": 800,
-    "totalNewPositions": 150,
-    "totalInstitutionalShares": 10500000000,
+    "cik": "0000320193",
+    "date": "2025-12-31",
+    "investorsHolding": 3557,
+    "lastInvestorsHolding": 5826,
+    "investorsHoldingChange": -2269,
+    "numberOf13Fshares": 10500000000,
+    "ownershipPercent": 16.59,
 }]
 
 AAPL_INSTITUTIONAL_HOLDERS = [
-    {"investorName": "Vanguard Group", "shares": 1300000000, "changeInShares": 50000000, "dateReported": "2025-12-31"},
-    {"investorName": "BlackRock Inc.", "shares": 1050000000, "changeInShares": -20000000, "dateReported": "2025-12-31"},
-    {"investorName": "Berkshire Hathaway", "shares": 890000000, "changeInShares": 0, "dateReported": "2025-12-31"},
-    {"investorName": "State Street Corp", "shares": 650000000, "changeInShares": 30000000, "dateReported": "2025-12-31"},
-    {"investorName": "FMR LLC", "shares": 420000000, "changeInShares": -15000000, "dateReported": "2025-12-31"},
+    {"investorName": "VANGUARD GROUP INC", "sharesNumber": 1300000000, "changeInSharesNumber": 50000000, "date": "2025-12-31"},
+    {"investorName": "BLACKROCK INC.", "sharesNumber": 1050000000, "changeInSharesNumber": -20000000, "date": "2025-12-31"},
+    {"investorName": "BERKSHIRE HATHAWAY INC", "sharesNumber": 890000000, "changeInSharesNumber": 0, "date": "2025-12-31"},
+    {"investorName": "STATE STREET CORP", "sharesNumber": 650000000, "changeInSharesNumber": 30000000, "date": "2025-12-31"},
+    {"investorName": "FMR LLC", "sharesNumber": 420000000, "changeInSharesNumber": -15000000, "date": "2025-12-31"},
 ]
 
 # --- Stock News ---
@@ -291,17 +297,17 @@ MOST_ACTIVES = [
 # --- Earnings Transcript ---
 
 AAPL_TRANSCRIPT_DATES = [
-    {"symbol": "AAPL", "quarter": 4, "year": 2025},
-    {"symbol": "AAPL", "quarter": 3, "year": 2025},
-    {"symbol": "AAPL", "quarter": 2, "year": 2025},
+    {"quarter": 1, "fiscalYear": 2026, "date": "2026-01-29"},
+    {"quarter": 4, "fiscalYear": 2025, "date": "2025-10-30"},
+    {"quarter": 3, "fiscalYear": 2025, "date": "2025-07-31"},
 ]
 
 AAPL_TRANSCRIPT = [{
     "symbol": "AAPL",
-    "quarter": 4,
-    "year": 2025,
-    "date": "2025-10-30",
-    "content": "Good afternoon, everyone. Thank you for joining Apple's fiscal year 2025 fourth quarter earnings conference call. I'm Tim Cook, CEO of Apple. We had a great quarter with record revenue of $94.9 billion...",
+    "quarter": 1,
+    "year": 2026,
+    "date": "2026-01-29",
+    "content": "Good afternoon, everyone. Thank you for joining Apple's fiscal year 2026 first quarter earnings conference call. I'm Tim Cook, CEO of Apple. We had a great quarter with record revenue...",
 }]
 
 # --- Revenue Segments ---
@@ -318,10 +324,11 @@ AAPL_GEO_SEGMENTS = [
 
 # --- Peer Comparison ---
 
-AAPL_PEERS = [{
-    "symbol": "AAPL",
-    "peersList": ["MSFT", "GOOGL", "AMZN"],
-}]
+AAPL_PEERS = [
+    {"symbol": "MSFT", "companyName": "Microsoft Corporation", "price": 413.27, "mktCap": 3068790110100},
+    {"symbol": "GOOGL", "companyName": "Alphabet Inc.", "price": 318.58, "mktCap": 3853862159966},
+    {"symbol": "AMZN", "companyName": "Amazon.com, Inc.", "price": 232.84, "mktCap": 2050000000000},
+]
 
 AAPL_KEY_METRICS = [{
     "symbol": "AAPL",

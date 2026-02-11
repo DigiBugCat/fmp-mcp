@@ -31,13 +31,13 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
 
         news_data, press_data = await asyncio.gather(
             client.get_safe(
-                "/stable/stock-news",
+                "/stable/news/stock",
                 params={"symbol": symbol, "limit": limit},
                 cache_ttl=client.TTL_REALTIME,
                 default=[],
             ),
             client.get_safe(
-                "/stable/press-releases",
+                "/stable/news/press-releases",
                 params={"symbol": symbol, "limit": 10},
                 cache_ttl=client.TTL_HOURLY,
                 default=[],
@@ -78,8 +78,8 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             seen_titles.add(title_key)
             items.append({
                 "title": title,
-                "date": p.get("date"),
-                "source": "Press Release",
+                "date": p.get("publishedDate") or p.get("date"),
+                "source": p.get("publisher") or "Press Release",
                 "url": p.get("url"),
                 "snippet": (p.get("text") or "")[:300],
                 "type": "press_release",

@@ -140,8 +140,9 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         symbol = symbol.upper().strip()
 
         # Step 1: Get peer list
+        # /stable/stock-peers returns a flat list of peer companies
         peers_data = await client.get_safe(
-            "/stable/company-peer",
+            "/stable/stock-peers",
             params={"symbol": symbol},
             cache_ttl=client.TTL_DAILY,
             default=[],
@@ -151,10 +152,8 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         if not peers_list:
             return {"error": f"No peer data found for '{symbol}'"}
 
-        # Extract peer symbols from the response
-        # FMP returns [{"symbol": "AAPL", "peersList": ["MSFT","GOOGL",...]}]
-        peer_entry = _safe_first(peers_list)
-        peer_symbols = peer_entry.get("peersList", [])
+        # Extract peer symbols from the flat list
+        peer_symbols = [p.get("symbol") for p in peers_list if p.get("symbol")]
         if not peer_symbols:
             return {"error": f"No peers identified for '{symbol}'"}
 

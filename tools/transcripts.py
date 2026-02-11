@@ -56,14 +56,14 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             if not dates_list:
                 return {"error": f"No earnings transcripts available for '{symbol}'"}
 
-            # dates_list contains objects with year/quarter; pick the latest
+            # dates_list contains objects with fiscalYear/quarter; pick the latest
             # Sort by year desc, quarter desc to get most recent
             dates_list.sort(
-                key=lambda d: (d.get("year", 0), d.get("quarter", 0)),
+                key=lambda d: (d.get("fiscalYear", 0) or d.get("year", 0), d.get("quarter", 0)),
                 reverse=True,
             )
             latest = dates_list[0]
-            target_year = latest.get("year")
+            target_year = latest.get("fiscalYear") or latest.get("year")
             target_quarter = latest.get("quarter")
 
             if target_year is None or target_quarter is None:

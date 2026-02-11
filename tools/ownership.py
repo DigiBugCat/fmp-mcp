@@ -17,6 +17,21 @@ def _safe_first(data: list | None) -> dict:
     return {}
 
 
+def _latest_quarter() -> tuple[int, int]:
+    """Return the most recently completed quarter's (year, quarter)."""
+    today = date.today()
+    month = today.month
+    year = today.year
+    if month <= 3:
+        return year - 1, 4
+    elif month <= 6:
+        return year, 1
+    elif month <= 9:
+        return year, 2
+    else:
+        return year, 3
+
+
 def register(mcp: FastMCP, client: FMPClient) -> None:
     @mcp.tool(
         annotations={
@@ -38,13 +53,13 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
 
         trades_data, stats_data, float_data = await asyncio.gather(
             client.get_safe(
-                "/stable/insider-trading",
+                "/stable/insider-trading/search",
                 params={**sym_params, "limit": 100},
                 cache_ttl=client.TTL_HOURLY,
                 default=[],
             ),
             client.get_safe(
-                "/stable/insider-trading-statistics",
+                "/stable/insider-trading/statistics",
                 params=sym_params,
                 cache_ttl=client.TTL_HOURLY,
                 default=[],
@@ -117,13 +132,18 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         # Insider ownership % of float
         shares_float = float_info.get("floatShares")
         insider_ownership_pct = None
-        if stats.get("totalBought") and shares_float and shares_float > 0:
-            # Use outstanding shares vs float for context
+        if shares_float and shares_float > 0:
             outstanding = float_info.get("outstandingShares")
             if outstanding and shares_float:
                 insider_ownership_pct = round(
                     (1 - shares_float / outstanding) * 100, 2
                 ) if outstanding > shares_float else None
+
+        # Stats use different field names in /stable/ API
+        total_acquired = stats.get("totalAcquired") or stats.get("totalBought")
+        total_disposed = stats.get("totalDisposed") or stats.get("totalSold")
+        acquired_count = stats.get("acquiredTransactions") or stats.get("buyCount")
+        disposed_count = stats.get("disposedTransactions") or stats.get("sellCount")
 
         result = {
             "symbol": symbol,
@@ -140,10 +160,10 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             },
             "cluster_buying": cluster_buying,
             "statistics": {
-                "total_bought": stats.get("totalBought"),
-                "total_sold": stats.get("totalSold"),
-                "buy_count": stats.get("buyCount"),
-                "sell_count": stats.get("sellCount"),
+                "total_bought": total_acquired,
+                "total_sold": total_disposed,
+                "buy_count": acquired_count,
+                "sell_count": disposed_count,
             },
             "notable_trades": notable_trades[:10],
             "float_context": {
@@ -182,17 +202,18 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         """
         symbol = symbol.upper().strip()
         sym_params = {"symbol": symbol}
+        year, quarter = _latest_quarter()
 
         summary_data, holders_data, float_data = await asyncio.gather(
             client.get_safe(
-                "/stable/institutional-ownership-positions-summary",
-                params=sym_params,
+                "/stable/institutional-ownership/symbol-positions-summary",
+                params={**sym_params, "year": year, "quarter": quarter},
                 cache_ttl=client.TTL_6H,
                 default=[],
             ),
             client.get_safe(
-                "/stable/institutional-ownership",
-                params={**sym_params, "limit": 20},
+                "/stable/institutional-ownership/extract-analytics/holder",
+                params={**sym_params, "year": year, "quarter": quarter, "limit": 20},
                 cache_ttl=client.TTL_6H,
                 default=[],
             ),
@@ -215,28 +236,24 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         outstanding = float_info.get("outstandingShares") or 0
         top_holders = []
         for h in holders_list[:10]:
-            shares = h.get("shares") or 0
+            shares = h.get("sharesNumber") or h.get("shares") or 0
             pct = round(shares / outstanding * 100, 2) if outstanding > 0 else None
-            change = h.get("changeInShares") or 0
+            change = h.get("changeInSharesNumber") or h.get("changeInShares") or 0
             top_holders.append({
-                "holder": h.get("investorName") or h.get("holder"),
+                "holder": h.get("investorName") or h.get("name") or h.get("holder"),
                 "shares": shares,
                 "ownership_pct": pct,
                 "change_in_shares": change,
                 "change_type": "increased" if change > 0 else "decreased" if change < 0 else "unchanged",
-                "date_reported": h.get("dateReported") or h.get("lastUpdated"),
+                "date_reported": h.get("date") or h.get("dateReported"),
             })
 
         # Aggregate position changes from summary
-        increases = 0
-        decreases = 0
-        new_positions = 0
-        total_institutional_shares = 0
-        for s in summary_list:
-            increases += s.get("totalIncreasedPositions", 0)
-            decreases += s.get("totalDecreasedPositions", 0)
-            new_positions += s.get("totalNewPositions", 0)
-            total_institutional_shares += s.get("totalInstitutionalShares", 0)
+        summary = _safe_first(summary_list)
+        investors_holding = summary.get("investorsHolding", 0)
+        investors_change = summary.get("investorsHoldingChange", 0)
+        total_institutional_shares = summary.get("numberOf13Fshares", 0)
+        ownership_pct = summary.get("ownershipPercent", 0)
 
         # Institutional ownership as % of float
         float_shares = float_info.get("floatShares") or 0
@@ -248,11 +265,12 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
 
         result = {
             "symbol": symbol,
+            "reporting_period": f"Q{quarter} {year}",
             "top_holders": top_holders,
             "position_changes": {
-                "increased": increases,
-                "decreased": decreases,
-                "new_positions": new_positions,
+                "investors_holding": investors_holding,
+                "investors_change": investors_change,
+                "ownership_pct": ownership_pct,
             },
             "ownership_summary": {
                 "total_institutional_shares": total_institutional_shares,

@@ -374,5 +374,6 @@ class TestLiveDividendsInfo:
             ex = data["upcoming_ex_date"]
             print(f"    Next ex-date: {ex['ex_date']}, ${ex['dividend']}")
         if data.get("stock_splits"):
-            print(f"    Splits: {', '.join(f\"{s['date']}: {s['label']}\" for s in data['stock_splits'])}")
+            splits_str = ", ".join(f"{s['date']}: {s['label']}" for s in data["stock_splits"])
+            print(f"    Splits: {splits_str}")
         await client.close()
