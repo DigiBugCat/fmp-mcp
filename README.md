@@ -38,6 +38,9 @@ High-level tools that orchestrate multiple API calls into single research-ready 
 | `revenue_segments` | Revenue breakdown by product and geography |
 | `peer_comparison` | Peer group valuation and performance comparison |
 | `dividends_info` | Dividend history, yield, growth, and payout analysis |
+| `earnings_calendar` | Upcoming earnings dates with optional symbol filter |
+| `etf_lookup` | ETF holdings or stock ETF exposure (dual-mode with auto-detect) |
+| `estimate_revisions` | Analyst sentiment momentum: forward estimates, grade changes, beat rate |
 
 ## Setup
 
@@ -107,8 +110,8 @@ fmp_client.py      # Async HTTP client with TTL caching and graceful error handl
 tools/
   overview.py      # company_overview, stock_search
   financials.py    # financial_statements, revenue_segments
-  valuation.py     # analyst_consensus, peer_comparison
-  market.py        # price_history, earnings_info, dividends_info
+  valuation.py     # analyst_consensus, peer_comparison, estimate_revisions
+  market.py        # price_history, earnings_info, dividends_info, earnings_calendar, etf_lookup
   ownership.py     # insider_activity, institutional_ownership
   news.py          # stock_news
   macro.py         # treasury_rates, economic_calendar, market_overview
