@@ -748,6 +748,44 @@ class TestEarningsTranscript:
 
     @pytest.mark.asyncio
     @respx.mock
+    async def test_latest_expected_met(self):
+        respx.get(f"{BASE}/stable/earning-call-transcript-dates").mock(return_value=httpx.Response(200, json=AAPL_TRANSCRIPT_DATES))
+        respx.get(f"{BASE}/stable/earning-call-transcript").mock(return_value=httpx.Response(200, json=AAPL_TRANSCRIPT))
+        respx.get(f"{BASE}/stable/earnings").mock(return_value=httpx.Response(200, json=AAPL_EARNINGS))
+
+        mcp, fmp = _make_server(register_transcripts)
+        async with Client(mcp) as c:
+            result = await c.call_tool("earnings_transcript", {"symbol": "AAPL", "latest_expected": True})
+
+        data = result.data
+        assert data["latest_expected"] is True
+        assert data["latest_expected_met"] is True
+        assert data["latest_completed_earnings_date"] == "2026-01-29"
+        await fmp.close()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_latest_expected_not_met_warns(self):
+        lagged_dates = [{"quarter": 4, "fiscalYear": 2025, "date": "2025-10-30"}]
+        lagged_transcript = [{**AAPL_TRANSCRIPT[0], "year": 2025, "quarter": 4, "date": "2025-10-30"}]
+
+        respx.get(f"{BASE}/stable/earning-call-transcript-dates").mock(return_value=httpx.Response(200, json=lagged_dates))
+        respx.get(f"{BASE}/stable/earning-call-transcript").mock(return_value=httpx.Response(200, json=lagged_transcript))
+        respx.get(f"{BASE}/stable/earnings").mock(return_value=httpx.Response(200, json=AAPL_EARNINGS))
+
+        mcp, fmp = _make_server(register_transcripts)
+        async with Client(mcp) as c:
+            result = await c.call_tool("earnings_transcript", {"symbol": "AAPL", "latest_expected": True})
+
+        data = result.data
+        assert data["latest_expected"] is True
+        assert data["latest_expected_met"] is False
+        assert data["latest_completed_earnings_date"] == "2026-01-29"
+        assert any("newer than available transcript" in w for w in data.get("_warnings", []))
+        await fmp.close()
+
+    @pytest.mark.asyncio
+    @respx.mock
     async def test_no_transcripts(self):
         respx.get(f"{BASE}/stable/earning-call-transcript-dates").mock(return_value=httpx.Response(200, json=[]))
 

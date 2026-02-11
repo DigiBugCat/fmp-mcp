@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import date
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -24,6 +25,7 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         symbol: str,
         year: int | None = None,
         quarter: int | None = None,
+        latest_expected: bool = False,
         max_chars: int = 100000,
         offset: int = 0,
     ) -> dict:
@@ -39,10 +41,15 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
                 available quarter in that fiscal year.
             quarter: Quarter number 1-4. If year omitted, returns latest
                 available fiscal year for that quarter.
+            latest_expected: If true (and no year/quarter filters are passed),
+                checks whether a newer completed earnings report exists than
+                the latest available transcript and flags potential posting lag.
             max_chars: Max characters to return per call (default 100000)
             offset: Character offset to start from (default 0). Use next_offset from previous response to continue.
         """
         symbol = symbol.upper().strip()
+        requested_year = year
+        requested_quarter = quarter
 
         if quarter is not None and quarter not in (1, 2, 3, 4):
             return {"error": f"Invalid quarter '{quarter}'. Must be 1, 2, 3, or 4."}
@@ -168,5 +175,41 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
                 f"Transcript truncated ({len(chunk)}/{total_chars} chars shown). "
                 f"Call again with offset={end} to continue reading."
             ]
+
+        if latest_expected and requested_year is None and requested_quarter is None:
+            latest_completed_earnings_date = None
+            earnings_data = await client.get_safe(
+                "/stable/earnings",
+                params={"symbol": symbol},
+                cache_ttl=client.TTL_REALTIME,
+                default=[],
+            )
+            earnings_list = earnings_data if isinstance(earnings_data, list) else []
+            today_str = date.today().isoformat()
+            completed = [
+                e for e in earnings_list
+                if e.get("epsActual") is not None and (e.get("date") or "") <= today_str
+            ]
+            if completed:
+                completed.sort(key=lambda e: e.get("date", ""), reverse=True)
+                latest_completed_earnings_date = completed[0].get("date")
+
+            transcript_date = result.get("date")
+            met = True
+            if latest_completed_earnings_date and transcript_date:
+                met = latest_completed_earnings_date <= transcript_date
+
+            result["latest_expected"] = True
+            result["latest_expected_met"] = met
+            if latest_completed_earnings_date:
+                result["latest_completed_earnings_date"] = latest_completed_earnings_date
+
+            if not met:
+                warnings = result.get("_warnings", [])
+                warnings.append(
+                    "Latest completed earnings appears newer than available transcript; "
+                    "the new transcript may not be posted yet."
+                )
+                result["_warnings"] = warnings
 
         return result
