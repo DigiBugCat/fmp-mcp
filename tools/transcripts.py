@@ -24,7 +24,7 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         symbol: str,
         year: int | None = None,
         quarter: int | None = None,
-        max_chars: int = 10000,
+        max_chars: int = 40000,
         offset: int = 0,
     ) -> dict:
         """Get an earnings call transcript for a company.
@@ -37,7 +37,7 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             symbol: Stock ticker symbol (e.g. "AAPL")
             year: Fiscal year (e.g. 2025). Omit for latest available.
             quarter: Quarter number 1-4. Omit for latest available.
-            max_chars: Max characters to return per call (default 10000)
+            max_chars: Max characters to return per call (default 40000)
             offset: Character offset to start from (default 0). Use next_offset from previous response to continue.
         """
         symbol = symbol.upper().strip()
