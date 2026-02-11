@@ -368,7 +368,7 @@ class TestLiveDividendsInfo:
         assert data["symbol"] == "AAPL"
         print(f"\n  AAPL dividends:")
         print(f"    Current yield: {data.get('dividend_yield_pct')}%")
-        print(f"    Annual dividend: ${data.get('current_annual_dividend')}")
+        print(f"    Trailing annual dividend: ${data.get('trailing_annual_dividend')}")
         print(f"    CAGR 3Y: {data.get('dividend_cagr_3y')}%, 5Y: {data.get('dividend_cagr_5y')}%")
         if data.get("upcoming_ex_date"):
             ex = data["upcoming_ex_date"]

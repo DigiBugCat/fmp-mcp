@@ -732,7 +732,7 @@ class TestDividendsInfo:
     @respx.mock
     async def test_full_dividends(self):
         respx.get(f"{BASE}/stable/dividends").mock(return_value=httpx.Response(200, json=AAPL_DIVIDENDS))
-        respx.get(f"{BASE}/stable/stock-splits").mock(return_value=httpx.Response(200, json=AAPL_STOCK_SPLITS))
+        respx.get(f"{BASE}/stable/splits").mock(return_value=httpx.Response(200, json=AAPL_STOCK_SPLITS))
         respx.get(f"{BASE}/stable/quote").mock(return_value=httpx.Response(200, json=AAPL_QUOTE))
 
         mcp, fmp = _make_server(register_market)
@@ -742,9 +742,11 @@ class TestDividendsInfo:
         data = result.data
         assert data["symbol"] == "AAPL"
         assert data["current_price"] == 273.68
-        assert data["current_annual_dividend"] is not None
+        assert data["trailing_annual_dividend"] is not None
+        # Trailing 4 quarters: 0.26 + 0.26 + 0.26 + 0.25 = 1.03
+        assert data["trailing_annual_dividend"] == 1.03
         assert data["dividend_yield_pct"] is not None
-        assert data["dividend_yield_pct"] > 0
+        assert data["dividend_yield_pct"] > 0.3  # ~0.38% for AAPL
         assert len(data["recent_dividends"]) == 8
         assert len(data["stock_splits"]) == 2
         assert data["stock_splits"][0]["label"] == "4:1"
@@ -755,7 +757,7 @@ class TestDividendsInfo:
     @respx.mock
     async def test_no_dividends(self):
         respx.get(f"{BASE}/stable/dividends").mock(return_value=httpx.Response(200, json=[]))
-        respx.get(f"{BASE}/stable/stock-splits").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/splits").mock(return_value=httpx.Response(200, json=[]))
         respx.get(f"{BASE}/stable/quote").mock(return_value=httpx.Response(200, json=AAPL_QUOTE))
 
         mcp, fmp = _make_server(register_market)
@@ -770,7 +772,7 @@ class TestDividendsInfo:
     @respx.mock
     async def test_dividends_partial(self):
         respx.get(f"{BASE}/stable/dividends").mock(return_value=httpx.Response(200, json=AAPL_DIVIDENDS))
-        respx.get(f"{BASE}/stable/stock-splits").mock(return_value=httpx.Response(500, text="error"))
+        respx.get(f"{BASE}/stable/splits").mock(return_value=httpx.Response(500, text="error"))
         respx.get(f"{BASE}/stable/quote").mock(return_value=httpx.Response(500, text="error"))
 
         mcp, fmp = _make_server(register_market)

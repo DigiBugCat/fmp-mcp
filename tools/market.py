@@ -276,7 +276,7 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
                 default=[],
             ),
             client.get_safe(
-                "/stable/stock-splits",
+                "/stable/splits",
                 params=sym_params,
                 cache_ttl=client.TTL_DAILY,
                 default=[],
@@ -301,29 +301,49 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
 
         current_price = quote.get("price")
 
-        # Annual dividend from most recent 4 quarters
-        annual_dividends = {}
-        for d in div_list:
-            d_date = d.get("date") or ""
-            year = d_date[:4] if d_date else None
-            if year:
-                annual_dividends.setdefault(year, 0)
-                annual_dividends[year] += d.get("dividend") or 0
+        # Trailing 12-month dividend (sum of most recent 4 payments)
+        trailing_annual = None
+        if len(div_list) >= 4:
+            trailing_annual = round(sum(
+                (d.get("dividend") or 0) for d in div_list[:4]
+            ), 4)
+        elif div_list:
+            # If fewer than 4 payments, annualize based on frequency
+            freq = div_list[0].get("frequency", "").lower()
+            per_payment = div_list[0].get("dividend") or 0
+            if "quarter" in freq:
+                trailing_annual = round(per_payment * 4, 4)
+            elif "semi" in freq or "half" in freq:
+                trailing_annual = round(per_payment * 2, 4)
+            elif "month" in freq:
+                trailing_annual = round(per_payment * 12, 4)
+            else:
+                trailing_annual = round(per_payment * 4, 4)  # assume quarterly
 
-        years_sorted = sorted(annual_dividends.keys(), reverse=True)
-
-        # Current yield
-        current_annual = annual_dividends.get(years_sorted[0]) if years_sorted else None
+        # Current yield from trailing annual
         current_yield = None
-        if current_annual and current_price and current_price > 0:
-            current_yield = round(current_annual / current_price * 100, 2)
+        if trailing_annual and current_price and current_price > 0:
+            current_yield = round(trailing_annual / current_price * 100, 2)
 
-        # Dividend CAGR
+        # Filter dividends to post-split only for CAGR (FMP doesn't adjust for splits)
+        split_list.sort(key=lambda s: s.get("date") or "", reverse=True)
+        latest_split_date = split_list[0].get("date", "") if split_list else ""
+        cagr_divs = [d for d in div_list if (d.get("date") or "") > latest_split_date] if latest_split_date else div_list
+
+        # Build full-year totals using rolling 4-quarter windows for CAGR
+        yearly_totals = []
+        for i in range(0, len(cagr_divs) - 3, 4):
+            chunk = cagr_divs[i:i + 4]
+            if len(chunk) == 4:
+                total = round(sum((d.get("dividend") or 0) for d in chunk), 4)
+                yearly_totals.append(total)
+
+        # Dividend CAGR from rolling annual totals
         def _div_cagr(n_years: int) -> float | None:
-            if len(years_sorted) < n_years + 1:
+            if len(yearly_totals) < n_years + 1:
                 return None
-            end_val = annual_dividends.get(years_sorted[0], 0)
-            start_val = annual_dividends.get(years_sorted[n_years], 0)
+            end_val = yearly_totals[0]
+            start_val = yearly_totals[n_years]
             if start_val <= 0 or end_val <= 0:
                 return None
             try:
@@ -331,12 +351,14 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             except (ZeroDivisionError, ValueError, OverflowError):
                 return None
 
-        # Upcoming ex-date
+        # Upcoming ex-date (future or very recent)
         today_str = date.today().isoformat()
         upcoming_ex_date = None
         for d in div_list:
+            pay_date = d.get("paymentDate") or ""
             ex_date = d.get("date") or ""
-            if ex_date >= today_str:
+            # Show if payment hasn't happened yet or ex-date is within a week
+            if pay_date >= today_str or ex_date >= today_str:
                 upcoming_ex_date = {
                     "ex_date": ex_date,
                     "dividend": d.get("dividend"),
@@ -357,17 +379,20 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         # Stock splits
         splits = []
         for s in split_list:
+            num = s.get("numerator")
+            den = s.get("denominator")
+            label = f"{num}:{den}" if num and den else None
             splits.append({
                 "date": s.get("date"),
-                "numerator": s.get("numerator"),
-                "denominator": s.get("denominator"),
-                "label": s.get("label"),
+                "numerator": num,
+                "denominator": den,
+                "label": label,
             })
 
         result = {
             "symbol": symbol,
             "current_price": current_price,
-            "current_annual_dividend": current_annual,
+            "trailing_annual_dividend": trailing_annual,
             "dividend_yield_pct": current_yield,
             "dividend_cagr_3y": _div_cagr(3),
             "dividend_cagr_5y": _div_cagr(5),
