@@ -704,6 +704,50 @@ class TestEarningsTranscript:
 
     @pytest.mark.asyncio
     @respx.mock
+    async def test_latest_for_quarter_when_year_omitted(self):
+        respx.get(f"{BASE}/stable/earning-call-transcript-dates").mock(return_value=httpx.Response(200, json=AAPL_TRANSCRIPT_DATES))
+        respx.get(f"{BASE}/stable/earning-call-transcript").mock(return_value=httpx.Response(200, json=AAPL_TRANSCRIPT))
+
+        mcp, fmp = _make_server(register_transcripts)
+        async with Client(mcp) as c:
+            result = await c.call_tool("earnings_transcript", {"symbol": "AAPL", "quarter": 4})
+
+        data = result.data
+        assert data["symbol"] == "AAPL"
+        assert data["year"] == 2025
+        assert data["quarter"] == 4
+        await fmp.close()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_latest_for_year_when_quarter_omitted(self):
+        respx.get(f"{BASE}/stable/earning-call-transcript-dates").mock(return_value=httpx.Response(200, json=AAPL_TRANSCRIPT_DATES))
+        respx.get(f"{BASE}/stable/earning-call-transcript").mock(return_value=httpx.Response(200, json=AAPL_TRANSCRIPT))
+
+        mcp, fmp = _make_server(register_transcripts)
+        async with Client(mcp) as c:
+            result = await c.call_tool("earnings_transcript", {"symbol": "AAPL", "year": 2025})
+
+        data = result.data
+        assert data["symbol"] == "AAPL"
+        assert data["year"] == 2025
+        assert data["quarter"] == 4
+        await fmp.close()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_invalid_quarter(self):
+        mcp, fmp = _make_server(register_transcripts)
+        async with Client(mcp) as c:
+            result = await c.call_tool("earnings_transcript", {"symbol": "AAPL", "quarter": 5})
+
+        data = result.data
+        assert "error" in data
+        assert "Invalid quarter" in data["error"]
+        await fmp.close()
+
+    @pytest.mark.asyncio
+    @respx.mock
     async def test_no_transcripts(self):
         respx.get(f"{BASE}/stable/earning-call-transcript-dates").mock(return_value=httpx.Response(200, json=[]))
 

@@ -24,7 +24,7 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         symbol: str,
         year: int | None = None,
         quarter: int | None = None,
-        max_chars: int = 40000,
+        max_chars: int = 100000,
         offset: int = 0,
     ) -> dict:
         """Get an earnings call transcript for a company.
@@ -35,12 +35,17 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
 
         Args:
             symbol: Stock ticker symbol (e.g. "AAPL")
-            year: Fiscal year (e.g. 2025). Omit for latest available.
-            quarter: Quarter number 1-4. Omit for latest available.
-            max_chars: Max characters to return per call (default 40000)
+            year: Fiscal year (e.g. 2025). If quarter omitted, returns latest
+                available quarter in that fiscal year.
+            quarter: Quarter number 1-4. If year omitted, returns latest
+                available fiscal year for that quarter.
+            max_chars: Max characters to return per call (default 100000)
             offset: Character offset to start from (default 0). Use next_offset from previous response to continue.
         """
         symbol = symbol.upper().strip()
+
+        if quarter is not None and quarter not in (1, 2, 3, 4):
+            return {"error": f"Invalid quarter '{quarter}'. Must be 1, 2, 3, or 4."}
 
         if year is not None and quarter is not None:
             # Direct fetch for specific quarter
@@ -51,11 +56,12 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
                 default=[],
             )
         else:
-            # Find available dates first, then fetch latest
+            # Find available dates first, then fetch latest matching period filter.
+            # Keep this fresh to pick up newly posted transcripts around earnings day.
             dates_data = await client.get_safe(
                 "/stable/earning-call-transcript-dates",
                 params={"symbol": symbol},
-                cache_ttl=client.TTL_DAILY,
+                cache_ttl=client.TTL_REALTIME,
                 default=[],
             )
 
@@ -64,18 +70,40 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             if not dates_list:
                 return {"error": f"No earnings transcripts available for '{symbol}'"}
 
-            # dates_list contains objects with fiscalYear/quarter; pick the latest
-            # Sort by year desc, quarter desc to get most recent
-            dates_list.sort(
-                key=lambda d: (d.get("fiscalYear", 0) or d.get("year", 0), d.get("quarter", 0)),
-                reverse=True,
-            )
-            latest = dates_list[0]
-            target_year = latest.get("fiscalYear") or latest.get("year")
-            target_quarter = latest.get("quarter")
+            # dates_list contains objects with fiscalYear/quarter.
+            # Filter by optional year/quarter, then pick most recent match.
+            filtered_dates: list[tuple[int, int]] = []
+            for d in dates_list:
+                y_raw = d.get("fiscalYear") or d.get("year")
+                q_raw = d.get("quarter")
+                if y_raw is None or q_raw is None:
+                    continue
+                try:
+                    y = int(y_raw)
+                    q = int(q_raw)
+                except (TypeError, ValueError):
+                    continue
+                if year is not None and y != year:
+                    continue
+                if quarter is not None and q != quarter:
+                    continue
+                filtered_dates.append((y, q))
 
-            if target_year is None or target_quarter is None:
+            if not filtered_dates:
+                filters = []
+                if year is not None:
+                    filters.append(f"year={year}")
+                if quarter is not None:
+                    filters.append(f"quarter={quarter}")
+                if filters:
+                    return {"error": f"No earnings transcripts available for '{symbol}' matching {', '.join(filters)}"}
                 return {"error": f"No valid transcript dates found for '{symbol}'"}
+
+            filtered_dates.sort(reverse=True)
+            target_year, target_quarter = filtered_dates[0]
+
+            year = target_year
+            quarter = target_quarter
 
             transcript_data = await client.get_safe(
                 "/stable/earning-call-transcript",
@@ -83,8 +111,6 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
                 cache_ttl=client.TTL_DAILY,
                 default=[],
             )
-            year = target_year
-            quarter = target_quarter
 
         transcript_list = transcript_data if isinstance(transcript_data, list) else []
 
