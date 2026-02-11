@@ -33,7 +33,8 @@ def _simplify_period(income: dict, balance: dict, cashflow: dict) -> dict:
         "operating_income": income.get("operatingIncome"),
         "net_income": income.get("netIncome"),
         "eps": income.get("eps"),
-        "eps_diluted": income.get("epsdiluted"),
+        "eps_diluted": income.get("epsDiluted"),
+        "ebitda": income.get("ebitda"),
         "gross_margin": _pct(income.get("grossProfit"), income.get("revenue")),
         "operating_margin": _pct(income.get("operatingIncome"), income.get("revenue")),
         "net_margin": _pct(income.get("netIncome"), income.get("revenue")),
@@ -48,7 +49,7 @@ def _simplify_period(income: dict, balance: dict, cashflow: dict) -> dict:
         "operating_cash_flow": cashflow.get("operatingCashFlow"),
         "capex": cashflow.get("capitalExpenditure"),
         "free_cash_flow": cashflow.get("freeCashFlow"),
-        "dividends_paid": cashflow.get("dividendsPaid"),
+        "dividends_paid": cashflow.get("commonDividendsPaid"),
         "share_buybacks": cashflow.get("commonStockRepurchased"),
     }
 
@@ -83,23 +84,23 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             limit: Number of periods to return (default 5)
         """
         symbol = symbol.upper().strip()
-        params = {"period": period, "limit": limit}
+        params = {"symbol": symbol, "period": period, "limit": limit}
 
         income_data, balance_data, cashflow_data = await asyncio.gather(
             client.get_safe(
-                f"/api/v3/income-statement/{symbol}",
+                "/stable/income-statement",
                 params=params,
                 cache_ttl=client.TTL_HOURLY,
                 default=[],
             ),
             client.get_safe(
-                f"/api/v3/balance-sheet-statement/{symbol}",
+                "/stable/balance-sheet-statement",
                 params=params,
                 cache_ttl=client.TTL_HOURLY,
                 default=[],
             ),
             client.get_safe(
-                f"/api/v3/cash-flow-statement/{symbol}",
+                "/stable/cash-flow-statement",
                 params=params,
                 cache_ttl=client.TTL_HOURLY,
                 default=[],

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 from datetime import date, timedelta
 from typing import TYPE_CHECKING
 
@@ -57,7 +58,6 @@ def _calc_volatility(history: list[dict], window: int = 30) -> float | None:
             returns.append(closes[i] / closes[i - 1] - 1)
     if not returns:
         return None
-    import math
     mean = sum(returns) / len(returns)
     variance = sum((r - mean) ** 2 for r in returns) / len(returns)
     daily_vol = math.sqrt(variance)
@@ -96,47 +96,45 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         else:
             from_date = today - timedelta(days=PERIOD_DAYS[period])
 
+        # /stable/historical-price-eod/full returns a flat list of {symbol, date, open, high, low, close, volume, ...}
         history_data, quote_data = await asyncio.gather(
             client.get_safe(
-                f"/api/v3/historical-price-full/{symbol}",
-                params={"from": from_date.isoformat(), "to": today.isoformat()},
+                "/stable/historical-price-eod/full",
+                params={
+                    "symbol": symbol,
+                    "from": from_date.isoformat(),
+                    "to": today.isoformat(),
+                },
                 cache_ttl=client.TTL_12H,
-                default={},
+                default=[],
             ),
             client.get_safe(
-                f"/api/v3/quote/{symbol}",
+                "/stable/quote",
+                params={"symbol": symbol},
                 cache_ttl=client.TTL_REALTIME,
                 default=[],
             ),
         )
 
         quote = _safe_first(quote_data)
-        historical = []
-        if isinstance(history_data, dict):
-            historical = history_data.get("historical", [])
+        # Stable API returns flat list directly (not nested under "historical")
+        historical = history_data if isinstance(history_data, list) else []
 
         if not quote and not historical:
             return {"error": f"No price data found for '{symbol}'"}
 
         current_price = quote.get("price")
 
-        # Extract close prices (newest first)
+        # Extract close prices (newest first - API returns newest first)
         closes = [d.get("close") for d in historical if d.get("close")]
 
         # Build performance across timeframes
         performance = {}
-        for perf_period, days in [("1w", 5), ("1m", 21), ("3m", 63), ("6m", 126), ("ytd", None), ("1y", 252)]:
-            if perf_period == "ytd":
-                # Find first trading day of year
-                ytd_days = None
-                for i, d in enumerate(historical):
-                    if d.get("date", "").startswith(str(today.year - 1)):
-                        ytd_days = i
-                        break
-                if ytd_days and current_price:
-                    performance["ytd"] = _calc_performance(current_price, historical, ytd_days)
-            elif current_price:
-                performance[perf_period] = _calc_performance(current_price, historical, days)
+        for perf_period, days in [("1w", 5), ("1m", 21), ("3m", 63), ("6m", 126), ("1y", 252)]:
+            if current_price:
+                perf = _calc_performance(current_price, historical, days)
+                if perf is not None:
+                    performance[perf_period] = perf
 
         # Recent 30 daily closes for context
         recent_closes = [
@@ -149,8 +147,8 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             "current_price": current_price,
             "year_high": quote.get("yearHigh"),
             "year_low": quote.get("yearLow"),
-            "sma_50": _calc_sma(closes, 50),
-            "sma_200": _calc_sma(closes, 200),
+            "sma_50": quote.get("priceAvg50") or _calc_sma(closes, 50),
+            "sma_200": quote.get("priceAvg200") or _calc_sma(closes, 200),
             "performance_pct": performance,
             "daily_volatility_annualized_pct": _calc_volatility(historical),
             "recent_closes": recent_closes,
@@ -174,106 +172,79 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         }
     )
     async def earnings_info(symbol: str) -> dict:
-        """Check earnings dates, estimates, and recent surprise history.
+        """Get analyst earnings estimates and income statement history for a stock.
 
-        Returns next earnings date/estimates and last 8 quarters of EPS
-        surprises and revenue vs estimates.
+        Returns upcoming quarterly estimates (EPS and revenue) from analyst
+        consensus, plus recent annual income data for trend context.
 
         Args:
             symbol: Stock ticker symbol (e.g. "AAPL")
         """
         symbol = symbol.upper().strip()
 
-        # Get upcoming and historical earnings
-        # The earning_calendar endpoint returns upcoming dates
-        # The historical endpoint returns past earnings with actuals vs estimates
-        upcoming_data, historical_data = await asyncio.gather(
+        # Use analyst-estimates for per-symbol forward-looking estimates
+        # and income-statement for historical actuals
+        estimates_data, income_data = await asyncio.gather(
             client.get_safe(
-                f"/api/v3/earning_calendar",
-                params={"symbol": symbol},
+                "/stable/analyst-estimates",
+                params={"symbol": symbol, "period": "quarter", "limit": 8},
                 cache_ttl=client.TTL_6H,
                 default=[],
             ),
             client.get_safe(
-                f"/api/v3/historical/earning_calendar/{symbol}",
-                params={"limit": 8},
-                cache_ttl=client.TTL_6H,
+                "/stable/income-statement",
+                params={"symbol": symbol, "period": "quarter", "limit": 8},
+                cache_ttl=client.TTL_HOURLY,
                 default=[],
             ),
         )
 
-        upcoming_list = upcoming_data if isinstance(upcoming_data, list) else []
-        historical_list = historical_data if isinstance(historical_data, list) else []
+        estimates_list = estimates_data if isinstance(estimates_data, list) else []
+        income_list = income_data if isinstance(income_data, list) else []
 
-        if not upcoming_list and not historical_list:
+        if not estimates_list and not income_list:
             return {"error": f"No earnings data found for '{symbol}'"}
 
-        # Find next earnings from upcoming (filter for this symbol)
-        next_earnings = None
-        for entry in upcoming_list:
-            if entry.get("symbol", "").upper() == symbol:
-                next_earnings = {
-                    "date": entry.get("date"),
-                    "eps_estimate": entry.get("epsEstimated"),
-                    "revenue_estimate": entry.get("revenueEstimated"),
-                    "fiscal_period": entry.get("fiscalDateEnding"),
-                    "time": entry.get("time"),  # "bmo" (before market open) or "amc" (after market close)
-                }
-                break
+        # Build forward estimates (sorted by date ascending = nearest first)
+        estimates_list.sort(key=lambda e: e.get("date", ""))
 
-        # Build earnings history with surprises
-        history = []
-        for entry in historical_list:
-            eps_actual = entry.get("eps")
-            eps_estimate = entry.get("epsEstimated")
-            revenue_actual = entry.get("revenue")
-            revenue_estimate = entry.get("revenueEstimated")
-
-            eps_surprise = None
-            eps_surprise_pct = None
-            if eps_actual is not None and eps_estimate is not None:
-                eps_surprise = round(eps_actual - eps_estimate, 4)
-                if eps_estimate != 0:
-                    eps_surprise_pct = round((eps_actual / eps_estimate - 1) * 100, 2)
-
-            revenue_surprise_pct = None
-            if revenue_actual and revenue_estimate and revenue_estimate != 0:
-                revenue_surprise_pct = round((revenue_actual / revenue_estimate - 1) * 100, 2)
-
-            history.append({
+        forward_estimates = []
+        for entry in estimates_list:
+            forward_estimates.append({
                 "date": entry.get("date"),
-                "fiscal_period": entry.get("fiscalDateEnding"),
-                "eps_actual": eps_actual,
-                "eps_estimate": eps_estimate,
-                "eps_surprise": eps_surprise,
-                "eps_surprise_pct": eps_surprise_pct,
-                "revenue_actual": revenue_actual,
-                "revenue_estimate": revenue_estimate,
-                "revenue_surprise_pct": revenue_surprise_pct,
+                "eps_avg": entry.get("epsAvg"),
+                "eps_high": entry.get("epsHigh"),
+                "eps_low": entry.get("epsLow"),
+                "revenue_avg": entry.get("revenueAvg"),
+                "revenue_high": entry.get("revenueHigh"),
+                "revenue_low": entry.get("revenueLow"),
+                "num_analysts_eps": entry.get("numAnalystsEps"),
+                "num_analysts_revenue": entry.get("numAnalystsRevenue"),
             })
 
-        # Summarize surprise track record
-        beats = sum(1 for h in history if h.get("eps_surprise") and h["eps_surprise"] > 0)
-        misses = sum(1 for h in history if h.get("eps_surprise") and h["eps_surprise"] < 0)
-        meets = sum(1 for h in history if h.get("eps_surprise") is not None and h["eps_surprise"] == 0)
+        # Build recent quarterly actuals from income statements
+        recent_quarters = []
+        for entry in income_list:
+            recent_quarters.append({
+                "date": entry.get("date"),
+                "period": entry.get("period"),
+                "revenue": entry.get("revenue"),
+                "net_income": entry.get("netIncome"),
+                "eps": entry.get("eps"),
+                "eps_diluted": entry.get("epsDiluted"),
+            })
 
         result = {
             "symbol": symbol,
-            "next_earnings": next_earnings,
-            "earnings_history": history,
-            "surprise_summary": {
-                "quarters_reported": len(history),
-                "beats": beats,
-                "misses": misses,
-                "meets": meets,
-            },
+            "forward_estimates": forward_estimates,
+            "recent_quarters": recent_quarters,
         }
 
         errors = []
-        if not upcoming_list:
-            errors.append("upcoming earnings data unavailable")
-        if not historical_list:
-            errors.append("historical earnings data unavailable")
+        if not estimates_list:
+            errors.append("analyst estimates unavailable")
+        if not income_list:
+            errors.append("quarterly income data unavailable")
         if errors:
             result["_warnings"] = errors
 

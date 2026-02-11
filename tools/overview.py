@@ -10,15 +10,6 @@ if TYPE_CHECKING:
     from fmp_client import FMPClient
 
 
-def _safe_get(data: dict | list | None, key: str, default=None):
-    """Safely extract a key from dict or first element of list."""
-    if isinstance(data, list) and data:
-        data = data[0]
-    if isinstance(data, dict):
-        return data.get(key, default)
-    return default
-
-
 def _safe_first(data: list | None) -> dict:
     """Return first element of list or empty dict."""
     if isinstance(data, list) and data:
@@ -43,20 +34,24 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             symbol: Stock ticker symbol (e.g. "AAPL", "MSFT")
         """
         symbol = symbol.upper().strip()
+        sym_params = {"symbol": symbol}
 
         profile_data, quote_data, ratios_data = await asyncio.gather(
             client.get_safe(
-                f"/api/v3/profile/{symbol}",
+                "/stable/profile",
+                params=sym_params,
                 cache_ttl=client.TTL_DAILY,
                 default=[],
             ),
             client.get_safe(
-                f"/api/v3/quote/{symbol}",
+                "/stable/quote",
+                params=sym_params,
                 cache_ttl=client.TTL_REALTIME,
                 default=[],
             ),
             client.get_safe(
-                f"/api/v3/ratios-ttm/{symbol}",
+                "/stable/ratios-ttm",
+                params=sym_params,
                 cache_ttl=client.TTL_HOURLY,
                 default=[],
             ),
@@ -77,15 +72,14 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             "ceo": profile.get("ceo"),
             "employees": profile.get("fullTimeEmployees"),
             "description": profile.get("description"),
-            "exchange": profile.get("exchangeShortName"),
+            "exchange": profile.get("exchange"),
             "country": profile.get("country"),
             "website": profile.get("website"),
             # Current quote
             "price": quote.get("price"),
             "market_cap": quote.get("marketCap"),
             "volume": quote.get("volume"),
-            "avg_volume": quote.get("avgVolume"),
-            "change_pct": quote.get("changesPercentage"),
+            "change_pct": quote.get("changePercentage"),
             "day_range": {
                 "low": quote.get("dayLow"),
                 "high": quote.get("dayHigh"),
@@ -94,24 +88,24 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
                 "low": quote.get("yearLow"),
                 "high": quote.get("yearHigh"),
             },
-            "eps": quote.get("eps"),
-            "pe": quote.get("pe"),
+            "sma_50": quote.get("priceAvg50"),
+            "sma_200": quote.get("priceAvg200"),
             # Valuation ratios (TTM)
             "ratios": {
-                "pe_ttm": ratios.get("peRatioTTM"),
+                "pe_ttm": ratios.get("priceToEarningsRatioTTM"),
                 "pb_ttm": ratios.get("priceToBookRatioTTM"),
                 "ps_ttm": ratios.get("priceToSalesRatioTTM"),
-                "peg_ttm": ratios.get("pegRatioTTM"),
-                "ev_ebitda_ttm": ratios.get("enterpriseValueOverEBITDATTM"),
+                "peg_ttm": ratios.get("priceToEarningsGrowthRatioTTM"),
+                "ev_ebitda_ttm": ratios.get("enterpriseValueMultipleTTM"),
                 "dividend_yield_ttm": ratios.get("dividendYieldTTM"),
                 "roe_ttm": ratios.get("returnOnEquityTTM"),
                 "roa_ttm": ratios.get("returnOnAssetsTTM"),
-                "debt_equity_ttm": ratios.get("debtEquityRatioTTM"),
+                "debt_equity_ttm": ratios.get("debtToEquityRatioTTM"),
                 "current_ratio_ttm": ratios.get("currentRatioTTM"),
                 "gross_margin_ttm": ratios.get("grossProfitMarginTTM"),
                 "operating_margin_ttm": ratios.get("operatingProfitMarginTTM"),
                 "net_margin_ttm": ratios.get("netProfitMarginTTM"),
-                "fcf_yield_ttm": ratios.get("freeCashFlowYieldTTM"),
+                "price_to_fcf_ttm": ratios.get("priceToFreeCashFlowRatioTTM"),
             },
         }
 
@@ -155,13 +149,12 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             market_cap_max: Maximum market cap in dollars
             limit: Max results to return (default 20)
         """
-        # Use screener if filters are provided, otherwise simple search
         use_screener = any([exchange, sector, market_cap_min, market_cap_max])
 
         if use_screener:
             params: dict = {"limit": limit}
             if exchange:
-                params["exchange"] = exchange
+                params["exchangeShortName"] = exchange
             if sector:
                 params["sector"] = sector
             if market_cap_min:
@@ -170,13 +163,13 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
                 params["marketCapLowerThan"] = market_cap_max
 
             data = await client.get(
-                "/api/v3/stock-screener",
+                "/stable/company-screener",
                 params=params,
                 cache_ttl=client.TTL_HOURLY,
             )
         else:
             data = await client.get(
-                "/api/v3/search",
+                "/stable/search-name",
                 params={"query": query, "limit": limit},
                 cache_ttl=client.TTL_HOURLY,
             )

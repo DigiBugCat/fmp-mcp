@@ -20,5 +20,10 @@ include = ["server.py", "fmp_client.py"]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[dependency-groups]
+dev = [
+    "pytest-cov>=7.0.0",
+]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

@@ -33,28 +33,30 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             symbol: Stock ticker symbol (e.g. "AAPL")
         """
         symbol = symbol.upper().strip()
+        sym_params = {"symbol": symbol}
 
         targets_data, grades_data, rating_data, quote_data = await asyncio.gather(
             client.get_safe(
                 "/stable/price-target-consensus",
-                params={"symbol": symbol},
+                params=sym_params,
                 cache_ttl=client.TTL_6H,
                 default=[],
             ),
             client.get_safe(
-                "/stable/upgrades-downgrades-consensus",
-                params={"symbol": symbol},
+                "/stable/grades-consensus",
+                params=sym_params,
                 cache_ttl=client.TTL_6H,
                 default=[],
             ),
             client.get_safe(
                 "/stable/ratings-snapshot",
-                params={"symbol": symbol},
+                params=sym_params,
                 cache_ttl=client.TTL_6H,
                 default=[],
             ),
             client.get_safe(
-                f"/api/v3/quote/{symbol}",
+                "/stable/quote",
+                params=sym_params,
                 cache_ttl=client.TTL_REALTIME,
                 default=[],
             ),
@@ -87,22 +89,22 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
                 "upside_pct": upside_pct,
             },
             "analyst_grades": {
+                "strong_buy": grades.get("strongBuy"),
                 "buy": grades.get("buy"),
-                "overweight": grades.get("overweight"),
                 "hold": grades.get("hold"),
-                "underweight": grades.get("underweight"),
                 "sell": grades.get("sell"),
+                "strong_sell": grades.get("strongSell"),
                 "consensus": grades.get("consensus"),
             },
             "fmp_rating": {
                 "rating": rating.get("rating"),
-                "score": rating.get("ratingScore"),
-                "dcf_score": rating.get("ratingDetailsDCFScore"),
-                "roe_score": rating.get("ratingDetailsROEScore"),
-                "roa_score": rating.get("ratingDetailsROAScore"),
-                "de_score": rating.get("ratingDetailsDEScore"),
-                "pe_score": rating.get("ratingDetailsPEScore"),
-                "pb_score": rating.get("ratingDetailsPBScore"),
+                "overall_score": rating.get("overallScore"),
+                "dcf_score": rating.get("discountedCashFlowScore"),
+                "roe_score": rating.get("returnOnEquityScore"),
+                "roa_score": rating.get("returnOnAssetsScore"),
+                "de_score": rating.get("debtToEquityScore"),
+                "pe_score": rating.get("priceToEarningsScore"),
+                "pb_score": rating.get("priceToBookScore"),
             },
         }
 
