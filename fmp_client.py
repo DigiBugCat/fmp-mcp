@@ -36,15 +36,22 @@ class FMPClient:
 
     def __init__(self, api_key: str):
         self.api_key = api_key
-        self._client = httpx.AsyncClient(
-            base_url=self.BASE_URL,
-            timeout=30.0,
-            headers={"Accept": "application/json"},
-        )
+        self._client: httpx.AsyncClient | None = None
         self._cache: dict[str, tuple[float, Any]] = {}
 
+    def _get_client(self) -> httpx.AsyncClient:
+        """Return the httpx client, creating a new one if needed."""
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(
+                base_url=self.BASE_URL,
+                timeout=30.0,
+                headers={"Accept": "application/json"},
+            )
+        return self._client
+
     async def close(self) -> None:
-        await self._client.aclose()
+        if self._client and not self._client.is_closed:
+            await self._client.aclose()
 
     def _cache_key(self, path: str, params: dict | None) -> str:
         sorted_params = sorted((params or {}).items())
@@ -81,7 +88,7 @@ class FMPClient:
                 return data
 
         try:
-            resp = await self._client.get(path, params=params)
+            resp = await self._get_client().get(path, params=params)
             resp.raise_for_status()
         except httpx.HTTPStatusError as e:
             raise FMPError(
