@@ -241,14 +241,13 @@ class TestLiveStockNews:
     async def test_aapl(self, live_server):
         mcp, client = live_server
         async with Client(mcp) as c:
-            result = await c.call_tool("stock_news", {"symbol": "AAPL", "limit": 10})
+            result = await c.call_tool("market_news", {"category": "stock", "symbol": "AAPL", "limit": 10})
         data = result.data
         assert data["symbol"] == "AAPL"
         assert data["count"] > 0
         print(f"\n  AAPL news: {data['count']} articles")
         for a in data["articles"][:3]:
-            flag = f" [{a['event_flag']}]" if a.get("event_flag") else ""
-            print(f"    {a['date'][:10]}: {a['title'][:60]}{flag}")
+            print(f"    {a['date'][:10]}: {a['title'][:60]}")
         await client.close()
 
 
