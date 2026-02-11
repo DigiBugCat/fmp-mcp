@@ -182,3 +182,232 @@ AAPL_QUARTERLY_INCOME = [
     {"date": "2025-06-28", "symbol": "AAPL", "period": "Q3", "revenue": 85777000000, "netIncome": 21448000000, "eps": 1.41, "epsDiluted": 1.40},
     {"date": "2025-03-29", "symbol": "AAPL", "period": "Q2", "revenue": 95367000000, "netIncome": 23627000000, "eps": 1.55, "epsDiluted": 1.53},
 ]
+
+# --- Insider & Institutional Ownership ---
+
+AAPL_INSIDER_TRADES = [
+    {"reportingName": "Timothy Cook", "typeOfOwner": "CEO", "transactionType": "S-Sale", "securitiesTransacted": 50000, "price": 270.0, "filingDate": "2026-02-01", "transactionDate": "2026-01-30"},
+    {"reportingName": "Luca Maestri", "typeOfOwner": "CFO", "transactionType": "S-Sale", "securitiesTransacted": 20000, "price": 268.0, "filingDate": "2026-01-20", "transactionDate": "2026-01-18"},
+    {"reportingName": "Jeff Williams", "typeOfOwner": "officer", "transactionType": "P-Purchase", "securitiesTransacted": 10000, "price": 260.0, "filingDate": "2026-01-15", "transactionDate": "2026-01-14"},
+    {"reportingName": "Deirdre O'Brien", "typeOfOwner": "officer", "transactionType": "P-Purchase", "securitiesTransacted": 5000, "price": 258.0, "filingDate": "2026-01-10", "transactionDate": "2026-01-09"},
+    {"reportingName": "Craig Federighi", "typeOfOwner": "officer", "transactionType": "P-Purchase", "securitiesTransacted": 8000, "price": 262.0, "filingDate": "2026-01-08", "transactionDate": "2026-01-07"},
+]
+
+AAPL_INSIDER_STATS = [{
+    "symbol": "AAPL",
+    "totalBought": 23000,
+    "totalSold": 70000,
+    "buyCount": 3,
+    "sellCount": 2,
+}]
+
+AAPL_SHARES_FLOAT = [{
+    "symbol": "AAPL",
+    "floatShares": 14700000000,
+    "outstandingShares": 15200000000,
+    "freeFloat": 96.71,
+    "date": "2026-01-31",
+}]
+
+AAPL_INSTITUTIONAL_SUMMARY = [{
+    "symbol": "AAPL",
+    "totalIncreasedPositions": 1200,
+    "totalDecreasedPositions": 800,
+    "totalNewPositions": 150,
+    "totalInstitutionalShares": 10500000000,
+}]
+
+AAPL_INSTITUTIONAL_HOLDERS = [
+    {"investorName": "Vanguard Group", "shares": 1300000000, "changeInShares": 50000000, "dateReported": "2025-12-31"},
+    {"investorName": "BlackRock Inc.", "shares": 1050000000, "changeInShares": -20000000, "dateReported": "2025-12-31"},
+    {"investorName": "Berkshire Hathaway", "shares": 890000000, "changeInShares": 0, "dateReported": "2025-12-31"},
+    {"investorName": "State Street Corp", "shares": 650000000, "changeInShares": 30000000, "dateReported": "2025-12-31"},
+    {"investorName": "FMR LLC", "shares": 420000000, "changeInShares": -15000000, "dateReported": "2025-12-31"},
+]
+
+# --- Stock News ---
+
+AAPL_NEWS = [
+    {"title": "Apple Reports Record Q1 Earnings", "publishedDate": "2026-02-10T16:30:00.000Z", "site": "Bloomberg", "url": "https://example.com/1", "text": "Apple Inc. reported record first quarter results..."},
+    {"title": "Apple Unveils New AI Features", "publishedDate": "2026-02-08T10:00:00.000Z", "site": "TechCrunch", "url": "https://example.com/2", "text": "Apple announced a suite of new AI-powered features..."},
+    {"title": "Apple Stock Rises on Strong Guidance", "publishedDate": "2026-02-07T14:00:00.000Z", "site": "CNBC", "url": "https://example.com/3", "text": "Shares of Apple rose 3% following strong guidance..."},
+]
+
+AAPL_PRESS_RELEASES = [
+    {"title": "Apple Announces Dividend Increase", "date": "2026-02-05T09:00:00.000Z", "url": "https://example.com/pr1", "text": "Apple today announced an increase to its quarterly dividend..."},
+    {"title": "Apple Reports Record Q1 Earnings", "date": "2026-02-03T16:30:00.000Z", "url": "https://example.com/pr2", "text": "Apple today announced financial results for Q1 FY2026..."},
+]
+
+# --- Treasury Rates & Macro ---
+
+TREASURY_RATES = [{
+    "date": "2026-02-10",
+    "month1": 4.32,
+    "month3": 4.28,
+    "month6": 4.15,
+    "year1": 3.95,
+    "year2": 3.82,
+    "year5": 3.90,
+    "year10": 4.05,
+    "year20": 4.35,
+    "year30": 4.42,
+}]
+
+MARKET_RISK_PREMIUM = [
+    {"country": "United States", "totalEquityRiskPremium": 4.60, "countryRiskPremium": 0.0},
+    {"country": "United Kingdom", "totalEquityRiskPremium": 5.20, "countryRiskPremium": 0.60},
+]
+
+ECONOMIC_CALENDAR = [
+    {"date": "2026-02-12 08:30:00", "event": "CPI (MoM)", "country": "US", "estimate": 0.3, "actual": None, "previous": 0.4, "change": None, "impact": "High"},
+    {"date": "2026-02-14 08:30:00", "event": "Retail Sales (MoM)", "country": "US", "estimate": 0.2, "actual": None, "previous": 0.4, "change": None, "impact": "High"},
+    {"date": "2026-02-13 08:30:00", "event": "PPI (MoM)", "country": "US", "estimate": 0.1, "actual": None, "previous": 0.2, "change": None, "impact": "Medium"},
+    {"date": "2026-02-12 10:00:00", "event": "Business Inventories", "country": "US", "estimate": 0.1, "actual": None, "previous": 0.1, "change": None, "impact": "Low"},
+    {"date": "2026-02-13 07:00:00", "event": "ECB Rate Decision", "country": "EU", "estimate": 2.50, "actual": None, "previous": 2.75, "change": None, "impact": "High"},
+]
+
+SECTOR_PERFORMANCE = [
+    {"sector": "Technology", "changesPercentage": 1.25},
+    {"sector": "Healthcare", "changesPercentage": 0.85},
+    {"sector": "Financials", "changesPercentage": -0.32},
+    {"sector": "Energy", "changesPercentage": -1.10},
+]
+
+BIGGEST_GAINERS = [
+    {"symbol": "XYZ", "name": "XYZ Corp", "price": 45.50, "changesPercentage": 15.3},
+    {"symbol": "ABC", "name": "ABC Inc", "price": 120.00, "changesPercentage": 12.1},
+]
+
+BIGGEST_LOSERS = [
+    {"symbol": "DEF", "name": "DEF Corp", "price": 22.30, "changesPercentage": -10.5},
+    {"symbol": "GHI", "name": "GHI Inc", "price": 8.75, "changesPercentage": -8.2},
+]
+
+MOST_ACTIVES = [
+    {"symbol": "NVDA", "name": "NVIDIA Corporation", "price": 188.54, "changesPercentage": 2.3},
+    {"symbol": "TSLA", "name": "Tesla Inc", "price": 350.00, "changesPercentage": -1.5},
+]
+
+# --- Earnings Transcript ---
+
+AAPL_TRANSCRIPT_DATES = [
+    {"symbol": "AAPL", "quarter": 4, "year": 2025},
+    {"symbol": "AAPL", "quarter": 3, "year": 2025},
+    {"symbol": "AAPL", "quarter": 2, "year": 2025},
+]
+
+AAPL_TRANSCRIPT = [{
+    "symbol": "AAPL",
+    "quarter": 4,
+    "year": 2025,
+    "date": "2025-10-30",
+    "content": "Good afternoon, everyone. Thank you for joining Apple's fiscal year 2025 fourth quarter earnings conference call. I'm Tim Cook, CEO of Apple. We had a great quarter with record revenue of $94.9 billion...",
+}]
+
+# --- Revenue Segments ---
+
+AAPL_PRODUCT_SEGMENTS = [
+    {"2025-09-27": {"iPhone": 200500000000, "Mac": 40200000000, "iPad": 32100000000, "Wearables, Home and Accessories": 41800000000, "Services": 101561000000}},
+    {"2024-09-28": {"iPhone": 201183000000, "Mac": 29357000000, "iPad": 26694000000, "Wearables, Home and Accessories": 37005000000, "Services": 96800000000}},
+]
+
+AAPL_GEO_SEGMENTS = [
+    {"2025-09-27": {"Americas": 172100000000, "Europe": 101400000000, "Greater China": 67200000000, "Japan": 27600000000, "Rest of Asia Pacific": 47861000000}},
+    {"2024-09-28": {"Americas": 167000000000, "Europe": 94300000000, "Greater China": 66700000000, "Japan": 25000000000, "Rest of Asia Pacific": 38035000000}},
+]
+
+# --- Peer Comparison ---
+
+AAPL_PEERS = [{
+    "symbol": "AAPL",
+    "peersList": ["MSFT", "GOOGL", "AMZN"],
+}]
+
+AAPL_KEY_METRICS = [{
+    "symbol": "AAPL",
+    "revenuePerShareTTM": 27.05,
+    "marketCapTTM": 4022528102504,
+}]
+
+MSFT_RATIOS = [{
+    "symbol": "MSFT",
+    "priceToEarningsRatioTTM": 32.50,
+    "priceToSalesRatioTTM": 12.10,
+    "enterpriseValueMultipleTTM": 25.30,
+    "priceToBookRatioTTM": 12.50,
+    "returnOnEquityTTM": 0.38,
+    "grossProfitMarginTTM": 0.69,
+    "netProfitMarginTTM": 0.37,
+}]
+
+MSFT_KEY_METRICS = [{
+    "symbol": "MSFT",
+    "revenuePerShareTTM": 33.15,
+    "marketCapTTM": 3100000000000,
+}]
+
+GOOGL_RATIOS = [{
+    "symbol": "GOOGL",
+    "priceToEarningsRatioTTM": 22.80,
+    "priceToSalesRatioTTM": 6.50,
+    "enterpriseValueMultipleTTM": 18.20,
+    "priceToBookRatioTTM": 6.80,
+    "returnOnEquityTTM": 0.30,
+    "grossProfitMarginTTM": 0.57,
+    "netProfitMarginTTM": 0.26,
+}]
+
+GOOGL_KEY_METRICS = [{
+    "symbol": "GOOGL",
+    "revenuePerShareTTM": 29.50,
+    "marketCapTTM": 2200000000000,
+}]
+
+AMZN_RATIOS = [{
+    "symbol": "AMZN",
+    "priceToEarningsRatioTTM": 58.90,
+    "priceToSalesRatioTTM": 3.20,
+    "enterpriseValueMultipleTTM": 22.50,
+    "priceToBookRatioTTM": 8.10,
+    "returnOnEquityTTM": 0.22,
+    "grossProfitMarginTTM": 0.48,
+    "netProfitMarginTTM": 0.08,
+}]
+
+AMZN_KEY_METRICS = [{
+    "symbol": "AMZN",
+    "revenuePerShareTTM": 58.20,
+    "marketCapTTM": 2050000000000,
+}]
+
+# --- Dividends & Splits ---
+
+AAPL_DIVIDENDS = [
+    {"date": "2026-02-07", "dividend": 0.26, "paymentDate": "2026-02-14", "recordDate": "2026-02-10"},
+    {"date": "2025-11-08", "dividend": 0.26, "paymentDate": "2025-11-15", "recordDate": "2025-11-11"},
+    {"date": "2025-08-11", "dividend": 0.26, "paymentDate": "2025-08-18", "recordDate": "2025-08-13"},
+    {"date": "2025-05-12", "dividend": 0.25, "paymentDate": "2025-05-19", "recordDate": "2025-05-14"},
+    {"date": "2025-02-07", "dividend": 0.25, "paymentDate": "2025-02-14", "recordDate": "2025-02-10"},
+    {"date": "2024-11-08", "dividend": 0.25, "paymentDate": "2024-11-15", "recordDate": "2024-11-11"},
+    {"date": "2024-08-12", "dividend": 0.25, "paymentDate": "2024-08-19", "recordDate": "2024-08-14"},
+    {"date": "2024-05-10", "dividend": 0.24, "paymentDate": "2024-05-17", "recordDate": "2024-05-13"},
+    {"date": "2024-02-09", "dividend": 0.24, "paymentDate": "2024-02-16", "recordDate": "2024-02-12"},
+    {"date": "2023-11-10", "dividend": 0.24, "paymentDate": "2023-11-17", "recordDate": "2023-11-13"},
+    {"date": "2023-08-11", "dividend": 0.24, "paymentDate": "2023-08-18", "recordDate": "2023-08-14"},
+    {"date": "2023-05-12", "dividend": 0.23, "paymentDate": "2023-05-19", "recordDate": "2023-05-15"},
+    {"date": "2023-02-10", "dividend": 0.23, "paymentDate": "2023-02-17", "recordDate": "2023-02-13"},
+    {"date": "2022-11-04", "dividend": 0.23, "paymentDate": "2022-11-11", "recordDate": "2022-11-07"},
+    {"date": "2022-08-05", "dividend": 0.23, "paymentDate": "2022-08-12", "recordDate": "2022-08-08"},
+    {"date": "2022-05-06", "dividend": 0.22, "paymentDate": "2022-05-13", "recordDate": "2022-05-09"},
+    {"date": "2022-02-04", "dividend": 0.22, "paymentDate": "2022-02-11", "recordDate": "2022-02-07"},
+    {"date": "2021-11-05", "dividend": 0.22, "paymentDate": "2021-11-12", "recordDate": "2021-11-08"},
+    {"date": "2021-08-06", "dividend": 0.22, "paymentDate": "2021-08-13", "recordDate": "2021-08-09"},
+    {"date": "2021-05-07", "dividend": 0.22, "paymentDate": "2021-05-14", "recordDate": "2021-05-10"},
+    {"date": "2021-02-05", "dividend": 0.205, "paymentDate": "2021-02-12", "recordDate": "2021-02-08"},
+    {"date": "2020-11-06", "dividend": 0.205, "paymentDate": "2020-11-13", "recordDate": "2020-11-09"},
+]
+
+AAPL_STOCK_SPLITS = [
+    {"date": "2020-08-28", "label": "4:1", "numerator": 4, "denominator": 1},
+    {"date": "2014-06-09", "label": "7:1", "numerator": 7, "denominator": 1},
+]

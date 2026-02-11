@@ -168,3 +168,122 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             result["_warnings"] = errors
 
         return result
+
+    @mcp.tool(
+        annotations={
+            "title": "Revenue Segments",
+            "readOnlyHint": True,
+        }
+    )
+    async def revenue_segments(symbol: str) -> dict:
+        """Get revenue breakdown by product/service and geographic region.
+
+        Returns segment % of total, identifies fastest-growing segment,
+        and flags concentration risk (>50% from one segment).
+
+        Args:
+            symbol: Stock ticker symbol (e.g. "AAPL")
+        """
+        symbol = symbol.upper().strip()
+        sym_params = {"symbol": symbol}
+
+        product_data, geo_data = await asyncio.gather(
+            client.get_safe(
+                "/stable/revenue-product-segmentation",
+                params=sym_params,
+                cache_ttl=client.TTL_HOURLY,
+                default=[],
+            ),
+            client.get_safe(
+                "/stable/revenue-geographic-segmentation",
+                params=sym_params,
+                cache_ttl=client.TTL_HOURLY,
+                default=[],
+            ),
+        )
+
+        product_list = product_data if isinstance(product_data, list) else []
+        geo_list = geo_data if isinstance(geo_data, list) else []
+
+        if not product_list and not geo_list:
+            return {"error": f"No revenue segmentation data found for '{symbol}'"}
+
+        def _process_segments(data_list: list) -> dict:
+            """Process segment data into structured output with analysis."""
+            if not data_list:
+                return {}
+
+            # Each item in data_list is a dict keyed by date, containing
+            # a dict of segment_name: revenue_value
+            # Sort by date to get latest and prior periods
+            periods = []
+            for item in data_list:
+                # item is like {"2025-09-27": {"iPhone": 200000, "Mac": 50000}}
+                for date_key, segments in item.items():
+                    if isinstance(segments, dict):
+                        periods.append({"date": date_key, "segments": segments})
+            periods.sort(key=lambda p: p["date"], reverse=True)
+
+            if not periods:
+                return {}
+
+            latest = periods[0]
+            total = sum(v for v in latest["segments"].values() if isinstance(v, (int, float)) and v > 0)
+
+            segments_out = []
+            for name, value in sorted(latest["segments"].items(), key=lambda x: x[1] if isinstance(x[1], (int, float)) else 0, reverse=True):
+                if not isinstance(value, (int, float)) or value <= 0:
+                    continue
+                pct = round(value / total * 100, 2) if total > 0 else None
+                segment = {"name": name, "revenue": value, "pct_of_total": pct}
+
+                # YoY growth if prior year available
+                if len(periods) >= 2:
+                    prior = periods[1]
+                    prior_val = prior["segments"].get(name)
+                    if prior_val and isinstance(prior_val, (int, float)) and prior_val > 0:
+                        segment["yoy_growth_pct"] = round((value / prior_val - 1) * 100, 2)
+
+                segments_out.append(segment)
+
+            # Fastest growing segment
+            fastest = None
+            max_growth = float("-inf")
+            for s in segments_out:
+                growth = s.get("yoy_growth_pct")
+                if growth is not None and growth > max_growth:
+                    max_growth = growth
+                    fastest = s["name"]
+
+            # Concentration risk
+            concentrated = any(
+                (s.get("pct_of_total") or 0) > 50 for s in segments_out
+            )
+
+            return {
+                "date": latest["date"],
+                "total_revenue": total,
+                "segments": segments_out,
+                "fastest_growing": fastest,
+                "concentration_risk": concentrated,
+            }
+
+        result = {"symbol": symbol}
+
+        product_analysis = _process_segments(product_list)
+        if product_analysis:
+            result["product_segments"] = product_analysis
+
+        geo_analysis = _process_segments(geo_list)
+        if geo_analysis:
+            result["geographic_segments"] = geo_analysis
+
+        _warnings = []
+        if not product_list:
+            _warnings.append("product segmentation unavailable")
+        if not geo_list:
+            _warnings.append("geographic segmentation unavailable")
+        if _warnings:
+            result["_warnings"] = _warnings
+
+        return result

@@ -249,3 +249,141 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             result["_warnings"] = errors
 
         return result
+
+    @mcp.tool(
+        annotations={
+            "title": "Dividends Info",
+            "readOnlyHint": True,
+        }
+    )
+    async def dividends_info(symbol: str) -> dict:
+        """Get dividend history, yield, growth rates, and stock split history.
+
+        Returns current dividend yield, 3Y/5Y dividend CAGR, upcoming ex-date,
+        payout context, and stock split history.
+
+        Args:
+            symbol: Stock ticker symbol (e.g. "AAPL")
+        """
+        symbol = symbol.upper().strip()
+        sym_params = {"symbol": symbol}
+
+        dividends_data, splits_data, quote_data = await asyncio.gather(
+            client.get_safe(
+                "/stable/dividends",
+                params=sym_params,
+                cache_ttl=client.TTL_6H,
+                default=[],
+            ),
+            client.get_safe(
+                "/stable/stock-splits",
+                params=sym_params,
+                cache_ttl=client.TTL_DAILY,
+                default=[],
+            ),
+            client.get_safe(
+                "/stable/quote",
+                params=sym_params,
+                cache_ttl=client.TTL_REALTIME,
+                default=[],
+            ),
+        )
+
+        div_list = dividends_data if isinstance(dividends_data, list) else []
+        split_list = splits_data if isinstance(splits_data, list) else []
+        quote = _safe_first(quote_data)
+
+        if not div_list and not split_list:
+            return {"error": f"No dividend or split data found for '{symbol}'"}
+
+        # Sort dividends newest first
+        div_list.sort(key=lambda d: d.get("date") or "", reverse=True)
+
+        current_price = quote.get("price")
+
+        # Annual dividend from most recent 4 quarters
+        annual_dividends = {}
+        for d in div_list:
+            d_date = d.get("date") or ""
+            year = d_date[:4] if d_date else None
+            if year:
+                annual_dividends.setdefault(year, 0)
+                annual_dividends[year] += d.get("dividend") or 0
+
+        years_sorted = sorted(annual_dividends.keys(), reverse=True)
+
+        # Current yield
+        current_annual = annual_dividends.get(years_sorted[0]) if years_sorted else None
+        current_yield = None
+        if current_annual and current_price and current_price > 0:
+            current_yield = round(current_annual / current_price * 100, 2)
+
+        # Dividend CAGR
+        def _div_cagr(n_years: int) -> float | None:
+            if len(years_sorted) < n_years + 1:
+                return None
+            end_val = annual_dividends.get(years_sorted[0], 0)
+            start_val = annual_dividends.get(years_sorted[n_years], 0)
+            if start_val <= 0 or end_val <= 0:
+                return None
+            try:
+                return round(((end_val / start_val) ** (1 / n_years) - 1) * 100, 2)
+            except (ZeroDivisionError, ValueError, OverflowError):
+                return None
+
+        # Upcoming ex-date
+        today_str = date.today().isoformat()
+        upcoming_ex_date = None
+        for d in div_list:
+            ex_date = d.get("date") or ""
+            if ex_date >= today_str:
+                upcoming_ex_date = {
+                    "ex_date": ex_date,
+                    "dividend": d.get("dividend"),
+                    "payment_date": d.get("paymentDate"),
+                    "record_date": d.get("recordDate"),
+                }
+                break
+
+        # Recent dividend history (last 8 payments)
+        recent_dividends = []
+        for d in div_list[:8]:
+            recent_dividends.append({
+                "date": d.get("date"),
+                "dividend": d.get("dividend"),
+                "payment_date": d.get("paymentDate"),
+            })
+
+        # Stock splits
+        splits = []
+        for s in split_list:
+            splits.append({
+                "date": s.get("date"),
+                "numerator": s.get("numerator"),
+                "denominator": s.get("denominator"),
+                "label": s.get("label"),
+            })
+
+        result = {
+            "symbol": symbol,
+            "current_price": current_price,
+            "current_annual_dividend": current_annual,
+            "dividend_yield_pct": current_yield,
+            "dividend_cagr_3y": _div_cagr(3),
+            "dividend_cagr_5y": _div_cagr(5),
+            "upcoming_ex_date": upcoming_ex_date,
+            "recent_dividends": recent_dividends,
+            "stock_splits": splits,
+        }
+
+        _warnings = []
+        if not div_list:
+            _warnings.append("dividend data unavailable")
+        if not split_list:
+            _warnings.append("stock split data unavailable")
+        if not quote:
+            _warnings.append("quote data unavailable")
+        if _warnings:
+            result["_warnings"] = _warnings
+
+        return result

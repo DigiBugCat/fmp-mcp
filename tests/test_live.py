@@ -15,6 +15,10 @@ from tools.overview import register as register_overview
 from tools.financials import register as register_financials
 from tools.valuation import register as register_valuation
 from tools.market import register as register_market
+from tools.ownership import register as register_ownership
+from tools.news import register as register_news
+from tools.macro import register as register_macro
+from tools.transcripts import register as register_transcripts
 
 API_KEY = os.environ.get("FMP_API_KEY", "")
 pytestmark = pytest.mark.skipif(not API_KEY, reason="FMP_API_KEY not set")
@@ -28,6 +32,10 @@ def live_server():
     register_financials(mcp, client)
     register_valuation(mcp, client)
     register_market(mcp, client)
+    register_ownership(mcp, client)
+    register_news(mcp, client)
+    register_macro(mcp, client)
+    register_transcripts(mcp, client)
     return mcp, client
 
 
@@ -193,4 +201,178 @@ class TestLiveEarningsInfo:
         if quarters:
             q = quarters[0]
             print(f"  Latest quarter: {q['date']} ({q['period']}), Rev=${q['revenue']:,.0f}, EPS={q['eps_diluted']}")
+        await client.close()
+
+
+class TestLiveInsiderActivity:
+    @pytest.mark.asyncio
+    async def test_aapl(self, live_server):
+        mcp, client = live_server
+        async with Client(mcp) as c:
+            result = await c.call_tool("insider_activity", {"symbol": "AAPL"})
+        data = result.data
+        assert data["symbol"] == "AAPL"
+        print(f"\n  AAPL insider 30d: {data['net_activity_30d']}")
+        print(f"  Cluster buying: {data['cluster_buying']}")
+        if data.get("notable_trades"):
+            for t in data["notable_trades"][:3]:
+                print(f"    {t['name']} ({t['title']}): {t['type']} {t['shares']} @ ${t.get('price', 'N/A')}")
+        await client.close()
+
+
+class TestLiveInstitutionalOwnership:
+    @pytest.mark.asyncio
+    async def test_aapl(self, live_server):
+        mcp, client = live_server
+        async with Client(mcp) as c:
+            result = await c.call_tool("institutional_ownership", {"symbol": "AAPL"})
+        data = result.data
+        assert data["symbol"] == "AAPL"
+        if data.get("top_holders"):
+            print(f"\n  Top holders:")
+            for h in data["top_holders"][:5]:
+                print(f"    {h['holder']}: {h['shares']:,} ({h.get('ownership_pct', 'N/A')}%)")
+        print(f"  Position changes: {data.get('position_changes', {})}")
+        await client.close()
+
+
+class TestLiveStockNews:
+    @pytest.mark.asyncio
+    async def test_aapl(self, live_server):
+        mcp, client = live_server
+        async with Client(mcp) as c:
+            result = await c.call_tool("stock_news", {"symbol": "AAPL", "limit": 10})
+        data = result.data
+        assert data["symbol"] == "AAPL"
+        assert data["count"] > 0
+        print(f"\n  AAPL news: {data['count']} articles")
+        for a in data["articles"][:3]:
+            flag = f" [{a['event_flag']}]" if a.get("event_flag") else ""
+            print(f"    {a['date'][:10]}: {a['title'][:60]}{flag}")
+        await client.close()
+
+
+class TestLiveTreasuryRates:
+    @pytest.mark.asyncio
+    async def test_treasury(self, live_server):
+        mcp, client = live_server
+        async with Client(mcp) as c:
+            result = await c.call_tool("treasury_rates", {})
+        data = result.data
+        assert "yields" in data
+        y = data["yields"]
+        print(f"\n  Treasury rates ({data.get('date', 'N/A')}):")
+        print(f"    2Y={y.get('2y')}, 5Y={y.get('5y')}, 10Y={y.get('10y')}, 30Y={y.get('30y')}")
+        print(f"    Slope 10Y-2Y: {data.get('curve_slope_10y_2y')}, Inverted: {data.get('curve_inverted')}")
+        dcf = data.get("dcf_inputs", {})
+        if dcf.get("implied_cost_of_equity"):
+            print(f"    DCF: Rf={dcf['risk_free_rate']}, ERP={dcf['equity_risk_premium']}, CoE={dcf['implied_cost_of_equity']}")
+        await client.close()
+
+
+class TestLiveEconomicCalendar:
+    @pytest.mark.asyncio
+    async def test_calendar(self, live_server):
+        mcp, client = live_server
+        async with Client(mcp) as c:
+            result = await c.call_tool("economic_calendar", {"days_ahead": 14})
+        data = result.data
+        print(f"\n  Economic calendar: {data['count']} high-impact events ({data['period']})")
+        for e in data["events"][:5]:
+            print(f"    {e['date'][:10]}: {e['event']} (est={e.get('estimate')}, prev={e.get('previous')})")
+        await client.close()
+
+
+class TestLiveMarketOverview:
+    @pytest.mark.asyncio
+    async def test_overview(self, live_server):
+        mcp, client = live_server
+        async with Client(mcp) as c:
+            result = await c.call_tool("market_overview", {})
+        data = result.data
+        if data.get("sectors"):
+            print(f"\n  Sector performance:")
+            for s in data["sectors"][:5]:
+                print(f"    {s['sector']}: {s['change_pct']}%")
+        if data.get("top_gainers"):
+            print(f"  Top gainers: {', '.join(g['symbol'] for g in data['top_gainers'][:3])}")
+        if data.get("top_losers"):
+            print(f"  Top losers: {', '.join(l['symbol'] for l in data['top_losers'][:3])}")
+        await client.close()
+
+
+class TestLiveEarningsTranscript:
+    @pytest.mark.asyncio
+    async def test_aapl_latest(self, live_server):
+        mcp, client = live_server
+        async with Client(mcp) as c:
+            result = await c.call_tool("earnings_transcript", {"symbol": "AAPL"})
+        data = result.data
+        assert data["symbol"] == "AAPL"
+        print(f"\n  Transcript: Q{data.get('quarter')} {data.get('year')}, {data.get('length_chars', 0):,} chars")
+        if data.get("content"):
+            print(f"  Preview: {data['content'][:150]}...")
+        await client.close()
+
+
+class TestLiveRevenueSegments:
+    @pytest.mark.asyncio
+    async def test_aapl(self, live_server):
+        mcp, client = live_server
+        async with Client(mcp) as c:
+            result = await c.call_tool("revenue_segments", {"symbol": "AAPL"})
+        data = result.data
+        assert data["symbol"] == "AAPL"
+        if data.get("product_segments"):
+            ps = data["product_segments"]
+            print(f"\n  Product segments ({ps.get('date', 'N/A')}):")
+            for s in ps.get("segments", [])[:5]:
+                growth = f", YoY={s['yoy_growth_pct']}%" if s.get("yoy_growth_pct") is not None else ""
+                print(f"    {s['name']}: {s.get('pct_of_total', 0):.1f}%{growth}")
+            print(f"  Fastest growing: {ps.get('fastest_growing')}")
+            print(f"  Concentration risk: {ps.get('concentration_risk')}")
+        if data.get("geographic_segments"):
+            gs = data["geographic_segments"]
+            print(f"  Geographic segments:")
+            for s in gs.get("segments", [])[:5]:
+                print(f"    {s['name']}: {s.get('pct_of_total', 0):.1f}%")
+        await client.close()
+
+
+class TestLivePeerComparison:
+    @pytest.mark.asyncio
+    async def test_aapl(self, live_server):
+        mcp, client = live_server
+        async with Client(mcp) as c:
+            result = await c.call_tool("peer_comparison", {"symbol": "AAPL"})
+        data = result.data
+        assert data["symbol"] == "AAPL"
+        print(f"\n  Peers: {data.get('peers', [])[:5]}")
+        comps = data.get("comparisons", {})
+        if comps.get("pe_ttm"):
+            pe = comps["pe_ttm"]
+            print(f"  P/E: target={pe['target']}, median={pe['peer_median']}, premium={pe.get('premium_discount_pct')}%, rank={pe.get('rank')}")
+        if comps.get("ev_ebitda_ttm"):
+            ev = comps["ev_ebitda_ttm"]
+            print(f"  EV/EBITDA: target={ev['target']}, median={ev['peer_median']}, premium={ev.get('premium_discount_pct')}%")
+        await client.close()
+
+
+class TestLiveDividendsInfo:
+    @pytest.mark.asyncio
+    async def test_aapl(self, live_server):
+        mcp, client = live_server
+        async with Client(mcp) as c:
+            result = await c.call_tool("dividends_info", {"symbol": "AAPL"})
+        data = result.data
+        assert data["symbol"] == "AAPL"
+        print(f"\n  AAPL dividends:")
+        print(f"    Current yield: {data.get('dividend_yield_pct')}%")
+        print(f"    Annual dividend: ${data.get('current_annual_dividend')}")
+        print(f"    CAGR 3Y: {data.get('dividend_cagr_3y')}%, 5Y: {data.get('dividend_cagr_5y')}%")
+        if data.get("upcoming_ex_date"):
+            ex = data["upcoming_ex_date"]
+            print(f"    Next ex-date: {ex['ex_date']}, ${ex['dividend']}")
+        if data.get("stock_splits"):
+            print(f"    Splits: {', '.join(f\"{s['date']}: {s['label']}\" for s in data['stock_splits'])}")
         await client.close()
