@@ -15,22 +15,30 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         annotations={
             "title": "Earnings Transcript",
             "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True,
         }
     )
     async def earnings_transcript(
         symbol: str,
         year: int | None = None,
         quarter: int | None = None,
+        max_chars: int = 10000,
+        offset: int = 0,
     ) -> dict:
         """Get an earnings call transcript for a company.
 
         When year/quarter are not specified, fetches the most recent available
-        transcript. Returns the full transcript text.
+        transcript. Returns paginated transcript content with line-boundary
+        snapping. Use offset + max_chars to paginate through long transcripts.
 
         Args:
             symbol: Stock ticker symbol (e.g. "AAPL")
             year: Fiscal year (e.g. 2025). Omit for latest available.
             quarter: Quarter number 1-4. Omit for latest available.
+            max_chars: Max characters to return per call (default 10000)
+            offset: Character offset to start from (default 0). Use next_offset from previous response to continue.
         """
         symbol = symbol.upper().strip()
 
@@ -95,13 +103,40 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         if not transcript_text:
             return {"error": f"Transcript for '{symbol}' Q{quarter} {year} is empty"}
 
+        total_chars = len(transcript_text)
+
+        # Clamp offset
+        offset = max(0, min(offset, total_chars))
+        max_chars = max(1, max_chars)
+
+        # Snap offset forward to next line boundary (unless 0 or already at one)
+        start = offset
+        if start > 0 and start < total_chars and transcript_text[start - 1] != "\n":
+            nl = transcript_text.find("\n", start)
+            start = nl + 1 if nl != -1 else start
+
+        # Compute end and snap backward to line boundary
+        end = min(start + max_chars, total_chars)
+        if end < total_chars:
+            nl = transcript_text.rfind("\n", start, end)
+            if nl != -1 and nl > start:
+                end = nl + 1
+
+        chunk = transcript_text[start:end]
+        truncated = end < total_chars
+
         result = {
             "symbol": symbol,
             "year": year,
             "quarter": quarter,
             "date": transcript_list[0].get("date") if transcript_list else None,
-            "content": transcript_text,
-            "length_chars": len(transcript_text),
+            "content": chunk,
+            "length_chars": len(chunk),
+            "total_chars": total_chars,
+            "offset": start,
+            "truncated": truncated,
         }
+        if truncated:
+            result["next_offset"] = end
 
         return result

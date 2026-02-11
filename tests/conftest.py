@@ -307,7 +307,20 @@ AAPL_TRANSCRIPT = [{
     "quarter": 1,
     "year": 2026,
     "date": "2026-01-29",
-    "content": "Good afternoon, everyone. Thank you for joining Apple's fiscal year 2026 first quarter earnings conference call. I'm Tim Cook, CEO of Apple. We had a great quarter with record revenue...",
+    "content": (
+        "Good afternoon, everyone. Thank you for joining Apple's fiscal year 2026 first quarter earnings conference call.\n"
+        "I'm Tim Cook, CEO of Apple. We had a great quarter with record revenue of $124.3 billion.\n"
+        "Our services business reached an all-time high, and we saw strong momentum across every product category.\n"
+        "Now let me turn it over to our CFO, Kevan Parekh, for the financial details.\n"
+        "Thanks, Tim. Revenue was up 16% year over year, driven by strong iPhone and Services performance.\n"
+        "Gross margin came in at 47.3%, up 120 basis points from the year-ago quarter.\n"
+        "We returned over $29 billion to shareholders through dividends and share repurchases.\n"
+        "Operator, we are ready for questions.\n"
+        "Our first question comes from Amit Daryanani of Evercore. Please go ahead.\n"
+        "Thanks. Tim, can you talk about the demand environment heading into the March quarter?\n"
+        "Sure, Amit. We are seeing strong demand across all geographies and remain very optimistic.\n"
+        "Thank you. That concludes today's call."
+    ),
 }]
 
 # --- Revenue Segments ---

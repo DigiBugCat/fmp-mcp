@@ -589,6 +589,11 @@ class TestEarningsTranscript:
         assert data["quarter"] == 1
         assert "Tim Cook" in data["content"]
         assert data["length_chars"] > 0
+        assert data["total_chars"] > 0
+        assert data["offset"] == 0
+        # Mock transcript is small enough to fit in default max_chars
+        assert data["truncated"] is False
+        assert "next_offset" not in data
         await fmp.close()
 
     @pytest.mark.asyncio
@@ -604,6 +609,8 @@ class TestEarningsTranscript:
         assert data["symbol"] == "AAPL"
         assert data["quarter"] == 4
         assert data["year"] == 2025
+        assert data["total_chars"] > 0
+        assert isinstance(data["truncated"], bool)
         await fmp.close()
 
     @pytest.mark.asyncio
@@ -617,6 +624,74 @@ class TestEarningsTranscript:
 
         data = result.data
         assert "error" in data
+        await fmp.close()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_transcript_pagination(self):
+        """Test paginating through a transcript with small max_chars."""
+        respx.get(f"{BASE}/stable/earning-call-transcript").mock(return_value=httpx.Response(200, json=AAPL_TRANSCRIPT))
+
+        mcp, fmp = _make_server(register_transcripts)
+
+        # First page
+        async with Client(mcp) as c:
+            result = await c.call_tool("earnings_transcript", {
+                "symbol": "AAPL", "year": 2026, "quarter": 1, "max_chars": 200,
+            })
+
+        data = result.data
+        assert data["truncated"] is True
+        assert "next_offset" in data
+        assert data["length_chars"] <= 200
+        assert data["length_chars"] > 0
+        assert data["offset"] == 0
+        # Content should end at a line boundary (newline)
+        assert data["content"].endswith("\n")
+        first_chunk = data["content"]
+        next_offset = data["next_offset"]
+
+        # Second page
+        async with Client(mcp) as c:
+            result2 = await c.call_tool("earnings_transcript", {
+                "symbol": "AAPL", "year": 2026, "quarter": 1,
+                "max_chars": 200, "offset": next_offset,
+            })
+
+        data2 = result2.data
+        assert data2["offset"] == next_offset
+        assert data2["length_chars"] > 0
+        # No overlap between chunks
+        assert data2["content"] != first_chunk
+        # Total chars should be consistent
+        assert data2["total_chars"] == data["total_chars"]
+        await fmp.close()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_transcript_full_reassembly(self):
+        """Paginating through entire transcript should yield all content."""
+        respx.get(f"{BASE}/stable/earning-call-transcript").mock(return_value=httpx.Response(200, json=AAPL_TRANSCRIPT))
+
+        mcp, fmp = _make_server(register_transcripts)
+        all_content = ""
+        offset = 0
+        max_iters = 20  # safety limit
+
+        for _ in range(max_iters):
+            async with Client(mcp) as c:
+                result = await c.call_tool("earnings_transcript", {
+                    "symbol": "AAPL", "year": 2026, "quarter": 1,
+                    "max_chars": 200, "offset": offset,
+                })
+            data = result.data
+            all_content += data["content"]
+            if not data["truncated"]:
+                break
+            offset = data["next_offset"]
+
+        # Reassembled content should match the original
+        assert all_content == AAPL_TRANSCRIPT[0]["content"]
         await fmp.close()
 
 
