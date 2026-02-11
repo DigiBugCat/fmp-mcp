@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import calendar
 from datetime import date, timedelta
 from typing import TYPE_CHECKING
+
+import httpx
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
     from fmp_client import FMPClient
+
+FINRA_URL = "https://api.finra.org/data/group/otcMarket/name/consolidatedShortInterest"
 
 
 def _safe_first(data: list | None) -> dict:
@@ -30,6 +35,77 @@ def _latest_quarter() -> tuple[int, int]:
         return year, 2
     else:
         return year, 3
+
+
+def _short_interest_dates() -> list[str]:
+    """Generate candidate FINRA settlement dates (15th + last biz day).
+
+    FINRA publishes short interest on the 15th and last business day
+    of each month. We generate ~6 candidates (current + 2 prior months),
+    filter out future dates, and sort descending (newest first).
+    """
+    today = date.today()
+    candidates: list[date] = []
+
+    for months_back in range(3):
+        # Walk back months
+        month = today.month - months_back
+        year = today.year
+        while month < 1:
+            month += 12
+            year -= 1
+
+        # 15th of the month
+        candidates.append(date(year, month, 15))
+
+        # Last business day of the month
+        last_day = calendar.monthrange(year, month)[1]
+        d = date(year, month, last_day)
+        while d.weekday() >= 5:  # Sat=5, Sun=6
+            d -= timedelta(days=1)
+        candidates.append(d)
+
+    # Filter future dates and sort newest first
+    candidates = [d for d in candidates if d <= today]
+    candidates.sort(reverse=True)
+    return [d.isoformat() for d in candidates]
+
+
+async def _fetch_finra_short_interest(symbol: str, settlement_date: str) -> dict | None:
+    """Fetch FINRA consolidated short interest for one settlement date.
+
+    Returns the first matching record, or None if no data (204 or empty).
+    """
+    payload = {
+        "fields": [
+            "settlementDate",
+            "currentShortPositionQuantity",
+            "previousShortPositionQuantity",
+            "changePreviousNumber",
+            "changePercent",
+            "averageDailyVolumeQuantity",
+            "daysToCoverQuantity",
+        ],
+        "dateRangeFilters": [
+            {"fieldName": "settlementDate", "startDate": settlement_date, "endDate": settlement_date}
+        ],
+        "domainFilters": [
+            {"fieldName": "symbolCode", "values": [symbol]}
+        ],
+        "limit": 1,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=10) as http:
+            resp = await http.post(FINRA_URL, json=payload)
+        if resp.status_code == 204 or not resp.content:
+            return None
+        resp.raise_for_status()
+        data = resp.json()
+        if isinstance(data, list) and data:
+            return data[0]
+        return None
+    except (httpx.HTTPError, ValueError):
+        return None
 
 
 def register(mcp: FastMCP, client: FMPClient) -> None:
@@ -291,6 +367,95 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             _warnings.append("ownership summary unavailable")
         if not holders_list:
             _warnings.append("holder details unavailable")
+        if not float_info:
+            _warnings.append("float data unavailable")
+        if _warnings:
+            result["_warnings"] = _warnings
+
+        return result
+
+    @mcp.tool(
+        annotations={
+            "title": "Short Interest",
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True,
+        }
+    )
+    async def short_interest(symbol: str) -> dict:
+        """Get short interest data with float context.
+
+        Combines FINRA consolidated short interest (free, no API key)
+        with FMP shares-float to compute short % of float and outstanding.
+
+        Returns shares short, days to cover, change vs prior period,
+        and short as % of float/outstanding.
+
+        Args:
+            symbol: Stock ticker symbol (e.g. "AAPL")
+        """
+        symbol = symbol.upper().strip()
+
+        candidates = _short_interest_dates()
+        finra_tasks = [_fetch_finra_short_interest(symbol, d) for d in candidates]
+        float_task = client.get_safe(
+            "/stable/shares-float",
+            params={"symbol": symbol},
+            cache_ttl=client.TTL_DAILY,
+            default=[],
+        )
+
+        all_results = await asyncio.gather(*finra_tasks, float_task)
+        finra_results = all_results[:-1]
+        float_data = all_results[-1]
+
+        # Take first non-None FINRA result (candidates sorted newest-first)
+        finra = None
+        for r in finra_results:
+            if r is not None:
+                finra = r
+                break
+
+        float_info = _safe_first(float_data)
+
+        if finra is None and not float_info:
+            return {"error": f"No short interest or float data found for '{symbol}'"}
+
+        result: dict = {"symbol": symbol}
+
+        if finra is not None:
+            result["settlement_date"] = finra.get("settlementDate")
+            result["short_interest"] = {
+                "shares_short": finra.get("currentShortPositionQuantity"),
+                "previous_shares_short": finra.get("previousShortPositionQuantity"),
+                "change_pct": finra.get("changePercent"),
+                "avg_daily_volume": finra.get("averageDailyVolumeQuantity"),
+                "days_to_cover": finra.get("daysToCoverQuantity"),
+            }
+
+        if float_info:
+            float_shares = float_info.get("floatShares")
+            outstanding = float_info.get("outstandingShares")
+            shares_short = (finra or {}).get("currentShortPositionQuantity")
+
+            short_pct_of_float = None
+            short_pct_of_outstanding = None
+            if shares_short and float_shares and float_shares > 0:
+                short_pct_of_float = round(shares_short / float_shares * 100, 2)
+            if shares_short and outstanding and outstanding > 0:
+                short_pct_of_outstanding = round(shares_short / outstanding * 100, 2)
+
+            result["float_context"] = {
+                "float_shares": float_shares,
+                "outstanding_shares": outstanding,
+                "short_pct_of_float": short_pct_of_float,
+                "short_pct_of_outstanding": short_pct_of_outstanding,
+            }
+
+        _warnings = []
+        if finra is None:
+            _warnings.append("FINRA short interest unavailable")
         if not float_info:
             _warnings.append("float data unavailable")
         if _warnings:
