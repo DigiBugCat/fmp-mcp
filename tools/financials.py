@@ -1,4 +1,4 @@
-"""Financial statements and growth tools."""
+"""Financial statements, growth, and financial health tools."""
 
 from __future__ import annotations
 
@@ -289,6 +289,92 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             _warnings.append("product segmentation unavailable")
         if not geo_list:
             _warnings.append("geographic segmentation unavailable")
+        if _warnings:
+            result["_warnings"] = _warnings
+
+        return result
+
+    @mcp.tool(
+        annotations={
+            "title": "Financial Health",
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True,
+        }
+    )
+    async def financial_health(symbol: str) -> dict:
+        """Get financial health scores and owner earnings.
+
+        Returns Altman Z-Score, Piotroski F-Score, owner earnings,
+        and maintenance vs growth capex breakdown.
+
+        Args:
+            symbol: Stock ticker symbol (e.g. "AAPL")
+        """
+        symbol = symbol.upper().strip()
+        sym_params = {"symbol": symbol}
+
+        scores_data, owner_data = await asyncio.gather(
+            client.get_safe(
+                "/stable/financial-scores",
+                params=sym_params,
+                cache_ttl=client.TTL_DAILY,
+                default=[],
+            ),
+            client.get_safe(
+                "/stable/owner-earnings",
+                params=sym_params,
+                cache_ttl=client.TTL_DAILY,
+                default=[],
+            ),
+        )
+
+        scores_list = scores_data if isinstance(scores_data, list) else []
+        owner_list = owner_data if isinstance(owner_data, list) else []
+
+        if not scores_list and not owner_list:
+            return {"error": f"No financial health data found for '{symbol}'"}
+
+        def _safe_first(data: list | None) -> dict:
+            if isinstance(data, list) and data:
+                return data[0]
+            return {}
+
+        scores = _safe_first(scores_list)
+        owner = _safe_first(owner_list)
+
+        result: dict = {"symbol": symbol}
+
+        if scores:
+            result["scores"] = {
+                "altman_z_score": scores.get("altmanZScore"),
+                "piotroski_score": scores.get("piotroskiScore"),
+            }
+            result["score_inputs"] = {
+                "working_capital": scores.get("workingCapital"),
+                "total_assets": scores.get("totalAssets"),
+                "retained_earnings": scores.get("retainedEarnings"),
+                "ebit": scores.get("ebit"),
+                "market_cap": scores.get("marketCap"),
+                "total_liabilities": scores.get("totalLiabilities"),
+                "revenue": scores.get("revenue"),
+            }
+
+        if owner:
+            result["owner_earnings"] = {
+                "owner_earnings": owner.get("ownersEarnings"),
+                "owner_earnings_per_share": owner.get("ownersEarningsPerShare"),
+                "average_ppe": owner.get("averagePPE"),
+                "maintenance_capex": owner.get("maintenanceCapex"),
+                "growth_capex": owner.get("growthCapex"),
+            }
+
+        _warnings = []
+        if not scores_list:
+            _warnings.append("financial scores unavailable")
+        if not owner_list:
+            _warnings.append("owner earnings unavailable")
         if _warnings:
             result["_warnings"] = _warnings
 

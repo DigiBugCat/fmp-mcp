@@ -1,4 +1,4 @@
-"""Stock news and press release tools."""
+"""Stock news, press release, and M&A activity tools."""
 
 from __future__ import annotations
 
@@ -8,6 +8,28 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from fastmcp import FastMCP
     from fmp_client import FMPClient
+
+
+# Event keywords for flagging important news
+_EVENT_KEYWORDS = {
+    "earnings": ["earnings", "quarterly results", "q1 ", "q2 ", "q3 ", "q4 ", "fiscal"],
+    "guidance": ["guidance", "outlook", "forecast", "raises", "lowers"],
+    "fda": ["fda", "approval", "clinical trial", "phase "],
+    "merger_acquisition": ["acquisition", "acquire", "merger", "takeover", "buyout"],
+    "dividend": ["dividend", "distribution", "payout"],
+    "restructuring": ["restructuring", "layoff", "cost cutting", "reorganization"],
+    "leadership": ["ceo", "cfo", "appoints", "resignation", "board of directors"],
+    "regulatory": ["sec", "lawsuit", "investigation", "compliance", "settlement"],
+}
+
+
+def _detect_event(title: str) -> str | None:
+    """Detect major event type from headline."""
+    title_lower = title.lower()
+    for event_type, keywords in _EVENT_KEYWORDS.items():
+        if any(kw in title_lower for kw in keywords):
+            return event_type
+    return None
 
 
 def register(mcp: FastMCP, client: FMPClient) -> None:
@@ -109,24 +131,71 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
 
         return result
 
+    @mcp.tool(
+        annotations={
+            "title": "M&A Activity",
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True,
+        }
+    )
+    async def mna_activity(
+        symbol: str | None = None,
+        limit: int = 20,
+    ) -> dict:
+        """Get merger and acquisition activity.
 
-# Event keywords for flagging important news
-_EVENT_KEYWORDS = {
-    "earnings": ["earnings", "quarterly results", "q1 ", "q2 ", "q3 ", "q4 ", "fiscal"],
-    "guidance": ["guidance", "outlook", "forecast", "raises", "lowers"],
-    "fda": ["fda", "approval", "clinical trial", "phase "],
-    "merger_acquisition": ["acquisition", "acquire", "merger", "takeover", "buyout"],
-    "dividend": ["dividend", "distribution", "payout"],
-    "restructuring": ["restructuring", "layoff", "cost cutting", "reorganization"],
-    "leadership": ["ceo", "cfo", "appoints", "resignation", "board of directors"],
-    "regulatory": ["sec", "lawsuit", "investigation", "compliance", "settlement"],
-}
+        Dual mode: pass a symbol to search for M&A involving that company,
+        or omit to see latest M&A filings market-wide.
 
+        Args:
+            symbol: Optional stock ticker to search for (e.g. "AAPL")
+            limit: Max results to return (default 20)
+        """
+        limit = max(1, min(limit, 50))
 
-def _detect_event(title: str) -> str | None:
-    """Detect major event type from headline."""
-    title_lower = title.lower()
-    for event_type, keywords in _EVENT_KEYWORDS.items():
-        if any(kw in title_lower for kw in keywords):
-            return event_type
-    return None
+        if symbol:
+            symbol = symbol.upper().strip()
+            data = await client.get_safe(
+                "/stable/mergers-acquisitions-search",
+                params={"name": symbol, "limit": limit},
+                cache_ttl=client.TTL_HOURLY,
+                default=[],
+            )
+        else:
+            data = await client.get_safe(
+                "/stable/mergers-acquisitions-latest",
+                params={"page": 0, "limit": limit},
+                cache_ttl=client.TTL_HOURLY,
+                default=[],
+            )
+
+        entries = data if isinstance(data, list) else []
+
+        if not entries:
+            msg = "No M&A activity found"
+            if symbol:
+                msg += f" for '{symbol}'"
+            return {"error": msg}
+
+        # Sort by transaction date descending
+        entries.sort(key=lambda x: x.get("transactionDate") or "", reverse=True)
+
+        deals = []
+        for e in entries[:limit]:
+            deals.append({
+                "symbol": e.get("symbol"),
+                "company": e.get("companyName"),
+                "targeted_company": e.get("targetedCompanyName"),
+                "targeted_symbol": e.get("targetedSymbol"),
+                "transaction_date": e.get("transactionDate"),
+                "accepted_date": e.get("acceptedDate"),
+                "filing_url": e.get("link"),
+            })
+
+        return {
+            "symbol": symbol,
+            "count": len(deals),
+            "deals": deals,
+        }

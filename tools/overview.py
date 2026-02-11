@@ -1,4 +1,4 @@
-"""Company overview and stock search tools."""
+"""Company overview, search, executives, and SEC filings tools."""
 
 from __future__ import annotations
 
@@ -196,3 +196,133 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             })
 
         return {"results": results, "count": len(results)}
+
+    @mcp.tool(
+        annotations={
+            "title": "Company Executives",
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True,
+        }
+    )
+    async def company_executives(symbol: str) -> dict:
+        """Get key executives with titles and compensation.
+
+        Returns CEO, CFO, and other C-suite executives sorted by compensation.
+
+        Args:
+            symbol: Stock ticker symbol (e.g. "AAPL")
+        """
+        symbol = symbol.upper().strip()
+
+        data = await client.get_safe(
+            "/stable/key-executives",
+            params={"symbol": symbol},
+            cache_ttl=client.TTL_DAILY,
+            default=[],
+        )
+
+        exec_list = data if isinstance(data, list) else []
+
+        if not exec_list:
+            return {"error": f"No executive data found for '{symbol}'"}
+
+        # Sort by compensation descending (None/0 goes last)
+        exec_list.sort(key=lambda e: e.get("pay") or 0, reverse=True)
+
+        executives = []
+        for e in exec_list:
+            executives.append({
+                "name": e.get("name"),
+                "title": e.get("title"),
+                "pay": e.get("pay"),
+                "currency": e.get("currencyPay"),
+                "year_born": e.get("yearBorn"),
+                "title_since": e.get("titleSince"),
+                "gender": e.get("gender"),
+            })
+
+        return {
+            "symbol": symbol,
+            "count": len(executives),
+            "executives": executives,
+        }
+
+    @mcp.tool(
+        annotations={
+            "title": "SEC Filings",
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True,
+        }
+    )
+    async def sec_filings(
+        symbol: str,
+        type: str | None = None,
+        limit: int = 20,
+    ) -> dict:
+        """Get recent SEC filings for a company.
+
+        Returns filing date, form type, and links. Optionally filter by type
+        (e.g. "10-K", "10-Q", "8-K").
+
+        Args:
+            symbol: Stock ticker symbol (e.g. "AAPL")
+            type: Optional filing type filter (e.g. "10-K", "10-Q", "8-K")
+            limit: Max filings to return (default 20)
+        """
+        symbol = symbol.upper().strip()
+        limit = max(1, min(limit, 100))
+
+        # Fetch profile for CIK (needed for filings lookup)
+        profile_data = await client.get_safe(
+            "/stable/profile",
+            params={"symbol": symbol},
+            cache_ttl=client.TTL_DAILY,
+            default=[],
+        )
+        profile = _safe_first(profile_data)
+        cik = profile.get("cik")
+
+        if not cik:
+            return {"error": f"Could not find CIK for '{symbol}'"}
+
+        data = await client.get_safe(
+            "/stable/sec-filings-search/cik",
+            params={"cik": cik, "limit": limit},
+            cache_ttl=client.TTL_HOURLY,
+            default=[],
+        )
+
+        filings_list = data if isinstance(data, list) else []
+
+        if not filings_list:
+            return {"error": f"No SEC filings found for '{symbol}' (CIK: {cik})"}
+
+        # Client-side type filter
+        if type:
+            type_upper = type.upper().strip()
+            filings_list = [f for f in filings_list if (f.get("formType") or "").upper() == type_upper]
+
+        # Sort by filing date descending
+        filings_list.sort(key=lambda f: f.get("filingDate") or "", reverse=True)
+
+        filings = []
+        for f in filings_list[:limit]:
+            filings.append({
+                "filing_date": f.get("filingDate"),
+                "accepted_date": f.get("acceptedDate"),
+                "form_type": f.get("formType"),
+                "url": f.get("finalLink") or f.get("link"),
+                "cik": f.get("cik"),
+            })
+
+        return {
+            "symbol": symbol,
+            "cik": cik,
+            "type_filter": type,
+            "count": len(filings),
+            "filings": filings,
+        }

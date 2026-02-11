@@ -511,6 +511,187 @@ AAPL_EARNINGS = [
     {"date": "2024-05-02", "symbol": "AAPL", "eps": 1.53, "epsEstimated": 1.50, "revenue": 90753000000, "revenueEstimated": 90000000000, "fiscalDateEnding": "2024-03-30"},
 ]
 
+# --- Key Executives ---
+
+AAPL_EXECUTIVES = [
+    {"name": "Timothy D. Cook", "title": "Chief Executive Officer", "pay": 16425933, "currencyPay": "USD", "gender": "male", "yearBorn": 1960, "titleSince": "2011-08-24", "active": True},
+    {"name": "Luca Maestri", "title": "Chief Financial Officer", "pay": 6012461, "currencyPay": "USD", "gender": "male", "yearBorn": 1963, "titleSince": "2014-05-01", "active": True},
+    {"name": "Jeff Williams", "title": "Chief Operating Officer", "pay": 5819125, "currencyPay": "USD", "gender": "male", "yearBorn": 1964, "titleSince": "2015-12-17", "active": True},
+    {"name": "Katherine Adams", "title": "General Counsel", "pay": None, "currencyPay": "USD", "gender": "female", "yearBorn": 1964, "titleSince": "2017-11-09", "active": True},
+]
+
+# --- SEC Filings (via CIK-based search) ---
+
+AAPL_PROFILE_WITH_CIK = [{
+    "symbol": "AAPL",
+    "companyName": "Apple Inc.",
+    "sector": "Technology",
+    "industry": "Consumer Electronics",
+    "ceo": "Mr. Timothy D. Cook",
+    "cik": "0000320193",
+    "exchange": "NASDAQ",
+    "country": "US",
+}]
+
+AAPL_SEC_FILINGS = [
+    {"symbol": "AAPL", "cik": "0000320193", "filingDate": "2026-01-30", "acceptedDate": "2026-01-30 16:30:00", "formType": "10-Q", "link": "https://example.com/10q", "finalLink": "https://example.com/10q-final"},
+    {"symbol": "AAPL", "cik": "0000320193", "filingDate": "2026-01-15", "acceptedDate": "2026-01-15 10:00:00", "formType": "8-K", "link": "https://example.com/8k", "finalLink": "https://example.com/8k-final"},
+    {"symbol": "AAPL", "cik": "0000320193", "filingDate": "2025-11-01", "acceptedDate": "2025-11-01 16:30:00", "formType": "10-K", "link": "https://example.com/10k", "finalLink": "https://example.com/10k-final"},
+    {"symbol": "AAPL", "cik": "0000320193", "filingDate": "2025-10-15", "acceptedDate": "2025-10-15 10:00:00", "formType": "8-K", "link": "https://example.com/8k2", "finalLink": "https://example.com/8k2-final"},
+]
+
+# --- Technical Indicators ---
+
+AAPL_RSI = [
+    {"date": "2026-02-11", "open": 274.0, "high": 276.0, "low": 273.0, "close": 275.5, "volume": 45000000, "rsi": 58.32},
+    {"date": "2026-02-10", "open": 273.0, "high": 275.0, "low": 272.0, "close": 274.0, "volume": 42000000, "rsi": 55.18},
+    {"date": "2026-02-07", "open": 271.0, "high": 274.0, "low": 270.0, "close": 273.0, "volume": 48000000, "rsi": 52.44},
+]
+
+# --- Financial Health ---
+
+AAPL_FINANCIAL_SCORES = [{
+    "symbol": "AAPL",
+    "altmanZScore": 8.21,
+    "piotroskiScore": 7,
+    "workingCapital": -1234000000,
+    "totalAssets": 359241000000,
+    "retainedEarnings": 4336000000,
+    "ebit": 133050000000,
+    "marketCap": 4022528102504,
+    "totalLiabilities": 285508000000,
+    "revenue": 416161000000,
+}]
+
+AAPL_OWNER_EARNINGS = [{
+    "symbol": "AAPL",
+    "date": "2025-09-27",
+    "ownersEarnings": 95432000000,
+    "ownersEarningsPerShare": 6.38,
+    "averagePPE": 42500000000,
+    "maintenanceCapex": -8500000000,
+    "growthCapex": -4215000000,
+}]
+
+# --- IPO Calendar ---
+
+IPO_CALENDAR = [
+    {"symbol": "NEWCO", "date": "2026-02-20", "company": "NewCo Technologies", "exchange": "NASDAQ", "actions": "expected", "shares": 10000000, "priceRange": "18.00 - 22.00", "marketCap": 2200000000},
+    {"symbol": "FRESH", "date": "2026-02-18", "company": "FreshFoods Inc", "exchange": "NYSE", "actions": "priced", "shares": 5000000, "priceRange": "12.00 - 15.00", "marketCap": 750000000},
+]
+
+# --- Dividends Calendar ---
+
+DIVIDENDS_CALENDAR = [
+    {"symbol": "AAPL", "date": "2026-02-14", "dividend": 0.26, "adjDividend": 0.26, "recordDate": "2026-02-17", "paymentDate": "2026-02-21", "yield": 0.38, "frequency": "quarterly"},
+    {"symbol": "MSFT", "date": "2026-02-15", "dividend": 0.75, "adjDividend": 0.75, "recordDate": "2026-02-18", "paymentDate": "2026-02-25", "yield": 0.72, "frequency": "quarterly"},
+    {"symbol": "JNJ", "date": "2026-02-16", "dividend": 1.24, "adjDividend": 1.24, "recordDate": "2026-02-19", "paymentDate": "2026-02-28", "yield": 3.15, "frequency": "quarterly"},
+]
+
+# --- Index Constituents ---
+
+SP500_CONSTITUENTS = [
+    {"symbol": "AAPL", "name": "Apple Inc.", "sector": "Information Technology", "subSector": "Technology Hardware, Storage & Peripherals", "headQuarter": "Cupertino, California", "dateFirstAdded": "1982-11-30", "cik": "0000320193", "founded": "1976"},
+    {"symbol": "MSFT", "name": "Microsoft Corporation", "sector": "Information Technology", "subSector": "Systems Software", "headQuarter": "Redmond, Washington", "dateFirstAdded": "1994-06-01", "cik": "0000789019", "founded": "1975"},
+    {"symbol": "AMZN", "name": "Amazon.com, Inc.", "sector": "Consumer Discretionary", "subSector": "Internet & Direct Marketing Retail", "headQuarter": "Seattle, Washington", "dateFirstAdded": "2005-11-18", "cik": "0001018724", "founded": "1994"},
+]
+
+# --- Sector PE Valuation ---
+
+SECTOR_PE_NYSE = [
+    {"date": "2026-02-11", "sector": "Technology", "exchange": "NYSE", "pe": 28.5},
+    {"date": "2026-02-11", "sector": "Healthcare", "exchange": "NYSE", "pe": 22.1},
+    {"date": "2026-02-11", "sector": "Financial Services", "exchange": "NYSE", "pe": 14.8},
+]
+
+SECTOR_PE_NASDAQ = [
+    {"date": "2026-02-11", "sector": "Technology", "exchange": "NASDAQ", "pe": 35.2},
+    {"date": "2026-02-11", "sector": "Healthcare", "exchange": "NASDAQ", "pe": 25.3},
+    {"date": "2026-02-11", "sector": "Financial Services", "exchange": "NASDAQ", "pe": 16.2},
+]
+
+INDUSTRY_PE_NYSE = [
+    {"date": "2026-02-11", "industry": "Banks", "exchange": "NYSE", "pe": 12.5},
+    {"date": "2026-02-11", "industry": "Software", "exchange": "NYSE", "pe": 32.1},
+    {"date": "2026-02-11", "industry": "Pharmaceuticals", "exchange": "NYSE", "pe": 18.3},
+]
+
+INDUSTRY_PE_NASDAQ = [
+    {"date": "2026-02-11", "industry": "Software", "exchange": "NASDAQ", "pe": 38.7},
+    {"date": "2026-02-11", "industry": "Biotechnology", "exchange": "NASDAQ", "pe": 45.2},
+    {"date": "2026-02-11", "industry": "Semiconductors", "exchange": "NASDAQ", "pe": 30.5},
+]
+
+# --- M&A Activity ---
+
+MNA_LATEST = [
+    {"symbol": "TGT", "companyName": "Target Corp", "targetedCompanyName": "SmallRetail Inc", "targetedSymbol": "SRTL", "transactionDate": "2026-02-05", "acceptedDate": "2026-02-05 10:00:00", "link": "https://example.com/mna1"},
+    {"symbol": "AMZN", "companyName": "Amazon.com Inc", "targetedCompanyName": "TechStartup LLC", "targetedSymbol": "TSLC", "transactionDate": "2026-01-20", "acceptedDate": "2026-01-20 10:00:00", "link": "https://example.com/mna2"},
+]
+
+MNA_SEARCH_AAPL = [
+    {"symbol": "AAPL", "companyName": "Apple Inc.", "targetedCompanyName": "AI Labs Corp", "targetedSymbol": "AILB", "transactionDate": "2026-01-10", "acceptedDate": "2026-01-10 10:00:00", "link": "https://example.com/mna3"},
+]
+
+# --- Asset Quotes (commodity, crypto, forex) ---
+
+GOLD_QUOTE = [{
+    "symbol": "GCUSD",
+    "name": "Gold",
+    "price": 2045.30,
+    "change": 12.50,
+    "changesPercentage": 0.61,
+    "dayLow": 2030.00,
+    "dayHigh": 2050.00,
+    "yearLow": 1810.00,
+    "yearHigh": 2075.00,
+    "volume": 185000,
+}]
+
+BATCH_COMMODITIES = [
+    {"symbol": "GCUSD", "price": 2045.30, "change": 12.50, "volume": 185000},
+    {"symbol": "CLUSD", "price": 78.42, "change": -1.23, "volume": 320000},
+    {"symbol": "SIUSD", "price": 23.15, "change": 0.45, "volume": 95000},
+]
+
+BTCUSD_QUOTE = [{
+    "symbol": "BTCUSD",
+    "name": "Bitcoin",
+    "price": 97500.00,
+    "change": 1250.00,
+    "changesPercentage": 1.30,
+    "dayLow": 95800.00,
+    "dayHigh": 98200.00,
+    "yearLow": 38000.00,
+    "yearHigh": 105000.00,
+    "volume": 28500000000,
+}]
+
+BATCH_CRYPTO = [
+    {"symbol": "BTCUSD", "price": 97500.00, "change": 1250.00, "volume": 28500000000},
+    {"symbol": "ETHUSD", "price": 3200.00, "change": -45.00, "volume": 12000000000},
+    {"symbol": "SOLUSD", "price": 145.00, "change": 8.50, "volume": 3500000000},
+]
+
+EURUSD_QUOTE = [{
+    "symbol": "EURUSD",
+    "name": "EUR/USD",
+    "price": 1.0842,
+    "change": 0.0023,
+    "changesPercentage": 0.21,
+    "dayLow": 1.0810,
+    "dayHigh": 1.0855,
+    "yearLow": 1.0200,
+    "yearHigh": 1.1100,
+    "volume": 0,
+}]
+
+BATCH_FOREX = [
+    {"symbol": "EURUSD", "price": 1.0842, "change": 0.0023, "volume": 0},
+    {"symbol": "GBPUSD", "price": 1.2650, "change": -0.0045, "volume": 0},
+    {"symbol": "USDJPY", "price": 149.85, "change": 0.35, "volume": 0},
+]
+
 # --- /stable/grades (individual analyst actions) ---
 
 AAPL_GRADES_DETAIL = [

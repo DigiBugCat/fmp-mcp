@@ -1,4 +1,4 @@
-"""Macro-economic data tools: treasury rates, economic calendar, market overview."""
+"""Macro-economic data tools: treasury rates, economic calendar, market overview, IPOs, dividends calendar, indices, sector valuation."""
 
 from __future__ import annotations
 
@@ -338,6 +338,283 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             _warnings.append("losers data unavailable")
         if not actives:
             _warnings.append("most active data unavailable")
+        if _warnings:
+            result["_warnings"] = _warnings
+
+        return result
+
+    @mcp.tool(
+        annotations={
+            "title": "IPO Calendar",
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True,
+        }
+    )
+    async def ipo_calendar(days_ahead: int = 14) -> dict:
+        """Get upcoming IPOs within a date window.
+
+        Returns company, expected date, price range, shares offered, and exchange.
+
+        Args:
+            days_ahead: Number of days to look ahead (default 14, max 90)
+        """
+        days_ahead = min(max(days_ahead, 1), 90)
+        today = date.today()
+        end_date = today + timedelta(days=days_ahead)
+
+        data = await client.get_safe(
+            "/stable/ipos-calendar",
+            params={
+                "from": today.isoformat(),
+                "to": end_date.isoformat(),
+            },
+            cache_ttl=client.TTL_HOURLY,
+            default=[],
+        )
+
+        ipo_list = data if isinstance(data, list) else []
+
+        if not ipo_list:
+            return {
+                "ipos": [],
+                "count": 0,
+                "period": f"{today.isoformat()} to {end_date.isoformat()}",
+            }
+
+        # Sort by date ascending
+        ipo_list.sort(key=lambda x: x.get("date") or "")
+
+        ipos = []
+        for ipo in ipo_list:
+            ipos.append({
+                "symbol": ipo.get("symbol"),
+                "company": ipo.get("company"),
+                "date": ipo.get("date"),
+                "exchange": ipo.get("exchange"),
+                "price_range": ipo.get("priceRange"),
+                "shares": ipo.get("shares"),
+                "market_cap": ipo.get("marketCap"),
+                "actions": ipo.get("actions"),
+            })
+
+        return {
+            "ipos": ipos,
+            "count": len(ipos),
+            "period": f"{today.isoformat()} to {end_date.isoformat()}",
+        }
+
+    @mcp.tool(
+        annotations={
+            "title": "Dividends Calendar",
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True,
+        }
+    )
+    async def dividends_calendar(days_ahead: int = 14) -> dict:
+        """Get upcoming ex-dividend dates across all stocks.
+
+        Returns symbols going ex-dividend within the specified window.
+
+        Args:
+            days_ahead: Number of days to look ahead (default 14, max 90)
+        """
+        days_ahead = min(max(days_ahead, 1), 90)
+        today = date.today()
+        end_date = today + timedelta(days=days_ahead)
+
+        data = await client.get_safe(
+            "/stable/dividends-calendar",
+            params={
+                "from": today.isoformat(),
+                "to": end_date.isoformat(),
+            },
+            cache_ttl=client.TTL_HOURLY,
+            default=[],
+        )
+
+        div_list = data if isinstance(data, list) else []
+
+        if not div_list:
+            return {
+                "dividends": [],
+                "count": 0,
+                "period": f"{today.isoformat()} to {end_date.isoformat()}",
+            }
+
+        # Sort by date ascending
+        div_list.sort(key=lambda x: x.get("date") or "")
+
+        dividends = []
+        for d in div_list:
+            dividends.append({
+                "symbol": d.get("symbol"),
+                "ex_date": d.get("date"),
+                "dividend": d.get("dividend"),
+                "adj_dividend": d.get("adjDividend"),
+                "record_date": d.get("recordDate"),
+                "payment_date": d.get("paymentDate"),
+                "yield_pct": d.get("yield"),
+                "frequency": d.get("frequency"),
+            })
+
+        return {
+            "dividends": dividends,
+            "count": len(dividends),
+            "period": f"{today.isoformat()} to {end_date.isoformat()}",
+        }
+
+    INDEX_ROUTES = {
+        "sp500": "/stable/sp500-constituent",
+        "nasdaq": "/stable/nasdaq-constituent",
+        "dowjones": "/stable/dowjones-constituent",
+    }
+
+    @mcp.tool(
+        annotations={
+            "title": "Index Constituents",
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True,
+        }
+    )
+    async def index_constituents(index: str) -> dict:
+        """Get constituent list for a major market index.
+
+        Returns all symbols in the index with sector classification.
+
+        Args:
+            index: Index name - "sp500", "nasdaq", or "dowjones"
+        """
+        index = index.lower().strip()
+        if index not in INDEX_ROUTES:
+            return {"error": f"Invalid index '{index}'. Use: {', '.join(INDEX_ROUTES.keys())}"}
+
+        data = await client.get_safe(
+            INDEX_ROUTES[index],
+            cache_ttl=client.TTL_DAILY,
+            default=[],
+        )
+
+        constituents_list = data if isinstance(data, list) else []
+
+        if not constituents_list:
+            return {"error": f"No constituent data found for '{index}'"}
+
+        # Sort alphabetically by symbol
+        constituents_list.sort(key=lambda x: x.get("symbol") or "")
+
+        constituents = []
+        for c in constituents_list:
+            constituents.append({
+                "symbol": c.get("symbol"),
+                "name": c.get("name"),
+                "sector": c.get("sector"),
+                "sub_sector": c.get("subSector"),
+                "head_quarter": c.get("headQuarter"),
+                "date_first_added": c.get("dateFirstAdded"),
+                "founded": c.get("founded"),
+            })
+
+        # Sector breakdown
+        sector_counts: dict[str, int] = {}
+        for c in constituents:
+            sector = c.get("sector") or "Unknown"
+            sector_counts[sector] = sector_counts.get(sector, 0) + 1
+
+        return {
+            "index": index,
+            "count": len(constituents),
+            "constituents": constituents,
+            "sector_breakdown": dict(sorted(sector_counts.items(), key=lambda x: x[1], reverse=True)),
+        }
+
+    @mcp.tool(
+        annotations={
+            "title": "Sector Valuation",
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True,
+        }
+    )
+    async def sector_valuation() -> dict:
+        """Get sector and industry P/E ratio rankings.
+
+        Returns average P/E by sector and industry, showing relative valuation
+        across the market. Fetches NYSE + NASDAQ data and averages.
+        """
+        today_str = date.today().isoformat()
+
+        sector_nyse, sector_nasdaq, industry_nyse, industry_nasdaq = await asyncio.gather(
+            client.get_safe(
+                "/stable/sector-pe-snapshot",
+                params={"date": today_str, "exchange": "NYSE"},
+                cache_ttl=client.TTL_DAILY,
+                default=[],
+            ),
+            client.get_safe(
+                "/stable/sector-pe-snapshot",
+                params={"date": today_str, "exchange": "NASDAQ"},
+                cache_ttl=client.TTL_DAILY,
+                default=[],
+            ),
+            client.get_safe(
+                "/stable/industry-pe-snapshot",
+                params={"date": today_str, "exchange": "NYSE"},
+                cache_ttl=client.TTL_DAILY,
+                default=[],
+            ),
+            client.get_safe(
+                "/stable/industry-pe-snapshot",
+                params={"date": today_str, "exchange": "NASDAQ"},
+                cache_ttl=client.TTL_DAILY,
+                default=[],
+            ),
+        )
+
+        def _avg_pe(nyse_data, nasdaq_data, key_field: str) -> list[dict]:
+            """Average PE by name across NYSE and NASDAQ."""
+            nyse_list = nyse_data if isinstance(nyse_data, list) else []
+            nasdaq_list = nasdaq_data if isinstance(nasdaq_data, list) else []
+            pe_vals: dict[str, list[float]] = {}
+            for entry in nyse_list + nasdaq_list:
+                name = entry.get(key_field)
+                pe = entry.get("pe")
+                if name and pe is not None and pe > 0:
+                    pe_vals.setdefault(name, []).append(pe)
+            result = []
+            for name, vals in pe_vals.items():
+                avg = round(sum(vals) / len(vals), 2)
+                result.append({"name": name, "pe": avg})
+            result.sort(key=lambda x: x["pe"])
+            return result
+
+        sectors = _avg_pe(sector_nyse, sector_nasdaq, "sector")
+        industries = _avg_pe(industry_nyse, industry_nasdaq, "industry")
+
+        if not sectors and not industries:
+            return {"error": "No sector/industry valuation data available"}
+
+        result: dict = {"date": today_str}
+
+        if sectors:
+            result["sectors"] = sectors
+
+        if industries:
+            result["top_10_cheapest"] = industries[:10]
+            result["top_10_most_expensive"] = industries[-10:][::-1]
+            result["total_industries"] = len(industries)
+
+        _warnings = []
+        if not sectors:
+            _warnings.append("sector PE data unavailable")
+        if not industries:
+            _warnings.append("industry PE data unavailable")
         if _warnings:
             result["_warnings"] = _warnings
 

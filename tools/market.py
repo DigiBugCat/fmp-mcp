@@ -1,4 +1,4 @@
-"""Price history, earnings calendar, and ETF tools."""
+"""Price history, earnings calendar, ETF, and technical indicator tools."""
 
 from __future__ import annotations
 
@@ -619,3 +619,77 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             return _format_exposure(symbol, exposure, limit)
 
         return {"error": f"No ETF data found for '{symbol}'. Try specifying mode='holdings' or mode='exposure'."}
+
+    VALID_INDICATORS = {"sma", "ema", "rsi", "adx", "wma", "dema", "tema", "williams", "standarddeviation"}
+
+    @mcp.tool(
+        annotations={
+            "title": "Technical Indicators",
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True,
+        }
+    )
+    async def technical_indicators(
+        symbol: str,
+        indicator: str = "rsi",
+        period_length: int = 14,
+        timeframe: str = "1day",
+    ) -> dict:
+        """Get technical indicator values for a stock.
+
+        Supports SMA, EMA, RSI, ADX, WMA, DEMA, TEMA, Williams %R,
+        and Standard Deviation. Returns last 30 data points.
+
+        Args:
+            symbol: Stock ticker symbol (e.g. "AAPL")
+            indicator: Indicator type - sma, ema, rsi, adx, wma, dema, tema, williams, standarddeviation
+            period_length: Lookback period (default 14)
+            timeframe: Data timeframe - "1day", "1hour", "4hour", "1week" (default "1day")
+        """
+        symbol = symbol.upper().strip()
+        indicator = indicator.lower().strip()
+
+        if indicator not in VALID_INDICATORS:
+            return {"error": f"Invalid indicator '{indicator}'. Use: {', '.join(sorted(VALID_INDICATORS))}"}
+
+        data = await client.get_safe(
+            f"/stable/technical-indicators/{indicator}",
+            params={
+                "symbol": symbol,
+                "periodLength": period_length,
+                "timeframe": timeframe,
+            },
+            cache_ttl=client.TTL_HOURLY,
+            default=[],
+        )
+
+        data_list = data if isinstance(data, list) else []
+
+        if not data_list:
+            return {"error": f"No {indicator.upper()} data found for '{symbol}'"}
+
+        # Return last 30 data points, newest first
+        trimmed = data_list[:30]
+
+        values = []
+        for d in trimmed:
+            entry = {
+                "date": d.get("date"),
+                "close": d.get("close"),
+                indicator: d.get(indicator),
+            }
+            values.append(entry)
+
+        current_value = values[0].get(indicator) if values else None
+
+        return {
+            "symbol": symbol,
+            "indicator": indicator,
+            "period_length": period_length,
+            "timeframe": timeframe,
+            "current_value": current_value,
+            "data_points": len(values),
+            "values": values,
+        }
