@@ -1,8 +1,9 @@
-"""Analyst consensus and valuation tools."""
+"""Analyst consensus, valuation, and estimate revision tools."""
 
 from __future__ import annotations
 
 import asyncio
+from datetime import date, timedelta
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -259,5 +260,165 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             "comparisons": comparisons,
             "peer_details": peer_metrics,
         }
+
+        return result
+
+    @mcp.tool(
+        annotations={
+            "title": "Estimate Revisions",
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True,
+        }
+    )
+    async def estimate_revisions(symbol: str) -> dict:
+        """Get analyst estimate momentum: forward estimates, recent grade changes, and earnings track record.
+
+        Combines current consensus estimates, individual analyst upgrades/downgrades
+        (last 90 days), and historical beat/miss rates to gauge sentiment direction.
+
+        Args:
+            symbol: Stock ticker symbol (e.g. "AAPL")
+        """
+        symbol = symbol.upper().strip()
+        sym_params = {"symbol": symbol}
+
+        estimates_data, grades_data, earnings_data = await asyncio.gather(
+            client.get_safe(
+                "/stable/analyst-estimates",
+                params={"symbol": symbol, "period": "quarter", "limit": 4},
+                cache_ttl=client.TTL_6H,
+                default=[],
+            ),
+            client.get_safe(
+                "/stable/grades",
+                params={"symbol": symbol, "limit": 20},
+                cache_ttl=client.TTL_6H,
+                default=[],
+            ),
+            client.get_safe(
+                "/stable/earnings",
+                params={"symbol": symbol, "limit": 8},
+                cache_ttl=client.TTL_6H,
+                default=[],
+            ),
+        )
+
+        estimates_list = estimates_data if isinstance(estimates_data, list) else []
+        grades_list = grades_data if isinstance(grades_data, list) else []
+        earnings_list = earnings_data if isinstance(earnings_data, list) else []
+
+        if not estimates_list and not grades_list and not earnings_list:
+            return {"error": f"No estimate or analyst data found for '{symbol}'"}
+
+        # --- Forward estimates ---
+        estimates_list.sort(key=lambda e: e.get("date", ""))
+        forward_estimates = []
+        for e in estimates_list:
+            forward_estimates.append({
+                "date": e.get("date"),
+                "eps_avg": e.get("epsAvg"),
+                "revenue_avg": e.get("revenueAvg"),
+                "num_analysts_eps": e.get("numAnalystsEps"),
+            })
+
+        # --- Recent analyst actions (last 90 days) ---
+        cutoff = (date.today() - timedelta(days=90)).isoformat()
+        recent_grades = [g for g in grades_list if (g.get("date") or "") >= cutoff]
+
+        actions = []
+        upgrades = downgrades = initiations = maintains = 0
+        for g in recent_grades:
+            action = (g.get("action") or "").lower()
+            actions.append({
+                "date": g.get("date"),
+                "firm": g.get("gradingCompany"),
+                "action": action,
+                "new_grade": g.get("newGrade"),
+            })
+            if action == "upgrade":
+                upgrades += 1
+            elif action == "downgrade":
+                downgrades += 1
+            elif action == "initiate":
+                initiations += 1
+            elif action == "maintain":
+                maintains += 1
+
+        # Net sentiment
+        if upgrades > downgrades:
+            net_sentiment = "bullish"
+        elif downgrades > upgrades:
+            net_sentiment = "bearish"
+        else:
+            net_sentiment = "neutral"
+
+        analyst_actions = {
+            "period": "90d",
+            "actions": actions,
+            "summary": {
+                "upgrades": upgrades,
+                "downgrades": downgrades,
+                "initiations": initiations,
+                "maintains": maintains,
+                "net_sentiment": net_sentiment,
+            },
+        }
+
+        # --- Earnings track record ---
+        # Filter to actuals only (entries with eps field populated)
+        actuals = [e for e in earnings_list if e.get("eps") is not None]
+        track = []
+        beats = 0
+        surprise_pcts = []
+        for e in actuals:
+            eps_actual = e.get("eps")
+            eps_est = e.get("epsEstimated")
+            rev_actual = e.get("revenue")
+            rev_est = e.get("revenueEstimated")
+
+            eps_surprise_pct = None
+            if eps_est and eps_est != 0:
+                eps_surprise_pct = round((eps_actual - eps_est) / abs(eps_est) * 100, 2)
+                surprise_pcts.append(eps_surprise_pct)
+                if eps_actual > eps_est:
+                    beats += 1
+
+            rev_surprise_pct = None
+            if rev_est and rev_est != 0:
+                rev_surprise_pct = round((rev_actual - rev_est) / abs(rev_est) * 100, 2)
+
+            track.append({
+                "date": e.get("date"),
+                "eps_surprise_pct": eps_surprise_pct,
+                "revenue_surprise_pct": rev_surprise_pct,
+            })
+
+        beat_rate = round(beats / len(actuals) * 100, 1) if actuals else None
+        avg_surprise = round(sum(surprise_pcts) / len(surprise_pcts), 2) if surprise_pcts else None
+
+        earnings_track_record = {
+            "last_8_quarters": track,
+            "beat_rate_eps": beat_rate,
+            "avg_eps_surprise_pct": avg_surprise,
+        }
+
+        result = {
+            "symbol": symbol,
+            "forward_estimates": forward_estimates,
+            "recent_analyst_actions": analyst_actions,
+            "earnings_track_record": earnings_track_record,
+        }
+
+        _warnings = []
+        if not estimates_list:
+            _warnings.append("forward estimates unavailable")
+        if not grades_list:
+            _warnings.append("analyst grades unavailable")
+        if not earnings_list:
+            _warnings.append("earnings history unavailable")
+        if _warnings:
+            result["_warnings"] = _warnings
 
         return result

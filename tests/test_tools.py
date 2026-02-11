@@ -26,7 +26,12 @@ from tests.conftest import (
     GOOGL_RATIOS, GOOGL_KEY_METRICS,
     AMZN_RATIOS, AMZN_KEY_METRICS,
     AAPL_DIVIDENDS, AAPL_STOCK_SPLITS,
+    AAPL_SHORT_INTEREST,
+    EARNINGS_CALENDAR,
+    QQQ_HOLDINGS, AAPL_ETF_EXPOSURE,
+    AAPL_EARNINGS, AAPL_GRADES_DETAIL,
 )
+from tools.ownership import FINRA_URL
 from tools.overview import register as register_overview
 from tools.financials import register as register_financials
 from tools.valuation import register as register_valuation
@@ -859,4 +864,374 @@ class TestDividendsInfo:
         assert len(data["recent_dividends"]) > 0
         assert "stock split data unavailable" in data["_warnings"]
         assert "quote data unavailable" in data["_warnings"]
+        await fmp.close()
+
+
+class TestShortInterest:
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_full_short_interest(self):
+        # Mock FINRA: return 204 for all dates except one that matches
+        respx.post(FINRA_URL).mock(side_effect=self._finra_side_effect)
+        respx.get(f"{BASE}/stable/shares-float").mock(
+            return_value=httpx.Response(200, json=AAPL_SHARES_FLOAT)
+        )
+
+        mcp, fmp = _make_server(register_ownership)
+        async with Client(mcp) as c:
+            result = await c.call_tool("short_interest", {"symbol": "AAPL"})
+
+        data = result.data
+        assert data["symbol"] == "AAPL"
+        assert data["settlement_date"] == "2026-01-30"
+        assert data["short_interest"]["shares_short"] == 116854414
+        assert data["short_interest"]["days_to_cover"] == 2.0
+        assert data["short_interest"]["change_pct"] == 2.89
+        # Verify computed percentages
+        assert data["float_context"]["float_shares"] == 14700000000
+        assert data["float_context"]["short_pct_of_float"] is not None
+        assert data["float_context"]["short_pct_of_float"] > 0
+        assert data["float_context"]["short_pct_of_outstanding"] is not None
+        assert "_warnings" not in data
+        await fmp.close()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_no_finra_data(self):
+        # All FINRA dates return 204 (no data)
+        respx.post(FINRA_URL).mock(return_value=httpx.Response(204))
+        respx.get(f"{BASE}/stable/shares-float").mock(
+            return_value=httpx.Response(200, json=AAPL_SHARES_FLOAT)
+        )
+
+        mcp, fmp = _make_server(register_ownership)
+        async with Client(mcp) as c:
+            result = await c.call_tool("short_interest", {"symbol": "AAPL"})
+
+        data = result.data
+        assert data["symbol"] == "AAPL"
+        assert "short_interest" not in data
+        assert data["float_context"]["float_shares"] == 14700000000
+        assert data["float_context"]["short_pct_of_float"] is None
+        assert "FINRA short interest unavailable" in data["_warnings"]
+        await fmp.close()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_no_float_data(self):
+        # FINRA works but FMP shares-float fails
+        respx.post(FINRA_URL).mock(side_effect=self._finra_side_effect)
+        respx.get(f"{BASE}/stable/shares-float").mock(
+            return_value=httpx.Response(500, text="error")
+        )
+
+        mcp, fmp = _make_server(register_ownership)
+        async with Client(mcp) as c:
+            result = await c.call_tool("short_interest", {"symbol": "AAPL"})
+
+        data = result.data
+        assert data["symbol"] == "AAPL"
+        assert data["short_interest"]["shares_short"] == 116854414
+        assert "float_context" not in data
+        assert "float data unavailable" in data["_warnings"]
+        await fmp.close()
+
+    @staticmethod
+    def _finra_side_effect(request: httpx.Request) -> httpx.Response:
+        """Return short interest data only for the 2026-01-30 date."""
+        import json
+        body = json.loads(request.content)
+        date_filters = body.get("dateRangeFilters", [])
+        for f in date_filters:
+            if f.get("startDate") == "2026-01-30":
+                return httpx.Response(200, json=AAPL_SHORT_INTEREST)
+        return httpx.Response(204)
+
+
+# --- New Tool Tests (Tier 3: Market Data) ---
+
+
+class TestEarningsCalendar:
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_full_calendar(self):
+        respx.get(f"{BASE}/stable/earnings-calendar").mock(
+            return_value=httpx.Response(200, json=EARNINGS_CALENDAR)
+        )
+
+        mcp, fmp = _make_server(register_market)
+        async with Client(mcp) as c:
+            result = await c.call_tool("earnings_calendar", {})
+
+        data = result.data
+        assert data["count"] == 4
+        assert data["symbol"] is None
+        # Should be sorted by date ascending
+        dates = [e["date"] for e in data["earnings"]]
+        assert dates == sorted(dates)
+        assert data["earnings"][0]["symbol"] == "MSFT"  # 02-12 is earliest
+        assert data["earnings"][0]["time"] == "bmo"
+        await fmp.close()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_filtered_by_symbol(self):
+        respx.get(f"{BASE}/stable/earnings-calendar").mock(
+            return_value=httpx.Response(200, json=EARNINGS_CALENDAR)
+        )
+
+        mcp, fmp = _make_server(register_market)
+        async with Client(mcp) as c:
+            result = await c.call_tool("earnings_calendar", {"symbol": "AAPL"})
+
+        data = result.data
+        assert data["count"] == 1
+        assert data["symbol"] == "AAPL"
+        assert data["earnings"][0]["symbol"] == "AAPL"
+        assert data["earnings"][0]["eps_estimate"] == 2.35
+        await fmp.close()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_no_earnings(self):
+        respx.get(f"{BASE}/stable/earnings-calendar").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+
+        mcp, fmp = _make_server(register_market)
+        async with Client(mcp) as c:
+            result = await c.call_tool("earnings_calendar", {})
+
+        data = result.data
+        assert "error" in data
+        await fmp.close()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_symbol_not_found(self):
+        respx.get(f"{BASE}/stable/earnings-calendar").mock(
+            return_value=httpx.Response(200, json=EARNINGS_CALENDAR)
+        )
+
+        mcp, fmp = _make_server(register_market)
+        async with Client(mcp) as c:
+            result = await c.call_tool("earnings_calendar", {"symbol": "ZZZZ"})
+
+        data = result.data
+        assert "error" in data
+        assert "ZZZZ" in data["error"]
+        await fmp.close()
+
+
+class TestETFLookup:
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_holdings_mode(self):
+        respx.get(f"{BASE}/stable/etf-holdings").mock(
+            return_value=httpx.Response(200, json=QQQ_HOLDINGS)
+        )
+
+        mcp, fmp = _make_server(register_market)
+        async with Client(mcp) as c:
+            result = await c.call_tool("etf_lookup", {"symbol": "QQQ", "mode": "holdings"})
+
+        data = result.data
+        assert data["symbol"] == "QQQ"
+        assert data["mode"] == "holdings"
+        assert data["count"] == 10
+        # Should be sorted by weight descending
+        assert data["holdings"][0]["symbol"] == "AAPL"
+        assert data["holdings"][0]["weight_pct"] == 12.5
+        assert data["top_10_concentration_pct"] is not None
+        assert data["top_10_concentration_pct"] > 50
+        await fmp.close()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_exposure_mode(self):
+        respx.get(f"{BASE}/stable/etf-stock-exposure").mock(
+            return_value=httpx.Response(200, json=AAPL_ETF_EXPOSURE)
+        )
+
+        mcp, fmp = _make_server(register_market)
+        async with Client(mcp) as c:
+            result = await c.call_tool("etf_lookup", {"symbol": "AAPL", "mode": "exposure"})
+
+        data = result.data
+        assert data["symbol"] == "AAPL"
+        assert data["mode"] == "exposure"
+        assert data["count"] == 5
+        # Should be sorted by weight descending
+        assert data["etf_holders"][0]["etf_symbol"] == "XLK"
+        assert data["etf_holders"][0]["weight_pct"] == 22.3
+        await fmp.close()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_auto_mode_finds_holdings(self):
+        respx.get(f"{BASE}/stable/etf-holdings").mock(
+            return_value=httpx.Response(200, json=QQQ_HOLDINGS)
+        )
+        respx.get(f"{BASE}/stable/etf-stock-exposure").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+
+        mcp, fmp = _make_server(register_market)
+        async with Client(mcp) as c:
+            result = await c.call_tool("etf_lookup", {"symbol": "QQQ"})
+
+        data = result.data
+        assert data["mode"] == "holdings"
+        assert data["count"] == 10
+        await fmp.close()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_auto_mode_falls_back_to_exposure(self):
+        respx.get(f"{BASE}/stable/etf-holdings").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        respx.get(f"{BASE}/stable/etf-stock-exposure").mock(
+            return_value=httpx.Response(200, json=AAPL_ETF_EXPOSURE)
+        )
+
+        mcp, fmp = _make_server(register_market)
+        async with Client(mcp) as c:
+            result = await c.call_tool("etf_lookup", {"symbol": "AAPL"})
+
+        data = result.data
+        assert data["mode"] == "exposure"
+        assert data["count"] == 5
+        await fmp.close()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_no_data(self):
+        respx.get(f"{BASE}/stable/etf-holdings").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        respx.get(f"{BASE}/stable/etf-stock-exposure").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+
+        mcp, fmp = _make_server(register_market)
+        async with Client(mcp) as c:
+            result = await c.call_tool("etf_lookup", {"symbol": "ZZZZ"})
+
+        data = result.data
+        assert "error" in data
+        await fmp.close()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_invalid_mode(self):
+        mcp, fmp = _make_server(register_market)
+        async with Client(mcp) as c:
+            result = await c.call_tool("etf_lookup", {"symbol": "QQQ", "mode": "bad"})
+
+        data = result.data
+        assert "error" in data
+        await fmp.close()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_limit_applied(self):
+        respx.get(f"{BASE}/stable/etf-holdings").mock(
+            return_value=httpx.Response(200, json=QQQ_HOLDINGS)
+        )
+
+        mcp, fmp = _make_server(register_market)
+        async with Client(mcp) as c:
+            result = await c.call_tool("etf_lookup", {"symbol": "QQQ", "mode": "holdings", "limit": 3})
+
+        data = result.data
+        assert data["count"] == 3
+        assert len(data["holdings"]) == 3
+        await fmp.close()
+
+
+class TestEstimateRevisions:
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_full_revisions(self):
+        respx.get(f"{BASE}/stable/analyst-estimates").mock(
+            return_value=httpx.Response(200, json=AAPL_ANALYST_ESTIMATES)
+        )
+        respx.get(f"{BASE}/stable/grades").mock(
+            return_value=httpx.Response(200, json=AAPL_GRADES_DETAIL)
+        )
+        respx.get(f"{BASE}/stable/earnings").mock(
+            return_value=httpx.Response(200, json=AAPL_EARNINGS)
+        )
+
+        mcp, fmp = _make_server(register_valuation)
+        async with Client(mcp) as c:
+            result = await c.call_tool("estimate_revisions", {"symbol": "AAPL"})
+
+        data = result.data
+        assert data["symbol"] == "AAPL"
+
+        # Forward estimates
+        assert len(data["forward_estimates"]) == 3
+        assert data["forward_estimates"][0]["eps_avg"] is not None
+
+        # Analyst actions
+        actions = data["recent_analyst_actions"]
+        assert actions["period"] == "90d"
+        summary = actions["summary"]
+        assert summary["upgrades"] >= 1
+        assert summary["downgrades"] >= 0
+        assert summary["net_sentiment"] in ("bullish", "bearish", "neutral")
+
+        # Earnings track record
+        track = data["earnings_track_record"]
+        assert track["beat_rate_eps"] is not None
+        assert track["avg_eps_surprise_pct"] is not None
+        assert len(track["last_8_quarters"]) > 0
+        assert "_warnings" not in data
+        await fmp.close()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_partial_data(self):
+        respx.get(f"{BASE}/stable/analyst-estimates").mock(
+            return_value=httpx.Response(200, json=AAPL_ANALYST_ESTIMATES)
+        )
+        respx.get(f"{BASE}/stable/grades").mock(
+            return_value=httpx.Response(500, text="error")
+        )
+        respx.get(f"{BASE}/stable/earnings").mock(
+            return_value=httpx.Response(500, text="error")
+        )
+
+        mcp, fmp = _make_server(register_valuation)
+        async with Client(mcp) as c:
+            result = await c.call_tool("estimate_revisions", {"symbol": "AAPL"})
+
+        data = result.data
+        assert data["symbol"] == "AAPL"
+        assert len(data["forward_estimates"]) == 3
+        assert "analyst grades unavailable" in data["_warnings"]
+        assert "earnings history unavailable" in data["_warnings"]
+        await fmp.close()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_unknown_symbol(self):
+        respx.get(f"{BASE}/stable/analyst-estimates").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        respx.get(f"{BASE}/stable/grades").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        respx.get(f"{BASE}/stable/earnings").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+
+        mcp, fmp = _make_server(register_valuation)
+        async with Client(mcp) as c:
+            result = await c.call_tool("estimate_revisions", {"symbol": "ZZZZ"})
+
+        data = result.data
+        assert "error" in data
         await fmp.close()

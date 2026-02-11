@@ -31,9 +31,10 @@ mcp = FastMCP(
         "ATOMIC TOOLS (for deeper dives): "
         "company_overview, financial_statements, analyst_consensus, "
         "earnings_info, price_history, stock_search, insider_activity, "
-        "institutional_ownership, stock_news, treasury_rates, "
+        "institutional_ownership, short_interest, stock_news, treasury_rates, "
         "economic_calendar, market_overview, earnings_transcript, "
-        "revenue_segments, peer_comparison, dividends_info."
+        "revenue_segments, peer_comparison, dividends_info, "
+        "earnings_calendar, etf_lookup, estimate_revisions."
     ),
     lifespan=lifespan,
 )

@@ -432,6 +432,50 @@ AAPL_STOCK_SPLITS = [
     {"date": "2014-06-09", "label": "7:1", "numerator": 7, "denominator": 1},
 ]
 
+# --- FINRA Short Interest (external, non-FMP) ---
+
+AAPL_SHORT_INTEREST = [{
+    "settlementDate": "2026-01-30",
+    "currentShortPositionQuantity": 116854414,
+    "previousShortPositionQuantity": 113576032,
+    "changePreviousNumber": 3278382,
+    "changePercent": 2.89,
+    "averageDailyVolumeQuantity": 58429082,
+    "daysToCoverQuantity": 2.0,
+}]
+
+# --- Earnings Calendar ---
+
+EARNINGS_CALENDAR = [
+    {"symbol": "AAPL", "date": "2026-02-14", "time": "amc", "fiscalDateEnding": "2025-12-27", "epsEstimated": 2.35, "revenueEstimated": 118700000000, "eps": None, "revenue": None},
+    {"symbol": "MSFT", "date": "2026-02-12", "time": "bmo", "fiscalDateEnding": "2025-12-31", "epsEstimated": 3.10, "revenueEstimated": 68500000000, "eps": None, "revenue": None},
+    {"symbol": "GOOGL", "date": "2026-02-13", "time": "amc", "fiscalDateEnding": "2025-12-31", "epsEstimated": 2.05, "revenueEstimated": 95000000000, "eps": None, "revenue": None},
+    {"symbol": "TSLA", "date": "2026-02-15", "time": "--", "fiscalDateEnding": "2025-12-31", "epsEstimated": 0.85, "revenueEstimated": 27500000000, "eps": None, "revenue": None},
+]
+
+# --- ETF Holdings & Exposure ---
+
+QQQ_HOLDINGS = [
+    {"asset": "AAPL", "name": "Apple Inc.", "weightPercentage": 12.5, "sharesNumber": 50000000},
+    {"asset": "MSFT", "name": "Microsoft Corporation", "weightPercentage": 10.8, "sharesNumber": 30000000},
+    {"asset": "NVDA", "name": "NVIDIA Corporation", "weightPercentage": 9.2, "sharesNumber": 25000000},
+    {"asset": "AMZN", "name": "Amazon.com, Inc.", "weightPercentage": 7.1, "sharesNumber": 18000000},
+    {"asset": "META", "name": "Meta Platforms, Inc.", "weightPercentage": 5.3, "sharesNumber": 12000000},
+    {"asset": "GOOGL", "name": "Alphabet Inc.", "weightPercentage": 4.8, "sharesNumber": 10000000},
+    {"asset": "GOOG", "name": "Alphabet Inc. Class C", "weightPercentage": 4.5, "sharesNumber": 9500000},
+    {"asset": "AVGO", "name": "Broadcom Inc.", "weightPercentage": 3.9, "sharesNumber": 8000000},
+    {"asset": "TSLA", "name": "Tesla Inc", "weightPercentage": 3.6, "sharesNumber": 7000000},
+    {"asset": "COST", "name": "Costco Wholesale", "weightPercentage": 2.8, "sharesNumber": 5000000},
+]
+
+AAPL_ETF_EXPOSURE = [
+    {"etfSymbol": "QQQ", "weightPercentage": 12.5},
+    {"etfSymbol": "SPY", "weightPercentage": 7.2},
+    {"etfSymbol": "VTI", "weightPercentage": 6.8},
+    {"etfSymbol": "VOO", "weightPercentage": 7.1},
+    {"etfSymbol": "XLK", "weightPercentage": 22.3},
+]
+
 # --- /stable/earnings (combined future estimates + historical actuals) ---
 
 AAPL_EARNINGS = [

@@ -1,4 +1,4 @@
-"""Price history and earnings calendar tools."""
+"""Price history, earnings calendar, and ETF tools."""
 
 from __future__ import annotations
 
@@ -62,6 +62,56 @@ def _calc_volatility(history: list[dict], window: int = 30) -> float | None:
     variance = sum((r - mean) ** 2 for r in returns) / len(returns)
     daily_vol = math.sqrt(variance)
     return round(daily_vol * math.sqrt(252) * 100, 2)
+
+
+def _format_holdings(symbol: str, holdings: list, limit: int) -> dict:
+    """Format ETF holdings response."""
+    # Sort by weight descending (use 0 as fallback)
+    holdings.sort(key=lambda h: h.get("weightPercentage") or 0, reverse=True)
+    trimmed = holdings[:limit]
+
+    items = []
+    for h in trimmed:
+        items.append({
+            "symbol": h.get("asset"),
+            "name": h.get("name"),
+            "weight_pct": h.get("weightPercentage"),
+            "shares": h.get("sharesNumber"),
+        })
+
+    # Top 10 concentration
+    top_10_weights = [h.get("weightPercentage") or 0 for h in holdings[:10]]
+    top_10_concentration = round(sum(top_10_weights), 2) if top_10_weights else None
+
+    return {
+        "symbol": symbol,
+        "mode": "holdings",
+        "count": len(items),
+        "holdings": items,
+        "top_10_concentration_pct": top_10_concentration,
+    }
+
+
+def _format_exposure(symbol: str, exposure: list, limit: int) -> dict:
+    """Format ETF exposure response."""
+    # Sort by weight descending
+    exposure.sort(key=lambda e: e.get("weightPercentage") or 0, reverse=True)
+    trimmed = exposure[:limit]
+
+    items = []
+    for e in trimmed:
+        items.append({
+            "etf_symbol": e.get("etfSymbol"),
+            "etf_name": e.get("etfName"),  # may not exist — will verify live
+            "weight_pct": e.get("weightPercentage"),
+        })
+
+    return {
+        "symbol": symbol,
+        "mode": "exposure",
+        "count": len(items),
+        "etf_holders": items,
+    }
 
 
 def register(mcp: FastMCP, client: FMPClient) -> None:
@@ -421,3 +471,151 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             result["_warnings"] = _warnings
 
         return result
+
+    @mcp.tool(
+        annotations={
+            "title": "Earnings Calendar",
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True,
+        }
+    )
+    async def earnings_calendar(
+        symbol: str | None = None,
+        days_ahead: int = 7,
+    ) -> dict:
+        """Get upcoming earnings report dates and estimates.
+
+        Returns companies reporting earnings within the specified window.
+        Optionally filter to a specific ticker to find its next report date.
+
+        Args:
+            symbol: Optional stock ticker to filter results (e.g. "AAPL")
+            days_ahead: Number of days to look ahead (default 7, max 30)
+        """
+        days_ahead = max(1, min(days_ahead, 30))
+        today = date.today()
+        to_date = today + timedelta(days=days_ahead)
+
+        data = await client.get_safe(
+            "/stable/earnings-calendar",
+            params={
+                "from": today.isoformat(),
+                "to": to_date.isoformat(),
+            },
+            cache_ttl=client.TTL_HOURLY,
+            default=[],
+        )
+
+        entries = data if isinstance(data, list) else []
+
+        # Client-side filter if symbol specified
+        if symbol:
+            symbol = symbol.upper().strip()
+            entries = [e for e in entries if e.get("symbol", "").upper() == symbol]
+
+        if not entries:
+            msg = f"No earnings scheduled in the next {days_ahead} days"
+            if symbol:
+                msg += f" for '{symbol}'"
+            return {"error": msg}
+
+        # Sort by date ascending
+        entries.sort(key=lambda e: e.get("date") or "")
+
+        earnings = []
+        for e in entries:
+            earnings.append({
+                "symbol": e.get("symbol"),
+                "date": e.get("date"),
+                "time": e.get("time"),  # "amc" / "bmo" / "--"
+                "fiscal_date_ending": e.get("fiscalDateEnding"),
+                "eps_estimate": e.get("epsEstimated"),
+                "revenue_estimate": e.get("revenueEstimated"),
+                "eps_actual": e.get("eps"),
+                "revenue_actual": e.get("revenue"),
+            })
+
+        return {
+            "from_date": today.isoformat(),
+            "to_date": to_date.isoformat(),
+            "symbol": symbol if symbol else None,
+            "count": len(earnings),
+            "earnings": earnings,
+        }
+
+    @mcp.tool(
+        annotations={
+            "title": "ETF Lookup",
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True,
+        }
+    )
+    async def etf_lookup(
+        symbol: str,
+        mode: str = "auto",
+        limit: int = 25,
+    ) -> dict:
+        """Look up ETF holdings or find which ETFs hold a stock.
+
+        Dual-mode tool: pass an ETF ticker to see its holdings, or a stock
+        ticker to see which ETFs hold it. Use mode="auto" to detect automatically.
+
+        Args:
+            symbol: ETF ticker (e.g. "QQQ") or stock ticker (e.g. "AAPL")
+            mode: "holdings" (what's inside this ETF), "exposure" (which ETFs hold this stock), or "auto" (try both)
+            limit: Max results to return (default 25)
+        """
+        symbol = symbol.upper().strip()
+        limit = max(1, min(limit, 100))
+
+        if mode not in ("holdings", "exposure", "auto"):
+            return {"error": f"Invalid mode '{mode}'. Use: holdings, exposure, auto"}
+
+        async def _try_holdings() -> list | None:
+            data = await client.get_safe(
+                "/stable/etf-holdings",
+                params={"symbol": symbol},
+                cache_ttl=client.TTL_DAILY,
+                default=[],
+            )
+            result = data if isinstance(data, list) else []
+            return result if result else None
+
+        async def _try_exposure() -> list | None:
+            data = await client.get_safe(
+                "/stable/etf-stock-exposure",
+                params={"symbol": symbol},
+                cache_ttl=client.TTL_DAILY,
+                default=[],
+            )
+            result = data if isinstance(data, list) else []
+            return result if result else None
+
+        if mode == "holdings":
+            holdings = await _try_holdings()
+            if not holdings:
+                return {"error": f"No ETF holdings found for '{symbol}'. Is it an ETF ticker?"}
+            return _format_holdings(symbol, holdings, limit)
+
+        if mode == "exposure":
+            exposure = await _try_exposure()
+            if not exposure:
+                return {"error": f"No ETF exposure found for '{symbol}'. Is it a stock ticker?"}
+            return _format_exposure(symbol, exposure, limit)
+
+        # Auto mode: try both in parallel
+        holdings, exposure = await asyncio.gather(
+            _try_holdings(),
+            _try_exposure(),
+        )
+
+        if holdings:
+            return _format_holdings(symbol, holdings, limit)
+        if exposure:
+            return _format_exposure(symbol, exposure, limit)
+
+        return {"error": f"No ETF data found for '{symbol}'. Try specifying mode='holdings' or mode='exposure'."}
