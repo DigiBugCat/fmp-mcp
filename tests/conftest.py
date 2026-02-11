@@ -418,3 +418,32 @@ AAPL_STOCK_SPLITS = [
     {"date": "2020-08-28", "label": "4:1", "numerator": 4, "denominator": 1},
     {"date": "2014-06-09", "label": "7:1", "numerator": 7, "denominator": 1},
 ]
+
+# --- /stable/earnings (combined future estimates + historical actuals) ---
+
+AAPL_EARNINGS = [
+    # Future estimate (next earnings)
+    {"date": "2026-04-30", "symbol": "AAPL", "epsEstimated": 1.68, "revenueEstimated": 98500000000, "fiscalDateEnding": "2026-03-28", "numberOfAnalysts": 28},
+    # Recent actuals
+    {"date": "2026-01-29", "symbol": "AAPL", "eps": 2.42, "epsEstimated": 2.35, "revenue": 124300000000, "revenueEstimated": 118700000000, "fiscalDateEnding": "2025-12-27"},
+    {"date": "2025-10-30", "symbol": "AAPL", "eps": 1.64, "epsEstimated": 1.60, "revenue": 94930000000, "revenueEstimated": 94300000000, "fiscalDateEnding": "2025-09-27"},
+    {"date": "2025-07-31", "symbol": "AAPL", "eps": 1.40, "epsEstimated": 1.35, "revenue": 85777000000, "revenueEstimated": 84500000000, "fiscalDateEnding": "2025-06-28"},
+    {"date": "2025-05-01", "symbol": "AAPL", "eps": 1.53, "epsEstimated": 1.50, "revenue": 95367000000, "revenueEstimated": 94200000000, "fiscalDateEnding": "2025-03-29"},
+    {"date": "2025-01-30", "symbol": "AAPL", "eps": 2.40, "epsEstimated": 2.36, "revenue": 124000000000, "revenueEstimated": 120500000000, "fiscalDateEnding": "2024-12-28"},
+    {"date": "2024-10-31", "symbol": "AAPL", "eps": 1.64, "epsEstimated": 1.58, "revenue": 94900000000, "revenueEstimated": 93000000000, "fiscalDateEnding": "2024-09-28"},
+    {"date": "2024-08-01", "symbol": "AAPL", "eps": 1.40, "epsEstimated": 1.34, "revenue": 85800000000, "revenueEstimated": 84300000000, "fiscalDateEnding": "2024-06-29"},
+    {"date": "2024-05-02", "symbol": "AAPL", "eps": 1.53, "epsEstimated": 1.50, "revenue": 90753000000, "revenueEstimated": 90000000000, "fiscalDateEnding": "2024-03-30"},
+]
+
+# --- /stable/grades (individual analyst actions) ---
+
+AAPL_GRADES_DETAIL = [
+    {"symbol": "AAPL", "date": "2026-02-05", "gradingCompany": "Morgan Stanley", "previousGrade": "Overweight", "newGrade": "Overweight", "action": "maintain"},
+    {"symbol": "AAPL", "date": "2026-02-03", "gradingCompany": "JP Morgan", "previousGrade": "Neutral", "newGrade": "Overweight", "action": "upgrade"},
+    {"symbol": "AAPL", "date": "2026-01-30", "gradingCompany": "Goldman Sachs", "previousGrade": "Buy", "newGrade": "Buy", "action": "maintain"},
+    {"symbol": "AAPL", "date": "2026-01-20", "gradingCompany": "Barclays", "previousGrade": "Overweight", "newGrade": "Equal Weight", "action": "downgrade"},
+    {"symbol": "AAPL", "date": "2026-01-10", "gradingCompany": "Bank of America", "previousGrade": "Neutral", "newGrade": "Buy", "action": "upgrade"},
+    {"symbol": "AAPL", "date": "2025-12-15", "gradingCompany": "UBS", "previousGrade": "", "newGrade": "Buy", "action": "initiate"},
+    {"symbol": "AAPL", "date": "2025-11-20", "gradingCompany": "Wells Fargo", "previousGrade": "Equal Weight", "newGrade": "Underweight", "action": "downgrade"},
+    {"symbol": "AAPL", "date": "2025-11-01", "gradingCompany": "Citi", "previousGrade": "Neutral", "newGrade": "Buy", "action": "upgrade"},
+]

@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from fastmcp import FastMCP
 
 from fmp_client import FMPClient
-from tools import financials, macro, market, news, overview, ownership, transcripts, valuation
+from tools import financials, macro, market, news, overview, ownership, transcripts, valuation, workflows
 
 
 @asynccontextmanager
@@ -22,14 +22,18 @@ mcp = FastMCP(
     "Pantainos FMP",
     instructions=(
         "Financial data server for investment research. "
-        "Start with company_overview for any stock query, then drill deeper "
-        "with financial_statements, analyst_consensus, earnings_info, or price_history. "
-        "Use stock_search to discover tickers. "
-        "For ownership signals use insider_activity and institutional_ownership. "
-        "For news use stock_news. For macro context use treasury_rates, economic_calendar, "
-        "or market_overview. Use earnings_transcript for call transcripts, "
-        "revenue_segments for business mix, peer_comparison for relative valuation, "
-        "and dividends_info for dividend analysis."
+        "WORKFLOW TOOLS (start here for common questions): "
+        "stock_brief for a quick comprehensive read on any stock, "
+        "market_context for macro + rotation + breadth environment, "
+        "earnings_setup for pre-earnings positioning analysis, "
+        "fair_value_estimate for multi-method valuation, "
+        "earnings_postmortem for post-earnings synthesis. "
+        "ATOMIC TOOLS (for deeper dives): "
+        "company_overview, financial_statements, analyst_consensus, "
+        "earnings_info, price_history, stock_search, insider_activity, "
+        "institutional_ownership, stock_news, treasury_rates, "
+        "economic_calendar, market_overview, earnings_transcript, "
+        "revenue_segments, peer_comparison, dividends_info."
     ),
     lifespan=lifespan,
 )
@@ -51,3 +55,4 @@ ownership.register(mcp, client)
 news.register(mcp, client)
 macro.register(mcp, client)
 transcripts.register(mcp, client)
+workflows.register(mcp, client)
