@@ -30,7 +30,7 @@ from tests.conftest import (
     AMZN_RATIOS, AMZN_KEY_METRICS,
     AAPL_DIVIDENDS, AAPL_STOCK_SPLITS,
     AAPL_SHORT_INTEREST,
-    EARNINGS_CALENDAR,
+    EARNINGS_CALENDAR, EARNINGS_BATCH_QUOTE,
     QQQ_HOLDINGS, AAPL_ETF_EXPOSURE,
     AAPL_EARNINGS, AAPL_GRADES_DETAIL,
     # Existing new tool fixtures
@@ -1175,9 +1175,13 @@ class TestShortInterest:
 class TestEarningsCalendar:
     @pytest.mark.asyncio
     @respx.mock
-    async def test_full_calendar(self):
+    async def test_full_calendar_filters_by_mcap(self):
+        """Default browsing mode filters to $2B+ market cap stocks."""
         respx.get(f"{BASE}/stable/earnings-calendar").mock(
             return_value=httpx.Response(200, json=EARNINGS_CALENDAR)
+        )
+        respx.get(f"{BASE}/stable/batch-quote").mock(
+            return_value=httpx.Response(200, json=EARNINGS_BATCH_QUOTE)
         )
 
         mcp, fmp = _make_server(register_market)
@@ -1186,12 +1190,29 @@ class TestEarningsCalendar:
 
         data = result.data
         assert data["count"] == 4
-        assert data["symbol"] is None
-        # Should be sorted by date ascending
-        dates = [e["date"] for e in data["earnings"]]
-        assert dates == sorted(dates)
-        assert data["earnings"][0]["symbol"] == "MSFT"  # 02-12 is earliest
-        assert data["earnings"][0]["time"] == "bmo"
+        assert data["min_market_cap"] == 2_000_000_000
+        # Sorted by market cap descending (AAPL 3.5T > MSFT 3.2T > GOOGL 2.1T > TSLA 1.1T)
+        symbols = [e["symbol"] for e in data["earnings"]]
+        assert symbols == ["AAPL", "MSFT", "GOOGL", "TSLA"]
+        assert data["earnings"][0]["market_cap"] == 3500000000000
+        await fmp.close()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_no_mcap_filter(self):
+        """Setting min_market_cap=0 returns all entries without batch-quote."""
+        respx.get(f"{BASE}/stable/earnings-calendar").mock(
+            return_value=httpx.Response(200, json=EARNINGS_CALENDAR)
+        )
+
+        mcp, fmp = _make_server(register_market)
+        async with Client(mcp) as c:
+            result = await c.call_tool("earnings_calendar", {"min_market_cap": 0})
+
+        data = result.data
+        assert data["count"] == 4
+        # No market_cap field since we skipped batch-quote
+        assert "market_cap" not in data["earnings"][0]
         await fmp.close()
 
     @pytest.mark.asyncio

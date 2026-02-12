@@ -19,6 +19,7 @@ from tests.conftest import (
     AAPL_SHARES_FLOAT,
     AAPL_SHORT_INTEREST,
     AAPL_INSTITUTIONAL_SUMMARY,
+    EARNINGS_CALENDAR, EARNINGS_BATCH_QUOTE,
     POLYGON_INFLATION,
     POLYGON_INFLATION_EXPECTATIONS,
     POLYGON_LABOR_MARKET,
@@ -264,6 +265,89 @@ class TestMACDIndicator:
 
         data = result.data
         assert "error" in data
+        await fmp.close()
+
+
+# ---------------------------------------------------------------------------
+# Earnings calendar OI enrichment (Polygon)
+# ---------------------------------------------------------------------------
+
+
+class TestEarningsCalendarOI:
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_browse_includes_oi(self):
+        """Browsing mode enriches entries with options OI from Polygon."""
+        respx.get(f"{BASE_FMP}/stable/earnings-calendar").mock(
+            return_value=httpx.Response(200, json=EARNINGS_CALENDAR)
+        )
+        respx.get(f"{BASE_FMP}/stable/batch-quote").mock(
+            return_value=httpx.Response(200, json=EARNINGS_BATCH_QUOTE)
+        )
+        # Mock Polygon options snapshot for each symbol
+        for sym in ("AAPL", "MSFT", "GOOGL", "TSLA"):
+            respx.get(f"{BASE_POLYGON}/v3/snapshot/options/{sym}").mock(
+                return_value=httpx.Response(200, json=POLYGON_OPTIONS_SNAPSHOT)
+            )
+
+        mcp, fmp, pc = _make_market_server(with_polygon=True)
+        async with Client(mcp) as c:
+            result = await c.call_tool("earnings_calendar", {})
+
+        data = result.data
+        assert data["count"] == 4
+        # Every entry should have options OI
+        for e in data["earnings"]:
+            assert "options" in e, f"{e['symbol']} missing options OI"
+            assert e["options"]["total_oi"] > 0
+            assert "call_oi" in e["options"]
+            assert "put_oi" in e["options"]
+            assert "put_call_ratio" in e["options"]
+        await fmp.close()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_single_symbol_includes_oi(self):
+        """Single-symbol lookup enriches with OI."""
+        respx.get(f"{BASE_FMP}/stable/earnings-calendar").mock(
+            return_value=httpx.Response(200, json=EARNINGS_CALENDAR)
+        )
+        respx.get(f"{BASE_POLYGON}/v3/snapshot/options/AAPL").mock(
+            return_value=httpx.Response(200, json=POLYGON_OPTIONS_SNAPSHOT)
+        )
+
+        mcp, fmp, pc = _make_market_server(with_polygon=True)
+        async with Client(mcp) as c:
+            result = await c.call_tool("earnings_calendar", {"symbol": "AAPL"})
+
+        data = result.data
+        assert data["count"] == 1
+        assert "options" in data["earnings"][0]
+        # POLYGON_OPTIONS_SNAPSHOT has: calls OI = 15000+8000+6000=29000, puts OI = 12000
+        assert data["earnings"][0]["options"]["total_oi"] == 41000
+        assert data["earnings"][0]["options"]["call_oi"] == 29000
+        assert data["earnings"][0]["options"]["put_oi"] == 12000
+        await fmp.close()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_no_polygon_skips_oi(self):
+        """Without polygon_client, earnings still work but without OI."""
+        respx.get(f"{BASE_FMP}/stable/earnings-calendar").mock(
+            return_value=httpx.Response(200, json=EARNINGS_CALENDAR)
+        )
+        respx.get(f"{BASE_FMP}/stable/batch-quote").mock(
+            return_value=httpx.Response(200, json=EARNINGS_BATCH_QUOTE)
+        )
+
+        mcp, fmp, _ = _make_market_server(with_polygon=False)
+        async with Client(mcp) as c:
+            result = await c.call_tool("earnings_calendar", {})
+
+        data = result.data
+        assert data["count"] == 4
+        for e in data["earnings"]:
+            assert "options" not in e
         await fmp.close()
 
 

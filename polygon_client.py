@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from typing import Any
 
@@ -22,15 +23,17 @@ class PolygonClient:
 
     Features:
     - Simple in-memory TTL cache (mirrors FMPClient)
-    - Rate limiting: 5 calls/min (12s minimum between calls)
+    - Rate limiting (configurable via POLYGON_MIN_INTERVAL env var)
     - Graceful error handling for composite tools
     - Automatic API key injection
     """
 
     BASE_URL = "https://api.polygon.io"
 
-    # Rate limit: 5 calls/min = 12s between calls
-    MIN_INTERVAL = 12.0
+    # Rate limit: default 0.1s (~10 req/s). Paid tiers have unlimited requests;
+    # Polygon recommends staying under 100 req/s. Free tier users should set
+    # POLYGON_MIN_INTERVAL=12.0 in .env (5 calls/min).
+    MIN_INTERVAL = float(os.environ.get("POLYGON_MIN_INTERVAL", "0.1"))
 
     # Cache TTLs
     TTL_REALTIME = 60

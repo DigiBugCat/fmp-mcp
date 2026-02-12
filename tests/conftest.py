@@ -486,6 +486,13 @@ EARNINGS_CALENDAR = [
     {"symbol": "TSLA", "date": "2026-02-15", "time": "--", "fiscalDateEnding": "2025-12-31", "epsEstimated": 0.85, "revenueEstimated": 27500000000, "epsActual": None, "revenueActual": None},
 ]
 
+EARNINGS_BATCH_QUOTE = [
+    {"symbol": "AAPL", "marketCap": 3500000000000},   # $3.5T
+    {"symbol": "MSFT", "marketCap": 3200000000000},    # $3.2T
+    {"symbol": "GOOGL", "marketCap": 2100000000000},   # $2.1T
+    {"symbol": "TSLA", "marketCap": 1100000000000},    # $1.1T
+]
+
 # --- ETF Holdings & Exposure ---
 
 QQQ_HOLDINGS = [

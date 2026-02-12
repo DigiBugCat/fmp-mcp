@@ -473,6 +473,51 @@ def register(mcp: FastMCP, client: FMPClient, polygon_client: PolygonClient | No
 
         return result
 
+    async def _fetch_options_oi(symbols: list[str]) -> dict[str, dict]:
+        """Fetch aggregate options OI for a list of symbols via Polygon.
+
+        Returns {symbol: {total_oi, call_oi, put_oi, put_call_ratio}} for
+        each symbol where data is available.
+        """
+        if not polygon_client:
+            return {}
+
+        sem = asyncio.Semaphore(10)
+
+        async def _get_oi(sym: str) -> tuple[str, dict | None]:
+            async with sem:
+                data = await polygon_client.get_safe(
+                    f"/v3/snapshot/options/{sym}",
+                    params={"limit": 250},
+                    cache_ttl=polygon_client.TTL_REALTIME,
+                )
+            if not data or not isinstance(data, dict):
+                return sym, None
+            results = data.get("results", [])
+            if not results:
+                return sym, None
+            call_oi = 0
+            put_oi = 0
+            for c in results:
+                oi = c.get("open_interest") or 0
+                ct = (c.get("details") or {}).get("contract_type", "")
+                if ct == "call":
+                    call_oi += oi
+                elif ct == "put":
+                    put_oi += oi
+            total = call_oi + put_oi
+            if total == 0:
+                return sym, None
+            return sym, {
+                "total_oi": total,
+                "call_oi": call_oi,
+                "put_oi": put_oi,
+                "put_call_ratio": round(put_oi / call_oi, 2) if call_oi > 0 else None,
+            }
+
+        results = await asyncio.gather(*[_get_oi(s) for s in symbols])
+        return {sym: oi for sym, oi in results if oi is not None}
+
     @mcp.tool(
         annotations={
             "title": "Earnings Calendar",
@@ -485,15 +530,22 @@ def register(mcp: FastMCP, client: FMPClient, polygon_client: PolygonClient | No
     async def earnings_calendar(
         symbol: str | None = None,
         days_ahead: int = 7,
+        min_market_cap: float = 2_000_000_000,
     ) -> dict:
         """Get upcoming earnings report dates and estimates.
 
         Returns companies reporting earnings within the specified window.
-        Optionally filter to a specific ticker to find its next report date.
+        When no symbol is given, filters to liquid large-cap stocks (default
+        $2B+ market cap) to keep results manageable and focused on names
+        where options are liquid. Includes options open interest data from
+        Polygon when available.
 
         Args:
             symbol: Optional stock ticker to filter results (e.g. "AAPL")
             days_ahead: Number of days to look ahead (default 7, max 30)
+            min_market_cap: Minimum market cap filter in USD when browsing
+                all earnings (default 2B). Ignored when symbol is specified.
+                Set to 0 to include all companies.
         """
         days_ahead = max(1, min(days_ahead, 30))
         today = date.today()
@@ -511,37 +563,117 @@ def register(mcp: FastMCP, client: FMPClient, polygon_client: PolygonClient | No
 
         entries = data if isinstance(data, list) else []
 
-        # Client-side filter if symbol specified
+        # Single-symbol lookup: skip market cap filtering, enrich with OI
         if symbol:
             symbol = symbol.upper().strip()
             entries = [e for e in entries if e.get("symbol", "").upper() == symbol]
-
-        if not entries:
-            msg = f"No earnings scheduled in the next {days_ahead} days"
-            if symbol:
-                msg += f" for '{symbol}'"
-            return {"error": msg}
-
-        # Sort by date ascending
-        entries.sort(key=lambda e: e.get("date") or "")
-
-        earnings = []
-        for e in entries:
-            earnings.append({
+            if not entries:
+                return {"error": f"No earnings scheduled in the next {days_ahead} days for '{symbol}'"}
+            e = entries[0]
+            entry: dict = {
                 "symbol": e.get("symbol"),
                 "date": e.get("date"),
-                "time": e.get("time"),  # "amc" / "bmo" / "--"
+                "time": e.get("time"),
                 "fiscal_date_ending": e.get("fiscalDateEnding"),
                 "eps_estimate": e.get("epsEstimated"),
                 "revenue_estimate": e.get("revenueEstimated"),
                 "eps_actual": e.get("epsActual"),
                 "revenue_actual": e.get("revenueActual"),
-            })
+            }
+            oi_map = await _fetch_options_oi([symbol])
+            if symbol in oi_map:
+                entry["options"] = oi_map[symbol]
+            return {
+                "from_date": today.isoformat(),
+                "to_date": to_date.isoformat(),
+                "symbol": symbol,
+                "count": 1,
+                "earnings": [entry],
+            }
+
+        # Browsing mode: filter to liquid large-caps
+        if not entries:
+            return {"error": f"No earnings scheduled in the next {days_ahead} days"}
+
+        # Pre-filter: skip entries with tiny/missing revenue estimates
+        # to reduce the batch-quote call size ($50M rev ≈ mid-cap floor)
+        MIN_REV_ESTIMATE = 50_000_000
+        if min_market_cap > 0:
+            candidates = [
+                e for e in entries
+                if (e.get("revenueEstimated") or 0) >= MIN_REV_ESTIMATE
+            ]
+        else:
+            candidates = entries
+
+        # Deduplicate symbols (same symbol can appear for multiple quarters)
+        seen_symbols: set[str] = set()
+        unique_candidates = []
+        for e in candidates:
+            sym = (e.get("symbol") or "").upper()
+            if sym and sym not in seen_symbols:
+                seen_symbols.add(sym)
+                unique_candidates.append(e)
+
+        # Batch-quote for market caps (chunk in groups of 200)
+        mcap_map: dict[str, float] = {}
+        if min_market_cap > 0 and unique_candidates:
+            symbols = sorted({(e.get("symbol") or "").upper() for e in unique_candidates})
+            chunk_size = 200
+            chunks = [symbols[i:i + chunk_size] for i in range(0, len(symbols), chunk_size)]
+            batch_results = await asyncio.gather(*(
+                client.get_safe(
+                    "/stable/batch-quote",
+                    params={"symbols": ",".join(chunk)},
+                    cache_ttl=client.TTL_REALTIME,
+                    default=[],
+                )
+                for chunk in chunks
+            ))
+            for batch in batch_results:
+                for q in (batch if isinstance(batch, list) else []):
+                    sym = q.get("symbol")
+                    mc = q.get("marketCap")
+                    if sym and mc:
+                        mcap_map[sym] = mc
+
+        # Build output, applying market cap filter
+        earnings = []
+        for e in unique_candidates:
+            sym = (e.get("symbol") or "").upper()
+            mc = mcap_map.get(sym)
+            if min_market_cap > 0 and (mc is None or mc < min_market_cap):
+                continue
+            entry = {
+                "symbol": sym,
+                "date": e.get("date"),
+                "time": e.get("time"),  # "amc" / "bmo" / "--"
+                "fiscal_date_ending": e.get("fiscalDateEnding"),
+                "eps_estimate": e.get("epsEstimated"),
+                "revenue_estimate": e.get("revenueEstimated"),
+            }
+            if mc is not None:
+                entry["market_cap"] = mc
+            earnings.append(entry)
+
+        if not earnings:
+            return {"error": f"No earnings ≥${min_market_cap/1e9:.0f}B market cap in the next {days_ahead} days"}
+
+        # Enrich with options OI from Polygon
+        filtered_symbols = [e["symbol"] for e in earnings]
+        oi_map = await _fetch_options_oi(filtered_symbols)
+        for entry in earnings:
+            sym = entry["symbol"]
+            if sym in oi_map:
+                entry["options"] = oi_map[sym]
+
+        # Sort by market cap descending (biggest names first), then date
+        earnings.sort(key=lambda x: (-(x.get("market_cap") or 0), x.get("date") or ""))
 
         return {
             "from_date": today.isoformat(),
             "to_date": to_date.isoformat(),
-            "symbol": symbol if symbol else None,
+            "min_market_cap": min_market_cap,
             "count": len(earnings),
             "earnings": earnings,
         }
