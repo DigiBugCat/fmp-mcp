@@ -1592,7 +1592,7 @@ class TestTechnicalIndicators:
     async def test_invalid_indicator(self):
         mcp, fmp = _make_server(register_market)
         async with Client(mcp) as c:
-            result = await c.call_tool("technical_indicators", {"symbol": "AAPL", "indicator": "macd"})
+            result = await c.call_tool("technical_indicators", {"symbol": "AAPL", "indicator": "bollinger"})
 
         data = result.data
         assert "error" in data

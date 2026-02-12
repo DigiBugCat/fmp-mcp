@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import math
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
     from fmp_client import FMPClient
+    from polygon_client import PolygonClient
 
 
 def _safe_first(data: list | None) -> dict:
@@ -114,7 +115,7 @@ def _format_exposure(symbol: str, exposure: list, limit: int) -> dict:
     }
 
 
-def register(mcp: FastMCP, client: FMPClient) -> None:
+def register(mcp: FastMCP, client: FMPClient, polygon_client: PolygonClient | None = None) -> None:
     @mcp.tool(
         annotations={
             "title": "Price History",
@@ -897,7 +898,7 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             "history": data_points,
         }
 
-    VALID_INDICATORS = {"sma", "ema", "rsi", "adx", "wma", "dema", "tema", "williams", "standarddeviation"}
+    VALID_INDICATORS = {"sma", "ema", "rsi", "adx", "wma", "dema", "tema", "williams", "standarddeviation", "macd"}
 
     @mcp.tool(
         annotations={
@@ -917,11 +918,11 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         """Get technical indicator values for a stock.
 
         Supports SMA, EMA, RSI, ADX, WMA, DEMA, TEMA, Williams %R,
-        and Standard Deviation. Returns last 30 data points.
+        Standard Deviation, and MACD (via Polygon.io). Returns last 30 data points.
 
         Args:
             symbol: Stock ticker symbol (e.g. "AAPL")
-            indicator: Indicator type - sma, ema, rsi, adx, wma, dema, tema, williams, standarddeviation
+            indicator: Indicator type - sma, ema, rsi, adx, wma, dema, tema, williams, standarddeviation, macd
             period_length: Lookback period (default 14)
             timeframe: Data timeframe - "1day", "1hour", "4hour", "1week" (default "1day")
         """
@@ -931,6 +932,60 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         if indicator not in VALID_INDICATORS:
             return {"error": f"Invalid indicator '{indicator}'. Use: {', '.join(sorted(VALID_INDICATORS))}"}
 
+        # MACD is only available via Polygon
+        if indicator == "macd":
+            if polygon_client is None:
+                return {"error": "MACD requires POLYGON_API_KEY to be configured"}
+
+            # Map timeframe to Polygon timespan
+            timespan_map = {"1day": "day", "1hour": "hour", "4hour": "hour", "1week": "week"}
+            timespan = timespan_map.get(timeframe, "day")
+
+            data = await polygon_client.get_safe(
+                f"/v1/indicators/macd/{symbol}",
+                params={
+                    "timespan": timespan,
+                    "series_type": "close",
+                    "limit": 30,
+                    "order": "desc",
+                },
+                cache_ttl=polygon_client.TTL_HOURLY,
+            )
+
+            if not data or not isinstance(data, dict):
+                return {"error": f"No MACD data found for '{symbol}'"}
+
+            results = data.get("results", {})
+            raw_values = results.get("values", [])
+
+            if not raw_values:
+                return {"error": f"No MACD data found for '{symbol}'"}
+
+            values = []
+            for d in raw_values[:30]:
+                ts = d.get("timestamp")
+                date_str = datetime.fromtimestamp(ts / 1000).strftime("%Y-%m-%d") if ts else None
+                values.append({
+                    "date": date_str,
+                    "macd": d.get("value"),
+                    "signal": d.get("signal"),
+                    "histogram": d.get("histogram"),
+                })
+
+            current = values[0] if values else {}
+            return {
+                "symbol": symbol,
+                "indicator": "macd",
+                "timeframe": timeframe,
+                "current_value": current.get("macd"),
+                "current_signal": current.get("signal"),
+                "current_histogram": current.get("histogram"),
+                "data_points": len(values),
+                "values": values,
+                "source": "polygon.io",
+            }
+
+        # All other indicators via FMP
         data = await client.get_safe(
             f"/stable/technical-indicators/{indicator}",
             params={

@@ -6,6 +6,7 @@ import pytest
 import respx
 
 from fmp_client import FMPClient
+from polygon_client import PolygonClient
 
 
 @pytest.fixture
@@ -15,9 +16,22 @@ def fmp_client():
 
 
 @pytest.fixture
+def polygon_client():
+    """Create a PolygonClient with a test API key."""
+    return PolygonClient(api_key="test_polygon_key")
+
+
+@pytest.fixture
 def mock_api():
     """Start respx mock for FMP API calls (FMPClient unit tests only)."""
     with respx.mock(base_url="https://financialmodelingprep.com", assert_all_called=False) as api:
+        yield api
+
+
+@pytest.fixture
+def mock_polygon_api():
+    """Start respx mock for Polygon API calls."""
+    with respx.mock(base_url="https://api.polygon.io", assert_all_called=False) as api:
         yield api
 
 
@@ -887,3 +901,127 @@ MSFT_KEY_METRICS_TTM = [{
     "marketCapTTM": 3100000000000,
     "revenuePerShareTTM": 33.15,
 }]
+
+# --- Polygon.io Fixtures ---
+
+POLYGON_OPTIONS_SNAPSHOT = {
+    "status": "OK",
+    "request_id": "test123",
+    "results": [
+        {
+            "details": {
+                "ticker": "O:AAPL260220C00270000",
+                "strike_price": 270.0,
+                "contract_type": "call",
+                "expiration_date": "2026-02-20",
+            },
+            "greeks": {"delta": 0.55, "gamma": 0.03, "theta": -0.15, "vega": 0.25},
+            "implied_volatility": 0.32,
+            "open_interest": 15000,
+            "day": {"volume": 5200, "close": 8.50},
+            "last_quote": {"bid": 8.40, "ask": 8.60, "bid_size": 100, "ask_size": 150},
+        },
+        {
+            "details": {
+                "ticker": "O:AAPL260220P00270000",
+                "strike_price": 270.0,
+                "contract_type": "put",
+                "expiration_date": "2026-02-20",
+            },
+            "greeks": {"delta": -0.45, "gamma": 0.03, "theta": -0.12, "vega": 0.22},
+            "implied_volatility": 0.34,
+            "open_interest": 12000,
+            "day": {"volume": 3800, "close": 5.20},
+            "last_quote": {"bid": 5.10, "ask": 5.30, "bid_size": 80, "ask_size": 120},
+        },
+        {
+            "details": {
+                "ticker": "O:AAPL260220C00280000",
+                "strike_price": 280.0,
+                "contract_type": "call",
+                "expiration_date": "2026-02-20",
+            },
+            "greeks": {"delta": 0.35, "gamma": 0.04, "theta": -0.10, "vega": 0.20},
+            "implied_volatility": 0.30,
+            "open_interest": 8000,
+            "day": {"volume": 2100, "close": 4.30},
+            "last_quote": {"bid": 4.20, "ask": 4.40, "bid_size": 60, "ask_size": 90},
+        },
+        {
+            "details": {
+                "ticker": "O:AAPL260227C00275000",
+                "strike_price": 275.0,
+                "contract_type": "call",
+                "expiration_date": "2026-02-27",
+            },
+            "greeks": {"delta": 0.50, "gamma": 0.02, "theta": -0.08, "vega": 0.30},
+            "implied_volatility": 0.31,
+            "open_interest": 6000,
+            "day": {"volume": 1500, "close": 9.00},
+            "last_quote": {"bid": 8.90, "ask": 9.10, "bid_size": 50, "ask_size": 70},
+        },
+    ],
+}
+
+POLYGON_MACD = {
+    "status": "OK",
+    "request_id": "macd123",
+    "results": {
+        "underlying": {"url": "https://api.polygon.io/v2/aggs/ticker/AAPL/range/1/day/..."},
+        "values": [
+            {"timestamp": 1707696000000, "value": 2.35, "signal": 1.80, "histogram": 0.55},
+            {"timestamp": 1707609600000, "value": 2.10, "signal": 1.75, "histogram": 0.35},
+            {"timestamp": 1707523200000, "value": 1.85, "signal": 1.70, "histogram": 0.15},
+        ],
+    },
+}
+
+POLYGON_SHORT_INTEREST = {
+    "status": "OK",
+    "request_id": "short123",
+    "results": [
+        {
+            "ticker": "AAPL",
+            "settlement_date": "2026-02-10",
+            "short_interest": 118000000,
+            "days_to_cover": 1.8,
+            "avg_daily_volume": 65000000,
+        },
+    ],
+}
+
+POLYGON_TREASURY_YIELDS = {
+    "status": "OK",
+    "request_id": "yields123",
+    "results": [
+        {"date": "2026-02-11", "yield_1_month": 4.32, "yield_3_month": 4.28, "yield_6_month": 4.15, "yield_1_year": 3.95, "yield_2_year": 3.82, "yield_5_year": 3.90, "yield_10_year": 4.05, "yield_20_year": 4.35, "yield_30_year": 4.42},
+        {"date": "2026-02-10", "yield_1_month": 4.30, "yield_3_month": 4.26, "yield_6_month": 4.13, "yield_1_year": 3.93, "yield_2_year": 3.80, "yield_5_year": 3.88, "yield_10_year": 4.03, "yield_20_year": 4.33, "yield_30_year": 4.40},
+    ],
+}
+
+POLYGON_INFLATION = {
+    "status": "OK",
+    "request_id": "infl123",
+    "results": [
+        {"date": "2026-01-15", "cpi": 315.2, "cpi_core": 320.1, "cpi_year_over_year": 2.8, "pce": 118.5, "pce_core": 119.2},
+        {"date": "2025-12-15", "cpi": 314.5, "cpi_core": 319.3, "cpi_year_over_year": 2.9, "pce": 118.0, "pce_core": 118.7},
+    ],
+}
+
+POLYGON_INFLATION_EXPECTATIONS = {
+    "status": "OK",
+    "request_id": "inflexp123",
+    "results": [
+        {"date": "2026-02-10", "market_5_year": 2.35, "market_10_year": 2.42, "model_1_year": 2.80, "model_5_year": 2.45, "model_10_year": 2.50, "model_30_year": 2.55, "forward_years_5_to_10": 2.49},
+        {"date": "2026-02-03", "market_5_year": 2.33, "market_10_year": 2.40, "model_1_year": 2.78, "model_5_year": 2.43, "model_10_year": 2.48, "model_30_year": 2.53, "forward_years_5_to_10": 2.47},
+    ],
+}
+
+POLYGON_LABOR_MARKET = {
+    "status": "OK",
+    "request_id": "labor123",
+    "results": [
+        {"date": "2026-01-10", "unemployment_rate": 4.1, "labor_force_participation_rate": 62.5, "avg_hourly_earnings": 35.20, "job_openings": 8500},
+        {"date": "2025-12-06", "unemployment_rate": 4.2, "labor_force_participation_rate": 62.4, "avg_hourly_earnings": 35.05, "job_openings": 8300},
+    ],
+}

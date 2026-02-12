@@ -8,14 +8,17 @@ from contextlib import asynccontextmanager
 from fastmcp import FastMCP
 
 from fmp_client import FMPClient
-from tools import assets, financials, macro, market, meta, news, overview, ownership, transcripts, valuation, workflows
+from polygon_client import PolygonClient
+from tools import assets, economy, financials, macro, market, meta, news, options, overview, ownership, transcripts, valuation, workflows
 
 
 @asynccontextmanager
 async def lifespan(server):
-    """Manage FMPClient lifecycle."""
+    """Manage client lifecycles."""
     yield
     await client.close()
+    if polygon_client is not None:
+        await polygon_client.close()
 
 
 mcp = FastMCP(
@@ -26,6 +29,7 @@ mcp = FastMCP(
         "stock_brief for a quick comprehensive read on any stock, "
         "market_context for macro + rotation + breadth environment, "
         "earnings_setup for pre-earnings positioning analysis, "
+        "earnings_preview for pre-earnings setup scoring with thesis triggers, "
         "fair_value_estimate for multi-method valuation, "
         "earnings_postmortem for post-earnings synthesis, "
         "ownership_deep_dive for comprehensive ownership analysis. "
@@ -43,12 +47,14 @@ mcp = FastMCP(
         "dividends_calendar, index_constituents, sector_valuation, "
         "historical_market_cap, mna_activity, commodity_quotes, "
         "crypto_quotes, forex_quotes, valuation_history, ratio_history, "
-        "fmp_coverage_gaps."
+        "fmp_coverage_gaps, "
+        "options_chain (options with Greeks via Polygon), "
+        "economy_indicators (CPI/unemployment/yields via Polygon)."
     ),
     lifespan=lifespan,
 )
 
-# Initialize shared client
+# Initialize shared FMP client
 api_key = os.environ.get("FMP_API_KEY", "")
 if not api_key:
     import warnings
@@ -56,15 +62,26 @@ if not api_key:
 
 client = FMPClient(api_key=api_key)
 
+# Initialize optional Polygon client
+polygon_api_key = os.environ.get("POLYGON_API_KEY", "")
+polygon_client: PolygonClient | None = None
+if polygon_api_key:
+    polygon_client = PolygonClient(api_key=polygon_api_key)
+
 # Register tool modules
 overview.register(mcp, client)
 financials.register(mcp, client)
 valuation.register(mcp, client)
-market.register(mcp, client)
-ownership.register(mcp, client)
+market.register(mcp, client, polygon_client=polygon_client)
+ownership.register(mcp, client, polygon_client=polygon_client)
 news.register(mcp, client)
 macro.register(mcp, client)
 transcripts.register(mcp, client)
 assets.register(mcp, client)
 workflows.register(mcp, client)
 meta.register(mcp, client)
+
+# Polygon-only tools (registered only when Polygon key is available)
+if polygon_client is not None:
+    options.register(mcp, polygon_client)
+    economy.register(mcp, polygon_client)

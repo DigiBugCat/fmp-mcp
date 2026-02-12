@@ -12,6 +12,7 @@ import httpx
 if TYPE_CHECKING:
     from fastmcp import FastMCP
     from fmp_client import FMPClient
+    from polygon_client import PolygonClient
 
 FINRA_URL = "https://api.finra.org/data/group/otcMarket/name/consolidatedShortInterest"
 
@@ -188,7 +189,31 @@ async def _fetch_finra_short_interest(symbol: str, settlement_date: str) -> dict
         return None
 
 
-def register(mcp: FastMCP, client: FMPClient) -> None:
+async def _fetch_polygon_short_volume(
+    polygon_client: PolygonClient, symbol: str
+) -> dict | None:
+    """Fetch recent daily short volume from Polygon.io."""
+    data = await polygon_client.get_safe(
+        "/stocks/v1/short-interest",
+        params={"ticker": symbol, "limit": 5, "sort": "settlement_date.desc"},
+        cache_ttl=polygon_client.TTL_HOURLY,
+    )
+    if not data or not isinstance(data, dict):
+        return None
+    results = data.get("results", [])
+    if not results:
+        return None
+    latest = results[0]
+    return {
+        "settlement_date": latest.get("settlement_date"),
+        "short_interest": latest.get("short_interest"),
+        "days_to_cover": latest.get("days_to_cover"),
+        "avg_daily_volume": latest.get("avg_daily_volume"),
+        "source": "polygon.io",
+    }
+
+
+def register(mcp: FastMCP, client: FMPClient, polygon_client: PolygonClient | None = None) -> None:
     @mcp.tool(
         annotations={
             "title": "Insider Activity",
@@ -449,6 +474,7 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
 
         Combines FINRA consolidated short interest (free, no API key)
         with FMP shares-float to compute short % of float and outstanding.
+        If Polygon.io is configured, also includes more timely short interest data.
 
         Returns shares short, days to cover, change vs prior period,
         and short as % of float/outstanding.
@@ -467,9 +493,17 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             default=[],
         )
 
-        all_results = await asyncio.gather(*finra_tasks, float_task)
-        finra_results = all_results[:-1]
-        float_data = all_results[-1]
+        # Include Polygon short volume if available
+        tasks: list = [*finra_tasks, float_task]
+        polygon_idx = None
+        if polygon_client is not None:
+            polygon_idx = len(tasks)
+            tasks.append(_fetch_polygon_short_volume(polygon_client, symbol))
+
+        all_results = await asyncio.gather(*tasks)
+        finra_results = all_results[:len(finra_tasks)]
+        float_data = all_results[len(finra_tasks)]
+        polygon_short = all_results[polygon_idx] if polygon_idx is not None else None
 
         # Take first non-None FINRA result (candidates sorted newest-first)
         finra = None
@@ -514,11 +548,16 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
                 "short_pct_of_outstanding": short_pct_of_outstanding,
             }
 
+        if polygon_short:
+            result["polygon_short_interest"] = polygon_short
+
         _warnings = []
         if finra is None:
             _warnings.append("FINRA short interest unavailable")
         if not float_info:
             _warnings.append("float data unavailable")
+        if polygon_client is not None and not polygon_short:
+            _warnings.append("Polygon short interest unavailable")
         if _warnings:
             result["_warnings"] = _warnings
 
@@ -533,7 +572,7 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             "openWorldHint": True,
         }
     )
-    async def fund_holdings(cik: str, year: int | None = None, quarter: int | None = None) -> dict:
+    async def fund_holdings(cik: str, year: int | str | None = None, quarter: int | str | None = None) -> dict:
         """Get institutional investor's portfolio by CIK.
 
         Query a fund's holdings, performance track record, and sector allocation.
@@ -546,6 +585,18 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             quarter: Quarter (1-4) for holdings (defaults to latest available)
         """
         cik = cik.strip()
+
+        # Coerce string inputs (MCP clients may send strings)
+        def _to_int(v: int | str | None) -> int | None:
+            if v is None:
+                return None
+            try:
+                return int(v)
+            except (TypeError, ValueError):
+                return None
+
+        year = _to_int(year)
+        quarter = _to_int(quarter)
 
         cik_params = {"cik": cik}
         # If period is omitted, use most recent quarter where data is available.
@@ -679,8 +730,8 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         sym_params = {"symbol": symbol}
         year, quarter, institutional_list, _holders_unused = await _resolve_latest_symbol_institutional_period(client, symbol)
 
-        # Fetch float, insider stats, institutional summary, and short interest in parallel
-        float_data, insider_stats_data, finra_results = await asyncio.gather(
+        # Fetch float, insider stats, institutional summary, short interest, and Polygon short in parallel
+        tasks = [
             client.get_safe(
                 "/stable/shares-float",
                 params=sym_params,
@@ -693,11 +744,18 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
                 cache_ttl=client.TTL_HOURLY,
                 default=[],
             ),
-            # For short interest, use the existing helper
             asyncio.gather(
                 *[_fetch_finra_short_interest(symbol, d) for d in _short_interest_dates()]
             ),
-        )
+        ]
+        if polygon_client is not None:
+            tasks.append(_fetch_polygon_short_volume(polygon_client, symbol))
+
+        all_results = await asyncio.gather(*tasks)
+        float_data = all_results[0]
+        insider_stats_data = all_results[1]
+        finra_results = all_results[2]
+        polygon_short = all_results[3] if polygon_client is not None else None
 
         float_info = _safe_first(float_data)
         insider_stats = _safe_first(insider_stats_data)
@@ -766,6 +824,9 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             },
         }
 
+        if polygon_short:
+            result["polygon_short_interest"] = polygon_short
+
         _warnings = []
         if not float_info:
             _warnings.append("float data unavailable")
@@ -775,6 +836,8 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             _warnings.append("institutional summary unavailable")
         if finra is None:
             _warnings.append("FINRA short interest unavailable")
+        if polygon_client is not None and not polygon_short:
+            _warnings.append("Polygon short interest unavailable")
         if _warnings:
             result["_warnings"] = _warnings
 
