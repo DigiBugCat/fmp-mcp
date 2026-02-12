@@ -102,7 +102,7 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         if symbol and route["has_symbol"]:
             symbol = symbol.upper().strip()
             path = route["search"]
-            params: dict = {"symbol": symbol, "page": page, "limit": limit}
+            params: dict = {"symbols": symbol, "page": page, "limit": limit}
         else:
             path = route["latest"]
             params = {"page": page, "limit": limit}
