@@ -15,6 +15,7 @@ High-level tools that orchestrate multiple API calls into single research-ready 
 | `stock_brief` | Quick comprehensive snapshot: profile, price action, valuation, analyst consensus, insider signals, headlines |
 | `market_context` | Full market environment: rates, yield curve, sector rotation, breadth, movers, economic calendar |
 | `earnings_setup` | Pre-earnings positioning: consensus estimates, beat/miss history, analyst momentum, price drift, insider signals |
+| `earnings_preview` | Pre-earnings setup scorecard: composite signal, thesis alignment, and bull/bear triggers |
 | `fair_value_estimate` | Multi-method valuation: DCF, earnings-based, peer multiples, analyst targets, blended estimate |
 | `earnings_postmortem` | Post-earnings synthesis: beat/miss, trend comparison, analyst reaction, market response, guidance tone |
 
@@ -123,7 +124,7 @@ tools/
   news.py          # stock_news
   macro.py         # treasury_rates, economic_calendar, market_overview
   transcripts.py   # earnings_transcript (with pagination)
-  workflows.py     # stock_brief, market_context, earnings_setup, fair_value_estimate, earnings_postmortem
+  workflows.py     # stock_brief, market_context, earnings_setup, earnings_preview, fair_value_estimate, earnings_postmortem
 ```
 
 Key design decisions:

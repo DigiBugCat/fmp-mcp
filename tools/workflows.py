@@ -65,6 +65,166 @@ def _calc_performance(current: float, history: list[dict], days: int) -> float |
     return round((current / old_price - 1) * 100, 2)
 
 
+THESIS_MAP: dict[str, dict[str, Any]] = {
+    "trained_on_it": {
+        "tickers": ["DDOG", "NET", "ESTC", "MDB", "TWLO", "CRWD", "SNOW", "CFLT", "GTLB", "HCP"],
+        "label": '"Trained On It" Moat (§3)',
+        "key_question": "Does AI/agentic adoption show up in usage metrics?",
+    },
+    "bifurcation_infra": {
+        "tickers": ["DDOG", "NET", "CRWD", "ESTC", "MDB", "CFLT", "SNOW", "ZS", "PANW", "CYBR"],
+        "label": "Software Bifurcation — Infrastructure (§2)",
+        "key_question": "Is usage-based revenue accelerating while seat-based peers decelerate?",
+    },
+    "bifurcation_prod": {
+        "tickers": ["CRM", "WDAY", "ADBE", "TEAM", "PATH"],
+        "label": "Software Bifurcation — Productivity [SHORT SIDE] (§2)",
+        "key_question": "Is seat-based compression showing up in NRR or guidance?",
+    },
+    "ai_infra": {
+        "tickers": [
+            "NVDA", "AMD", "AVGO", "MRVL", "MU", "ALAB", "CRDO", "ASML", "TSM",
+            "VRT", "ETN", "BE", "PWR", "GEV", "FCX", "SCCO", "DELL", "SMCI", "HPE",
+        ],
+        "label": "AI Infrastructure Bottleneck (§1)",
+        "key_question": "Are supply constraints / pricing power holding?",
+    },
+    "spender": {
+        "tickers": ["MSFT", "META", "GOOG", "GOOGL", "AMZN", "AAPL"],
+        "label": "Spenders vs Suppliers — Spender Side (§5)",
+        "key_question": "Does capex guidance increase again? Any AI ROI proof?",
+    },
+    "agentic": {
+        "tickers": ["DDOG", "NET", "CRWD", "ESTC", "MDB", "TWLO", "SNOW"],
+        "label": "Agentic AI Tailwind (§7)",
+        "key_question": "Any explicit commentary on agent-driven usage growth?",
+    },
+}
+
+
+def _score_beat_rate(rate: float | None, avg_surprise: float | None) -> float:
+    """Score beat rate in -1..1 range."""
+    if rate is None:
+        return 0.0
+    base = (rate - 50) / 50
+    surprise_boost = min((avg_surprise or 0) / 30, 0.5)
+    return min(max(base + surprise_boost, -1.0), 1.0)
+
+
+def _score_price_setup(from_high_pct: float | None) -> float:
+    """Far from highs can improve setup asymmetry."""
+    if from_high_pct is None:
+        return 0.0
+    if from_high_pct < -40:
+        return 1.0
+    if from_high_pct < -25:
+        return 0.7
+    if from_high_pct < -15:
+        return 0.3
+    if from_high_pct < -5:
+        return 0.0
+    return -0.3
+
+
+def _score_analyst(momentum: dict | None) -> float:
+    """Net 90d upgrades/downgrades signal."""
+    if not isinstance(momentum, dict):
+        return 0.0
+    net_90d = (momentum.get("upgrades_90d") or 0) - (momentum.get("downgrades_90d") or 0)
+    if net_90d > 2:
+        return 0.8
+    if net_90d > 0:
+        return 0.3
+    if net_90d == 0:
+        return 0.0
+    if net_90d > -2:
+        return -0.3
+    return -0.8
+
+
+def _score_insider(signal: dict | None) -> float:
+    """Cluster buying and net buying/selling signal."""
+    if not isinstance(signal, dict):
+        return 0.0
+    if signal.get("cluster_buying"):
+        return 1.0
+    s = signal.get("signal", "neutral")
+    if s == "net_buying":
+        return 0.5
+    if s == "neutral":
+        return 0.0
+    return -0.4
+
+
+def _match_theses(ticker: str) -> list[dict]:
+    matches = []
+    for thesis in THESIS_MAP.values():
+        if ticker in thesis["tickers"]:
+            matches.append({
+                "thesis": thesis["label"],
+                "key_question": thesis["key_question"],
+            })
+    return matches
+
+
+def _default_key_questions(ticker: str, thesis_alignment: list[dict]) -> list[str]:
+    questions: list[str] = []
+    for thesis in thesis_alignment:
+        key_question = thesis.get("key_question")
+        if key_question and key_question not in questions:
+            questions.append(key_question)
+    questions.extend([
+        f"What changed in the demand outlook for {ticker} since last quarter?",
+        "Did management guide above or below current Street expectations?",
+        "Are margin and cash-flow trends reinforcing or weakening the setup?",
+    ])
+    deduped = []
+    for q in questions:
+        if q not in deduped:
+            deduped.append(q)
+    return deduped[:5]
+
+
+def _default_bull_triggers(ticker: str, thesis_alignment: list[dict], setup: dict) -> list[str]:
+    triggers = []
+    for thesis in thesis_alignment[:2]:
+        key_question = thesis.get("key_question")
+        if key_question:
+            triggers.append(f"Positive evidence on: {key_question}")
+    beat_rate = (setup.get("surprise_history") or {}).get("beat_rate")
+    if isinstance(beat_rate, (int, float)) and beat_rate >= 75:
+        triggers.append(f"Beat history remains strong (beat rate {beat_rate:.0f}%) with confident guidance")
+    triggers.extend([
+        "Forward guidance (quarter/FY) above consensus with stable-to-improving demand commentary",
+        f"Management highlights durable growth drivers for {ticker} with no material execution flags",
+    ])
+    deduped = []
+    for t in triggers:
+        if t not in deduped:
+            deduped.append(t)
+    return deduped[:5]
+
+
+def _default_bear_triggers(ticker: str, thesis_alignment: list[dict], setup: dict) -> list[str]:
+    triggers = []
+    for thesis in thesis_alignment[:2]:
+        key_question = thesis.get("key_question")
+        if key_question:
+            triggers.append(f"Negative evidence on: {key_question}")
+    beat_rate = (setup.get("surprise_history") or {}).get("beat_rate")
+    if isinstance(beat_rate, (int, float)) and beat_rate < 50:
+        triggers.append(f"Weak earnings track record persists (beat rate {beat_rate:.0f}%)")
+    triggers.extend([
+        "Guide-down or guidance below consensus with cautious demand commentary",
+        f"Execution concerns, share-loss risk, or margin compression thesis strengthens for {ticker}",
+    ])
+    deduped = []
+    for t in triggers:
+        if t not in deduped:
+            deduped.append(t)
+    return deduped[:5]
+
+
 # --- Registration ---
 
 
@@ -702,7 +862,156 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         return result
 
     # ================================================================
-    # 4. fair_value_estimate — "What's this stock worth?"
+    # 4. earnings_preview — "How is this setup into earnings?"
+    # ================================================================
+
+    @mcp.tool(
+        annotations={"title": "Earnings Preview", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True}
+    )
+    async def earnings_preview(ticker: str, days_ahead: int = 30) -> dict:
+        """Pre-earnings setup report with scoring and thesis alignment.
+
+        Combines earnings_setup + stock_brief data, scores beat rate / price setup /
+        analyst momentum / insider signals, and maps to thesis triggers.
+
+        Args:
+            ticker: Stock ticker symbol (e.g. "ESTC", "NVDA")
+            days_ahead: Horizon for in-window earnings checks
+        """
+        ticker = ticker.upper().strip()
+        if days_ahead < 1:
+            return {"error": f"Invalid days_ahead '{days_ahead}'. Must be >= 1."}
+
+        setup, brief = await asyncio.gather(
+            earnings_setup.fn(symbol=ticker),
+            stock_brief.fn(symbol=ticker),
+        )
+
+        setup_error = setup.get("error") if isinstance(setup, dict) else None
+        brief_error = brief.get("error") if isinstance(brief, dict) else None
+
+        if setup_error and brief_error:
+            return {
+                "error": f"No usable data for '{ticker}'",
+                "details": {"earnings_setup": setup_error, "stock_brief": brief_error},
+            }
+
+        warnings: list[str] = []
+        for msg in (setup.get("_warnings") or []) if isinstance(setup, dict) else []:
+            warnings.append(f"earnings_setup: {msg}")
+        for msg in (brief.get("_warnings") or []) if isinstance(brief, dict) else []:
+            warnings.append(f"stock_brief: {msg}")
+        if setup_error:
+            warnings.append("earnings_setup unavailable; using neutral defaults for earnings components")
+        if brief_error:
+            warnings.append("stock_brief unavailable; using neutral defaults for price components")
+
+        setup_data = setup if isinstance(setup, dict) else {}
+        brief_data = brief if isinstance(brief, dict) else {}
+
+        earnings_date = setup_data.get("earnings_date")
+        days_until = setup_data.get("days_until_earnings")
+        in_window = isinstance(days_until, int) and 0 <= days_until <= days_ahead
+        if days_until is None:
+            warnings.append("next earnings date unavailable; in_window set to false")
+        elif not in_window:
+            warnings.append(f"earnings date is outside requested horizon ({days_ahead} days)")
+
+        surprise_history = setup_data.get("surprise_history") if isinstance(setup_data.get("surprise_history"), dict) else {}
+        analyst_momentum = setup_data.get("analyst_momentum") if isinstance(setup_data.get("analyst_momentum"), dict) else {}
+        insider_signal = setup_data.get("insider_signal") if isinstance(setup_data.get("insider_signal"), dict) else {}
+        price = brief_data.get("price") if isinstance(brief_data.get("price"), dict) else {}
+        momentum = brief_data.get("momentum") if isinstance(brief_data.get("momentum"), dict) else {}
+        valuation = brief_data.get("valuation") if isinstance(brief_data.get("valuation"), dict) else {}
+        analyst = brief_data.get("analyst") if isinstance(brief_data.get("analyst"), dict) else {}
+
+        beat_rate = surprise_history.get("beat_rate")
+        avg_surprise = surprise_history.get("avg_surprise")
+        from_high_pct = price.get("from_high_pct")
+
+        if beat_rate is None:
+            warnings.append("beat history unavailable; beat_history score set to 0.0")
+        if from_high_pct is None:
+            warnings.append("price setup unavailable; price_setup score set to 0.0")
+        if analyst_momentum.get("upgrades_90d") is None and analyst_momentum.get("downgrades_90d") is None:
+            warnings.append("analyst momentum unavailable; analyst score set to 0.0")
+        if insider_signal.get("signal") is None and insider_signal.get("cluster_buying") is None:
+            warnings.append("insider signal unavailable; insider score set to 0.0")
+
+        signals = {
+            "beat_history": round(_score_beat_rate(beat_rate, avg_surprise), 4),
+            "price_setup": round(_score_price_setup(from_high_pct), 4),
+            "analyst": round(_score_analyst(analyst_momentum), 4),
+            "insider": round(_score_insider(insider_signal), 4),
+        }
+
+        composite = round(
+            signals["beat_history"] * 0.35
+            + signals["price_setup"] * 0.25
+            + signals["analyst"] * 0.20
+            + signals["insider"] * 0.20,
+            4,
+        )
+        if composite > 0.3:
+            setup_signal = "BULLISH"
+        elif composite < -0.3:
+            setup_signal = "BEARISH"
+        else:
+            setup_signal = "NEUTRAL"
+
+        thesis_alignment = _match_theses(ticker)
+        key_questions = _default_key_questions(ticker, thesis_alignment)
+        bull_triggers = _default_bull_triggers(ticker, thesis_alignment, setup_data)
+        bear_triggers = _default_bear_triggers(ticker, thesis_alignment, setup_data)
+
+        result = {
+            "ticker": ticker,
+            "company_name": brief_data.get("company_name") or setup_data.get("company_name"),
+            "earnings_date": earnings_date,
+            "days_until": days_until,
+            "days_ahead": days_ahead,
+            "in_window": in_window,
+            "setup_signal": setup_signal,
+            "composite_score": composite,
+            "price_context": {
+                "current": price.get("current"),
+                "from_52w_high": from_high_pct,
+                "sma_50": momentum.get("sma_50"),
+                "sma_200": momentum.get("sma_200"),
+                "above_50": momentum.get("above_50"),
+                "above_200": momentum.get("above_200"),
+                "pe": valuation.get("pe"),
+                "ps": valuation.get("ps"),
+                "ev_ebitda": valuation.get("ev_ebitda"),
+                "analyst_consensus": analyst.get("consensus"),
+                "analyst_target": analyst.get("target"),
+                "analyst_upside_pct": analyst.get("upside_pct"),
+            },
+            "consensus": setup_data.get("consensus") if isinstance(setup_data.get("consensus"), dict) else {},
+            "beat_history": {
+                "rate": beat_rate,
+                "avg_surprise": avg_surprise,
+                "last_4q": surprise_history.get("last_quarters") or [],
+            },
+            "signals": signals,
+            "thesis_alignment": thesis_alignment,
+            "position": None,
+            "key_questions": key_questions,
+            "bull_triggers": bull_triggers,
+            "bear_triggers": bear_triggers,
+        }
+
+        deduped_warnings = []
+        for msg in warnings:
+            if msg not in deduped_warnings:
+                deduped_warnings.append(msg)
+        if deduped_warnings:
+            result["_warnings"] = deduped_warnings
+
+        return result
+
+    # ================================================================
+    # 5. fair_value_estimate — "What's this stock worth?"
     # ================================================================
 
     @mcp.tool(
@@ -955,7 +1264,7 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         return result
 
     # ================================================================
-    # 5. earnings_postmortem — "What just happened in earnings?"
+    # 6. earnings_postmortem — "What just happened in earnings?"
     # ================================================================
 
     @mcp.tool(
@@ -1289,7 +1598,7 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         return result
 
     # ================================================================
-    # 6. ownership_deep_dive — "Who owns this stock?"
+    # 7. ownership_deep_dive — "Who owns this stock?"
     # ================================================================
 
     @mcp.tool(
@@ -1549,7 +1858,7 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         return result
 
     # ================================================================
-    # 7. industry_analysis — "What's happening in this industry?"
+    # 8. industry_analysis — "What's happening in this industry?"
     # ================================================================
 
     @mcp.tool(

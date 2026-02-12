@@ -55,39 +55,16 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         page: int = 0,
         limit: int = 20,
     ) -> dict:
-        """Get news articles across stocks, crypto, forex, and macro.
+        """Get news articles across asset classes.
 
-        Pick a category based on what you need:
-
-        - "stock": Equity market news — analyst commentary, price targets,
-          regulatory developments. Sources: Motley Fool, Zacks, MarketWatch,
-          Reuters, CNBC, SeekingAlpha. Pass a symbol for company-specific news,
-          or omit for the latest firehose across all tickers.
-
-        - "press_releases": Official corporate filings from wire services —
-          earnings reports, dividend announcements, M&A disclosures. Sources:
-          Business Wire, PRNewsWire, GlobeNewsWire. Pass a symbol to filter
-          (note: FMP's symbol matching is loose, expect some noise).
-
-        - "crypto": Cryptocurrency news — ETF flows, protocol updates, token
-          analysis. Sources: NewsBTC, CoinTelegraph, CryptoPotato, CoinDesk.
-          Pass a crypto symbol like "BTCUSD" or "ETHUSD" to filter.
-
-        - "forex": Currency pair and precious metals news — central bank
-          commentary, technical analysis, pair-specific forecasts. Sources:
-          FXStreet, Orbex, FXEmpire. Pass a pair like "EURUSD" or "XAUUSD".
-          Also covers gold (XAUUSD) and silver (XAGUSD).
-
-        - "general": Macro and market-wide news with no specific ticker —
-          jobs reports, Fed decisions, yield movements, broad sentiment.
-          Sources: WSJ, CNBC, Reuters, Benzinga. Symbol param is ignored.
-
-        Use page param to paginate through results (0-indexed).
+        Categories: "stock" (equity news, pass symbol for company-specific),
+        "press_releases" (official filings), "crypto", "forex", "general" (macro, no symbol).
+        Use page param to paginate.
 
         Args:
-            category: News category - "stock", "press_releases", "crypto", "forex", "general"
-            symbol: Optional ticker to search for (ignored for "general")
-            page: Page number for pagination (default 0)
+            category: "stock", "press_releases", "crypto", "forex", "general"
+            symbol: Optional ticker (ignored for "general")
+            page: Page number (default 0)
             limit: Max articles per page (default 20)
         """
         category = category.lower().strip()

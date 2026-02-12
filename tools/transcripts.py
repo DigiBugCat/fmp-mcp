@@ -23,11 +23,11 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
     )
     async def earnings_transcript(
         symbol: str,
-        year: int | None = None,
-        quarter: int | None = None,
+        year: int | str | None = None,
+        quarter: int | str | None = None,
         latest_expected: bool = False,
-        max_chars: int = 100000,
-        offset: int = 0,
+        max_chars: int | str = 100000,
+        offset: int | str = 0,
     ) -> dict:
         """Get an earnings call transcript for a company.
 
@@ -48,6 +48,21 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             offset: Character offset to start from (default 0). Use next_offset from previous response to continue.
         """
         symbol = symbol.upper().strip()
+
+        # Coerce string inputs (MCP clients may send strings)
+        def _to_int(v: int | str | None) -> int | None:
+            if v is None:
+                return None
+            try:
+                return int(v)
+            except (TypeError, ValueError):
+                return None
+
+        year = _to_int(year)
+        quarter = _to_int(quarter)
+        max_chars = _to_int(max_chars) or 100000
+        offset = _to_int(offset) or 0
+
         requested_year = year
         requested_quarter = quarter
 

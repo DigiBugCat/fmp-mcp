@@ -292,6 +292,158 @@ class TestEarningsSetup:
 
 
 # ================================================================
+# earnings_preview
+# ================================================================
+
+
+class TestEarningsPreview:
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_earnings_preview_full(self):
+        respx.get(f"{BASE}/stable/profile").mock(return_value=httpx.Response(200, json=AAPL_PROFILE))
+        respx.get(f"{BASE}/stable/quote").mock(return_value=httpx.Response(200, json=AAPL_QUOTE))
+        respx.get(f"{BASE}/stable/earnings").mock(return_value=httpx.Response(200, json=AAPL_EARNINGS))
+        respx.get(f"{BASE}/stable/grades").mock(return_value=httpx.Response(200, json=AAPL_GRADES_DETAIL))
+        respx.get(f"{BASE}/stable/historical-price-eod/full").mock(return_value=httpx.Response(200, json=AAPL_HISTORICAL))
+        respx.get(f"{BASE}/stable/insider-trading/search").mock(return_value=httpx.Response(200, json=AAPL_INSIDER_TRADES))
+        respx.get(f"{BASE}/stable/insider-trading/statistics").mock(return_value=httpx.Response(200, json=AAPL_INSIDER_STATS))
+        respx.get(f"{BASE}/stable/shares-float").mock(return_value=httpx.Response(200, json=AAPL_SHARES_FLOAT))
+        respx.get(f"{BASE}/stable/ratios-ttm").mock(return_value=httpx.Response(200, json=AAPL_RATIOS))
+        respx.get(f"{BASE}/stable/grades-consensus").mock(return_value=httpx.Response(200, json=AAPL_GRADES))
+        respx.get(f"{BASE}/stable/price-target-consensus").mock(return_value=httpx.Response(200, json=AAPL_PRICE_TARGET))
+        respx.get(f"{BASE}/stable/news/stock").mock(return_value=httpx.Response(200, json=AAPL_NEWS))
+
+        mcp, fmp = _make_server()
+        async with Client(mcp) as c:
+            result = await c.call_tool("earnings_preview", {"ticker": "AAPL", "days_ahead": 400})
+
+        data = result.data
+        assert data["ticker"] == "AAPL"
+        assert data["company_name"] == "Apple Inc."
+        assert data["setup_signal"] in ("BULLISH", "NEUTRAL", "BEARISH")
+        assert isinstance(data["composite_score"], float)
+        assert set(data["signals"]) == {"beat_history", "price_setup", "analyst", "insider"}
+        assert isinstance(data["in_window"], bool)
+        assert isinstance(data["key_questions"], list)
+        assert isinstance(data["bull_triggers"], list)
+        assert isinstance(data["bear_triggers"], list)
+        await fmp.close()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_earnings_preview_not_in_window(self):
+        respx.get(f"{BASE}/stable/profile").mock(return_value=httpx.Response(200, json=AAPL_PROFILE))
+        respx.get(f"{BASE}/stable/quote").mock(return_value=httpx.Response(200, json=AAPL_QUOTE))
+        respx.get(f"{BASE}/stable/earnings").mock(return_value=httpx.Response(200, json=AAPL_EARNINGS))
+        respx.get(f"{BASE}/stable/grades").mock(return_value=httpx.Response(200, json=AAPL_GRADES_DETAIL))
+        respx.get(f"{BASE}/stable/historical-price-eod/full").mock(return_value=httpx.Response(200, json=AAPL_HISTORICAL))
+        respx.get(f"{BASE}/stable/insider-trading/search").mock(return_value=httpx.Response(200, json=AAPL_INSIDER_TRADES))
+        respx.get(f"{BASE}/stable/insider-trading/statistics").mock(return_value=httpx.Response(200, json=AAPL_INSIDER_STATS))
+        respx.get(f"{BASE}/stable/shares-float").mock(return_value=httpx.Response(200, json=AAPL_SHARES_FLOAT))
+        respx.get(f"{BASE}/stable/ratios-ttm").mock(return_value=httpx.Response(200, json=AAPL_RATIOS))
+        respx.get(f"{BASE}/stable/grades-consensus").mock(return_value=httpx.Response(200, json=AAPL_GRADES))
+        respx.get(f"{BASE}/stable/price-target-consensus").mock(return_value=httpx.Response(200, json=AAPL_PRICE_TARGET))
+        respx.get(f"{BASE}/stable/news/stock").mock(return_value=httpx.Response(200, json=AAPL_NEWS))
+
+        mcp, fmp = _make_server()
+        async with Client(mcp) as c:
+            result = await c.call_tool("earnings_preview", {"ticker": "AAPL", "days_ahead": 1})
+
+        data = result.data
+        assert data["ticker"] == "AAPL"
+        assert data["in_window"] is False
+        assert "outside requested horizon" in " ".join(data.get("_warnings", []))
+        await fmp.close()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_earnings_preview_unknown_symbol(self):
+        respx.get(f"{BASE}/stable/profile").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/quote").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/earnings").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/grades").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/historical-price-eod/full").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/insider-trading/search").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/insider-trading/statistics").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/shares-float").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/ratios-ttm").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/grades-consensus").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/price-target-consensus").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/news/stock").mock(return_value=httpx.Response(200, json=[]))
+
+        mcp, fmp = _make_server()
+        async with Client(mcp) as c:
+            result = await c.call_tool("earnings_preview", {"ticker": "ZZZZ"})
+
+        data = result.data
+        assert "error" in data
+        await fmp.close()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_earnings_preview_partial_data_degrades_gracefully(self):
+        respx.get(f"{BASE}/stable/profile").mock(return_value=httpx.Response(200, json=AAPL_PROFILE))
+        respx.get(f"{BASE}/stable/quote").mock(return_value=httpx.Response(200, json=AAPL_QUOTE))
+        respx.get(f"{BASE}/stable/earnings").mock(return_value=httpx.Response(200, json=AAPL_EARNINGS))
+        respx.get(f"{BASE}/stable/grades").mock(return_value=httpx.Response(500, text="error"))
+        respx.get(f"{BASE}/stable/historical-price-eod/full").mock(return_value=httpx.Response(500, text="error"))
+        respx.get(f"{BASE}/stable/insider-trading/search").mock(return_value=httpx.Response(500, text="error"))
+        respx.get(f"{BASE}/stable/insider-trading/statistics").mock(return_value=httpx.Response(500, text="error"))
+        respx.get(f"{BASE}/stable/shares-float").mock(return_value=httpx.Response(500, text="error"))
+        respx.get(f"{BASE}/stable/ratios-ttm").mock(return_value=httpx.Response(500, text="error"))
+        respx.get(f"{BASE}/stable/grades-consensus").mock(return_value=httpx.Response(500, text="error"))
+        respx.get(f"{BASE}/stable/price-target-consensus").mock(return_value=httpx.Response(500, text="error"))
+        respx.get(f"{BASE}/stable/news/stock").mock(return_value=httpx.Response(200, json=[]))
+
+        mcp, fmp = _make_server()
+        async with Client(mcp) as c:
+            result = await c.call_tool("earnings_preview", {"ticker": "AAPL"})
+
+        data = result.data
+        assert "error" not in data
+        assert data["signals"]["price_setup"] == 0.0
+        assert data["signals"]["analyst"] == 0.0
+        assert data["signals"]["insider"] == 0.0
+        assert isinstance(data.get("_warnings"), list)
+        await fmp.close()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_earnings_preview_threshold_classification(self, monkeypatch):
+        respx.get(f"{BASE}/stable/profile").mock(return_value=httpx.Response(200, json=AAPL_PROFILE))
+        respx.get(f"{BASE}/stable/quote").mock(return_value=httpx.Response(200, json=AAPL_QUOTE))
+        respx.get(f"{BASE}/stable/earnings").mock(return_value=httpx.Response(200, json=AAPL_EARNINGS))
+        respx.get(f"{BASE}/stable/grades").mock(return_value=httpx.Response(200, json=AAPL_GRADES_DETAIL))
+        respx.get(f"{BASE}/stable/historical-price-eod/full").mock(return_value=httpx.Response(200, json=AAPL_HISTORICAL))
+        respx.get(f"{BASE}/stable/insider-trading/search").mock(return_value=httpx.Response(200, json=AAPL_INSIDER_TRADES))
+        respx.get(f"{BASE}/stable/insider-trading/statistics").mock(return_value=httpx.Response(200, json=AAPL_INSIDER_STATS))
+        respx.get(f"{BASE}/stable/shares-float").mock(return_value=httpx.Response(200, json=AAPL_SHARES_FLOAT))
+        respx.get(f"{BASE}/stable/ratios-ttm").mock(return_value=httpx.Response(200, json=AAPL_RATIOS))
+        respx.get(f"{BASE}/stable/grades-consensus").mock(return_value=httpx.Response(200, json=AAPL_GRADES))
+        respx.get(f"{BASE}/stable/price-target-consensus").mock(return_value=httpx.Response(200, json=AAPL_PRICE_TARGET))
+        respx.get(f"{BASE}/stable/news/stock").mock(return_value=httpx.Response(200, json=AAPL_NEWS))
+
+        mcp, fmp = _make_server()
+        async with Client(mcp) as c:
+            monkeypatch.setattr("tools.workflows._score_beat_rate", lambda *_: 1.0)
+            monkeypatch.setattr("tools.workflows._score_price_setup", lambda *_: 0.0)
+            monkeypatch.setattr("tools.workflows._score_analyst", lambda *_: 0.0)
+            monkeypatch.setattr("tools.workflows._score_insider", lambda *_: 0.0)
+            bull = await c.call_tool("earnings_preview", {"ticker": "AAPL"})
+
+            monkeypatch.setattr("tools.workflows._score_beat_rate", lambda *_: -1.0)
+            bear = await c.call_tool("earnings_preview", {"ticker": "AAPL"})
+
+            monkeypatch.setattr("tools.workflows._score_beat_rate", lambda *_: 0.2)
+            neutral = await c.call_tool("earnings_preview", {"ticker": "AAPL"})
+
+        assert bull.data["setup_signal"] == "BULLISH"
+        assert bear.data["setup_signal"] == "BEARISH"
+        assert neutral.data["setup_signal"] == "NEUTRAL"
+        await fmp.close()
+
+
+# ================================================================
 # fair_value_estimate
 # ================================================================
 
