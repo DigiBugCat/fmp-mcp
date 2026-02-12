@@ -423,6 +423,12 @@ class TestIntradayPrices:
         respx.get(f"{BASE}/stable/historical-chart/5min").mock(
             return_value=httpx.Response(200, json=AAPL_INTRADAY_5M)
         )
+        respx.get(f"{BASE}/stable/premarket-trade").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        respx.get(f"{BASE}/stable/aftermarket-trade").mock(
+            return_value=httpx.Response(200, json=[{"symbol": "AAPL", "price": 176.50, "tradeSize": 10, "timestamp": 1700000000000}])
+        )
         mcp, fmp = _make_server(register_market)
         async with Client(mcp) as c:
             result = await c.call_tool("intraday_prices", {"symbol": "AAPL", "interval": "5m"})
@@ -432,12 +438,43 @@ class TestIntradayPrices:
         assert len(data["candles"]) == 3
         assert "summary" in data
         assert "vwap" in data["summary"]
+        # After-hours data should be present
+        assert "extended_hours" in data
+        assert data["extended_hours"]["afterhours"]["price"] == 176.50
+        assert "change_pct" in data["extended_hours"]["afterhours"]
+        await fmp.close()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_intraday_no_extended_hours(self):
+        """When extended-hours endpoints return empty, the key is omitted."""
+        respx.get(f"{BASE}/stable/historical-chart/5min").mock(
+            return_value=httpx.Response(200, json=AAPL_INTRADAY_5M)
+        )
+        respx.get(f"{BASE}/stable/premarket-trade").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        respx.get(f"{BASE}/stable/aftermarket-trade").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        mcp, fmp = _make_server(register_market)
+        async with Client(mcp) as c:
+            result = await c.call_tool("intraday_prices", {"symbol": "AAPL", "interval": "5m"})
+        data = result.data
+        assert data["symbol"] == "AAPL"
+        assert "extended_hours" not in data
         await fmp.close()
 
     @pytest.mark.asyncio
     @respx.mock
     async def test_no_data(self):
         respx.get(f"{BASE}/stable/historical-chart/5min").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        respx.get(f"{BASE}/stable/premarket-trade").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        respx.get(f"{BASE}/stable/aftermarket-trade").mock(
             return_value=httpx.Response(200, json=[])
         )
         mcp, fmp = _make_server(register_market)

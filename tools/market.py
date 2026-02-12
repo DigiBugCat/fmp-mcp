@@ -868,10 +868,10 @@ def register(mcp: FastMCP, client: FMPClient, polygon_client: PolygonClient | No
         interval: str = "5m",
         days_back: int = 1,
     ) -> dict:
-        """Get intraday price candles with summary statistics.
+        """Get intraday price candles with summary statistics and extended-hours trades.
 
         Returns OHLCV candles (max 500) plus volume, VWAP, range statistics.
-        Useful for intraday analysis and trading.
+        Includes latest pre-market and after-hours trades when available.
 
         Args:
             symbol: Stock ticker symbol (e.g. "AAPL")
@@ -897,16 +897,32 @@ def register(mcp: FastMCP, client: FMPClient, polygon_client: PolygonClient | No
         today = date.today()
         from_date = today - timedelta(days=days_back)
 
-        # FMP endpoint: /stable/historical-chart/{interval}?symbol=X&from=Y&to=Z
-        data = await client.get_safe(
-            f"/stable/historical-chart/{interval_map[interval]}",
-            params={
-                "symbol": symbol,
-                "from": from_date.isoformat(),
-                "to": today.isoformat(),
-            },
-            cache_ttl=client.TTL_REALTIME,
-            default=[],
+        sym_params = {"symbol": symbol}
+
+        # Fetch intraday candles + extended-hours trades in parallel
+        data, premarket_data, afterhours_data = await asyncio.gather(
+            client.get_safe(
+                f"/stable/historical-chart/{interval_map[interval]}",
+                params={
+                    **sym_params,
+                    "from": from_date.isoformat(),
+                    "to": today.isoformat(),
+                },
+                cache_ttl=client.TTL_REALTIME,
+                default=[],
+            ),
+            client.get_safe(
+                "/stable/premarket-trade",
+                params=sym_params,
+                cache_ttl=client.TTL_REALTIME,
+                default=[],
+            ),
+            client.get_safe(
+                "/stable/aftermarket-trade",
+                params=sym_params,
+                cache_ttl=client.TTL_REALTIME,
+                default=[],
+            ),
         )
 
         candles = data if isinstance(data, list) else []
@@ -950,7 +966,33 @@ def register(mcp: FastMCP, client: FMPClient, polygon_client: PolygonClient | No
                 "volume": c.get("volume"),
             })
 
-        return {
+        # Build extended-hours section from pre/post-market trades
+        extended_hours = {}
+        pre = _safe_first(premarket_data)
+        if pre and pre.get("price"):
+            ts = pre.get("timestamp")
+            extended_hours["premarket"] = {
+                "price": pre["price"],
+                "size": pre.get("tradeSize"),
+                "timestamp": datetime.fromtimestamp(ts / 1000).strftime("%Y-%m-%d %H:%M:%S") if ts else None,
+            }
+        post = _safe_first(afterhours_data)
+        if post and post.get("price"):
+            ts = post.get("timestamp")
+            extended_hours["afterhours"] = {
+                "price": post["price"],
+                "size": post.get("tradeSize"),
+                "timestamp": datetime.fromtimestamp(ts / 1000).strftime("%Y-%m-%d %H:%M:%S") if ts else None,
+            }
+        # Compute change vs last regular-session close
+        last_close = trimmed[0].get("close") if trimmed else None
+        if last_close and last_close > 0:
+            for key in ("premarket", "afterhours"):
+                eh = extended_hours.get(key)
+                if eh and eh.get("price"):
+                    eh["change_pct"] = round((eh["price"] / last_close - 1) * 100, 2)
+
+        result = {
             "symbol": symbol,
             "interval": interval,
             "days_back": days_back,
@@ -964,6 +1006,11 @@ def register(mcp: FastMCP, client: FMPClient, polygon_client: PolygonClient | No
             },
             "candles": formatted_candles,
         }
+
+        if extended_hours:
+            result["extended_hours"] = extended_hours
+
+        return result
 
     @mcp.tool(
         annotations={

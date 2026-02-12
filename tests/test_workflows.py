@@ -56,6 +56,8 @@ class TestStockBrief:
         respx.get(f"{BASE}/stable/price-target-consensus").mock(return_value=httpx.Response(200, json=AAPL_PRICE_TARGET))
         respx.get(f"{BASE}/stable/insider-trading/search").mock(return_value=httpx.Response(200, json=AAPL_INSIDER_TRADES))
         respx.get(f"{BASE}/stable/news/stock").mock(return_value=httpx.Response(200, json=AAPL_NEWS))
+        respx.get(f"{BASE}/stable/premarket-trade").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/aftermarket-trade").mock(return_value=httpx.Response(200, json=[{"symbol": "AAPL", "price": 275.00, "tradeSize": 5, "timestamp": 1700000000000}]))
 
         mcp, fmp = _make_server()
         async with Client(mcp) as c:
@@ -72,6 +74,10 @@ class TestStockBrief:
         assert isinstance(data["news"], list)
         assert len(data["news"]) <= 5
         assert data["quick_take"]["signal"] in ("bullish", "neutral", "bearish")
+        # Extended hours data should be present in price section
+        assert "extended_hours" in data["price"]
+        assert data["price"]["extended_hours"]["afterhours"]["price"] == 275.00
+        assert "change_pct" in data["price"]["extended_hours"]["afterhours"]
         assert "_warnings" not in data
         await fmp.close()
 
@@ -86,6 +92,8 @@ class TestStockBrief:
         respx.get(f"{BASE}/stable/price-target-consensus").mock(return_value=httpx.Response(500, text="error"))
         respx.get(f"{BASE}/stable/insider-trading/search").mock(return_value=httpx.Response(500, text="error"))
         respx.get(f"{BASE}/stable/news/stock").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/premarket-trade").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/aftermarket-trade").mock(return_value=httpx.Response(200, json=[]))
 
         mcp, fmp = _make_server()
         async with Client(mcp) as c:
@@ -109,6 +117,8 @@ class TestStockBrief:
         respx.get(f"{BASE}/stable/price-target-consensus").mock(return_value=httpx.Response(200, json=[]))
         respx.get(f"{BASE}/stable/insider-trading/search").mock(return_value=httpx.Response(200, json=[]))
         respx.get(f"{BASE}/stable/news/stock").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/premarket-trade").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/aftermarket-trade").mock(return_value=httpx.Response(200, json=[]))
 
         mcp, fmp = _make_server()
         async with Client(mcp) as c:
@@ -312,6 +322,8 @@ class TestEarningsPreview:
         respx.get(f"{BASE}/stable/grades-consensus").mock(return_value=httpx.Response(200, json=AAPL_GRADES))
         respx.get(f"{BASE}/stable/price-target-consensus").mock(return_value=httpx.Response(200, json=AAPL_PRICE_TARGET))
         respx.get(f"{BASE}/stable/news/stock").mock(return_value=httpx.Response(200, json=AAPL_NEWS))
+        respx.get(f"{BASE}/stable/premarket-trade").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/aftermarket-trade").mock(return_value=httpx.Response(200, json=[]))
 
         mcp, fmp = _make_server()
         async with Client(mcp) as c:
@@ -344,6 +356,8 @@ class TestEarningsPreview:
         respx.get(f"{BASE}/stable/grades-consensus").mock(return_value=httpx.Response(200, json=AAPL_GRADES))
         respx.get(f"{BASE}/stable/price-target-consensus").mock(return_value=httpx.Response(200, json=AAPL_PRICE_TARGET))
         respx.get(f"{BASE}/stable/news/stock").mock(return_value=httpx.Response(200, json=AAPL_NEWS))
+        respx.get(f"{BASE}/stable/premarket-trade").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/aftermarket-trade").mock(return_value=httpx.Response(200, json=[]))
 
         mcp, fmp = _make_server()
         async with Client(mcp) as c:
@@ -370,6 +384,8 @@ class TestEarningsPreview:
         respx.get(f"{BASE}/stable/grades-consensus").mock(return_value=httpx.Response(200, json=[]))
         respx.get(f"{BASE}/stable/price-target-consensus").mock(return_value=httpx.Response(200, json=[]))
         respx.get(f"{BASE}/stable/news/stock").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/premarket-trade").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/aftermarket-trade").mock(return_value=httpx.Response(200, json=[]))
 
         mcp, fmp = _make_server()
         async with Client(mcp) as c:
@@ -394,6 +410,8 @@ class TestEarningsPreview:
         respx.get(f"{BASE}/stable/grades-consensus").mock(return_value=httpx.Response(500, text="error"))
         respx.get(f"{BASE}/stable/price-target-consensus").mock(return_value=httpx.Response(500, text="error"))
         respx.get(f"{BASE}/stable/news/stock").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/premarket-trade").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/aftermarket-trade").mock(return_value=httpx.Response(200, json=[]))
 
         mcp, fmp = _make_server()
         async with Client(mcp) as c:
@@ -422,6 +440,8 @@ class TestEarningsPreview:
         respx.get(f"{BASE}/stable/grades-consensus").mock(return_value=httpx.Response(200, json=AAPL_GRADES))
         respx.get(f"{BASE}/stable/price-target-consensus").mock(return_value=httpx.Response(200, json=AAPL_PRICE_TARGET))
         respx.get(f"{BASE}/stable/news/stock").mock(return_value=httpx.Response(200, json=AAPL_NEWS))
+        respx.get(f"{BASE}/stable/premarket-trade").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/aftermarket-trade").mock(return_value=httpx.Response(200, json=[]))
 
         mcp, fmp = _make_server()
         async with Client(mcp) as c:

@@ -65,6 +65,44 @@ def _calc_performance(current: float, history: list[dict], days: int) -> float |
     return round((current / old_price - 1) * 100, 2)
 
 
+def _build_extended_hours(
+    premarket_data: list | None,
+    afterhours_data: list | None,
+    last_close: float | None,
+) -> dict:
+    """Build extended_hours dict from pre/post-market trade data.
+
+    Returns a dict with an "extended_hours" key (suitable for **unpacking),
+    or an empty dict if no data is available.
+    """
+    extended: dict = {}
+    pre = _safe_first(premarket_data)
+    if pre and pre.get("price"):
+        ts = pre.get("timestamp")
+        entry: dict = {
+            "price": pre["price"],
+            "size": pre.get("tradeSize"),
+            "timestamp": datetime.fromtimestamp(ts / 1000).strftime("%Y-%m-%d %H:%M:%S") if ts else None,
+        }
+        if last_close and last_close > 0:
+            entry["change_pct"] = round((pre["price"] / last_close - 1) * 100, 2)
+        extended["premarket"] = entry
+    post = _safe_first(afterhours_data)
+    if post and post.get("price"):
+        ts = post.get("timestamp")
+        entry = {
+            "price": post["price"],
+            "size": post.get("tradeSize"),
+            "timestamp": datetime.fromtimestamp(ts / 1000).strftime("%Y-%m-%d %H:%M:%S") if ts else None,
+        }
+        if last_close and last_close > 0:
+            entry["change_pct"] = round((post["price"] / last_close - 1) * 100, 2)
+        extended["afterhours"] = entry
+    if extended:
+        return {"extended_hours": extended}
+    return {}
+
+
 THESIS_MAP: dict[str, dict[str, Any]] = {
     "trained_on_it": {
         "tickers": ["DDOG", "NET", "ESTC", "MDB", "TWLO", "CRWD", "SNOW", "CFLT", "GTLB", "HCP"],
@@ -254,6 +292,7 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         (
             profile_data, quote_data, ratios_data, history_data,
             grades_data, targets_data, insider_data, news_data,
+            premarket_data, afterhours_data,
         ) = await asyncio.gather(
             client.get_safe("/stable/profile", params=sym, cache_ttl=client.TTL_DAILY, default=[]),
             client.get_safe("/stable/quote", params=sym, cache_ttl=client.TTL_REALTIME, default=[]),
@@ -263,6 +302,8 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             client.get_safe("/stable/price-target-consensus", params=sym, cache_ttl=client.TTL_6H, default=[]),
             client.get_safe("/stable/insider-trading/search", params={**sym, "limit": 50}, cache_ttl=client.TTL_HOURLY, default=[]),
             client.get_safe("/stable/news/stock", params={**sym, "limit": 5}, cache_ttl=client.TTL_REALTIME, default=[]),
+            client.get_safe("/stable/premarket-trade", params=sym, cache_ttl=client.TTL_REALTIME, default=[]),
+            client.get_safe("/stable/aftermarket-trade", params=sym, cache_ttl=client.TTL_REALTIME, default=[]),
         )
 
         profile = _safe_first(profile_data)
@@ -379,6 +420,7 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
                 "52w_high": year_high,
                 "52w_low": year_low,
                 "from_high_pct": from_high_pct,
+                **_build_extended_hours(premarket_data, afterhours_data, current_price),
             },
             "momentum": momentum,
             "valuation": {
