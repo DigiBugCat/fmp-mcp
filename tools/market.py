@@ -558,6 +558,7 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient, polygon_client: PolygonCl
         symbol: str | None = None,
         days_ahead: int = 7,
         min_market_cap: float = 2_000_000_000,
+        limit: int = 50,
     ) -> dict:
         """Get upcoming earnings report dates and estimates.
 
@@ -573,8 +574,11 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient, polygon_client: PolygonCl
             min_market_cap: Minimum market cap filter in USD when browsing
                 all earnings (default 2B). Ignored when symbol is specified.
                 Set to 0 to include all companies.
+            limit: Max results in browsing mode (default 50, max 100).
+                Ignored when symbol is specified.
         """
         days_ahead = max(1, min(days_ahead, 30))
+        limit = max(1, min(limit, 100))
         today = date.today()
         to_date = today + timedelta(days=days_ahead)
 
@@ -607,7 +611,7 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient, polygon_client: PolygonCl
             }
             oi_map = await _fetch_options_oi([symbol])
             if symbol in oi_map:
-                entry["options"] = oi_map[symbol]
+                entry["options_oi"] = oi_map[symbol]["total_oi"]
             return {
                 "from_date": today.isoformat(),
                 "to_date": to_date.isoformat(),
@@ -684,22 +688,26 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient, polygon_client: PolygonCl
         if not earnings:
             return {"error": f"No earnings ≥${min_market_cap/1e9:.0f}B market cap in the next {days_ahead} days"}
 
-        # Enrich with options OI from Polygon
+        # Sort by market cap descending (biggest names first), then date
+        earnings.sort(key=lambda x: (-(x.get("market_cap") or 0), x.get("date") or ""))
+
+        total_matching = len(earnings)
+        earnings = earnings[:limit]
+
+        # Enrich with options OI from Polygon (only for the limited set)
         filtered_symbols = [e["symbol"] for e in earnings]
         oi_map = await _fetch_options_oi(filtered_symbols)
         for entry in earnings:
             sym = entry["symbol"]
             if sym in oi_map:
-                entry["options"] = oi_map[sym]
-
-        # Sort by market cap descending (biggest names first), then date
-        earnings.sort(key=lambda x: (-(x.get("market_cap") or 0), x.get("date") or ""))
+                entry["options_oi"] = oi_map[sym]["total_oi"]
 
         return {
             "from_date": today.isoformat(),
             "to_date": to_date.isoformat(),
             "min_market_cap": min_market_cap,
             "count": len(earnings),
+            "total_matching": total_matching,
             "earnings": earnings,
         }
 
