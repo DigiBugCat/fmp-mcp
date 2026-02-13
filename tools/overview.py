@@ -27,6 +27,58 @@ if TYPE_CHECKING:
 def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
     @mcp.tool(
         annotations={
+            "title": "Quote",
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True,
+        }
+    )
+    async def quote(symbol: str) -> dict:
+        """Get the current price for a stock, including pre-market/after-hours.
+
+        Returns the freshest available price across regular session,
+        pre-market, and after-hours. Minimal and fast.
+
+        Args:
+            symbol: Stock ticker symbol (e.g. "AAPL")
+        """
+        symbol = symbol.upper().strip()
+
+        quote_data, premarket_data, afterhours_data = await asyncio.gather(
+            _safe_call(client.company.get_quote, symbol=symbol, ttl=TTL_REALTIME, default=None),
+            _safe_call(client.market.get_pre_post_market, ttl=TTL_REALTIME, default=[]),
+            _safe_call(client.company.get_aftermarket_trade, symbol=symbol, ttl=TTL_REALTIME, default=None),
+        )
+
+        q = _as_dict(quote_data)
+        if not q:
+            return {"error": f"No quote data for '{symbol}'"}
+
+        pre_candidates = [
+            item for item in _as_list(premarket_data)
+            if (item.get("symbol") or "").upper() == symbol
+            and (item.get("session") or "").lower() == "pre"
+        ]
+
+        latest = _latest_price(q, pre_candidates, afterhours_data)
+
+        result = {
+            "symbol": symbol,
+            "name": q.get("name"),
+            "price": latest["price"],
+            "change": q.get("change"),
+            "change_pct": latest.get("change_pct"),
+            "volume": q.get("volume"),
+            "market_cap": q.get("marketCap"),
+        }
+        if latest["source"] != "quote":
+            result["price_source"] = latest["source"]
+            result["regular_close"] = q.get("price")
+        return result
+
+    @mcp.tool(
+        annotations={
             "title": "Company Overview",
             "readOnlyHint": True,
             "destructiveHint": False,

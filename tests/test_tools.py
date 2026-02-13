@@ -128,6 +128,63 @@ def _make_server(register_fn) -> tuple[FastMCP, AsyncFMPDataClient]:
     return mcp, client
 
 
+class TestQuote:
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_quote_regular_session(self):
+        """Returns quote price during regular hours."""
+        respx.get(f"{BASE}/stable/quote").mock(return_value=httpx.Response(200, json=AAPL_QUOTE))
+        respx.get(f"{BASE}/stable/pre-post-market").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/aftermarket-trade").mock(return_value=httpx.Response(200, json=[]))
+
+        mcp, fmp = _make_server(register_overview)
+        async with Client(mcp) as c:
+            result = await c.call_tool("quote", {"symbol": "AAPL"})
+
+        data = result.data
+        assert data["symbol"] == "AAPL"
+        assert data["price"] == 273.68
+        assert "price_source" not in data  # omitted when source is quote
+        assert "regular_close" not in data
+        assert data["volume"] == 34311675
+        await fmp.aclose()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_quote_afterhours(self):
+        """Picks afterhours price when fresher."""
+        quote = [{**AAPL_QUOTE[0], "timestamp": 1000}]
+        respx.get(f"{BASE}/stable/quote").mock(return_value=httpx.Response(200, json=quote))
+        respx.get(f"{BASE}/stable/pre-post-market").mock(return_value=httpx.Response(200, json=[]))
+        afterhours = [{"symbol": "AAPL", "price": 280.00, "tradeSize": 5, "timestamp": 2_000_000}]
+        respx.get(f"{BASE}/stable/aftermarket-trade").mock(return_value=httpx.Response(200, json=afterhours))
+
+        mcp, fmp = _make_server(register_overview)
+        async with Client(mcp) as c:
+            result = await c.call_tool("quote", {"symbol": "AAPL"})
+
+        data = result.data
+        assert data["price"] == 280.00
+        assert data["price_source"] == "afterhours"
+        assert data["regular_close"] == 273.68
+        await fmp.aclose()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_quote_unknown_symbol(self):
+        respx.get(f"{BASE}/stable/quote").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/pre-post-market").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/aftermarket-trade").mock(return_value=httpx.Response(200, json=[]))
+
+        mcp, fmp = _make_server(register_overview)
+        async with Client(mcp) as c:
+            result = await c.call_tool("quote", {"symbol": "ZZZZ"})
+
+        data = result.data
+        assert "error" in data
+        await fmp.aclose()
+
+
 class TestCompanyOverview:
     @pytest.mark.asyncio
     @respx.mock
