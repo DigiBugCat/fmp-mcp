@@ -301,7 +301,7 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             client.get_safe("/stable/grades-consensus", params=sym, cache_ttl=client.TTL_6H, default=[]),
             client.get_safe("/stable/price-target-consensus", params=sym, cache_ttl=client.TTL_6H, default=[]),
             client.get_safe("/stable/insider-trading/search", params={**sym, "limit": 50}, cache_ttl=client.TTL_HOURLY, default=[]),
-            client.get_safe("/stable/news/stock", params={**sym, "limit": 5}, cache_ttl=client.TTL_REALTIME, default=[]),
+            client.get_safe("/stable/news/stock", params={"symbols": symbol, "limit": 5}, cache_ttl=client.TTL_REALTIME, default=[]),
             client.get_safe("/stable/premarket-trade", params=sym, cache_ttl=client.TTL_REALTIME, default=[]),
             client.get_safe("/stable/aftermarket-trade", params=sym, cache_ttl=client.TTL_REALTIME, default=[]),
         )
