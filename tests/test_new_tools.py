@@ -420,7 +420,8 @@ class TestRatioHistory:
 class TestIntradayPrices:
     @pytest.mark.asyncio
     @respx.mock
-    async def test_intraday_data(self):
+    async def test_detail_mode_with_extended_hours(self):
+        """detail=True returns uniform candles with extended hours."""
         respx.get(f"{BASE}/stable/historical-chart/5min").mock(
             return_value=httpx.Response(200, json=AAPL_INTRADAY_5M)
         )
@@ -432,11 +433,13 @@ class TestIntradayPrices:
         )
         mcp, fmp = _make_server(register_market)
         async with Client(mcp) as c:
-            result = await c.call_tool("intraday_prices", {"symbol": "AAPL", "interval": "5m"})
+            result = await c.call_tool("intraday_prices", {"symbol": "AAPL", "detail": True, "interval": "5m"})
         data = result.data
         assert data["symbol"] == "AAPL"
+        assert data["mode"] == "detail"
         assert data["interval"] == "5m"
-        assert len(data["candles"]) == 3
+        assert data["candle_count"] == 3
+        assert isinstance(data["candles"], str)
         assert "summary" in data
         assert "vwap" in data["summary"]
         # After-hours data should be present
@@ -447,10 +450,16 @@ class TestIntradayPrices:
 
     @pytest.mark.asyncio
     @respx.mock
-    async def test_intraday_no_extended_hours(self):
-        """When extended-hours endpoints return empty, the key is omitted."""
+    async def test_adaptive_no_extended_hours(self):
+        """Default adaptive mode: when extended-hours endpoints return empty, key omitted."""
         respx.get(f"{BASE}/stable/historical-chart/5min").mock(
             return_value=httpx.Response(200, json=AAPL_INTRADAY_5M)
+        )
+        respx.get(f"{BASE}/stable/historical-chart/15min").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        respx.get(f"{BASE}/stable/historical-chart/1hour").mock(
+            return_value=httpx.Response(200, json=[])
         )
         respx.get(f"{BASE}/stable/pre-post-market").mock(
             return_value=httpx.Response(200, json=[])
@@ -460,16 +469,24 @@ class TestIntradayPrices:
         )
         mcp, fmp = _make_server(register_market)
         async with Client(mcp) as c:
-            result = await c.call_tool("intraday_prices", {"symbol": "AAPL", "interval": "5m"})
+            result = await c.call_tool("intraday_prices", {"symbol": "AAPL"})
         data = result.data
         assert data["symbol"] == "AAPL"
+        assert data["mode"] == "adaptive"
         assert "extended_hours" not in data
         await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
     async def test_no_data(self):
+        """Adaptive mode with no data returns error."""
         respx.get(f"{BASE}/stable/historical-chart/5min").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        respx.get(f"{BASE}/stable/historical-chart/15min").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        respx.get(f"{BASE}/stable/historical-chart/1hour").mock(
             return_value=httpx.Response(200, json=[])
         )
         respx.get(f"{BASE}/stable/pre-post-market").mock(
@@ -480,7 +497,7 @@ class TestIntradayPrices:
         )
         mcp, fmp = _make_server(register_market)
         async with Client(mcp) as c:
-            result = await c.call_tool("intraday_prices", {"symbol": "ZZZZ", "interval": "5m"})
+            result = await c.call_tool("intraday_prices", {"symbol": "ZZZZ"})
         data = result.data
         assert "error" in data
         await fmp.aclose()

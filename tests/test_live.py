@@ -160,7 +160,7 @@ CANONICAL_CASES = [
         ),
     ),
     # overview
-    _case("company_overview", {"symbol": "AAPL"}, ("symbol", "name", "price", "ratios")),
+    _case("company_overview", {"symbol": "AAPL"}, ("symbol", "name", "price")),
     _case("stock_search", {"query": "apple", "limit": 10}, ("results", "count")),
     _case("company_executives", {"symbol": "AAPL"}, ("symbol", "count", "executives")),
     _case("employee_history", {"symbol": "AAPL"}, ("symbol", "count", "history")),
@@ -178,7 +178,7 @@ CANONICAL_CASES = [
     _case("peer_comparison", {"symbol": "AAPL"}, ("symbol", "peers", "peer_count", "comparisons", "peer_details")),
     _case("estimate_revisions", {"symbol": "AAPL"}, ("symbol", "forward_estimates", "recent_analyst_actions", "earnings_track_record")),
     # market
-    _case("price_history", {"symbol": "AAPL", "period": "1y"}, ("symbol", "current_price", "data_points", "recent_closes")),
+    _case("price_history", {"symbol": "AAPL", "period": "1y"}, ("symbol", "current_price", "data_points")),
     _case("earnings_info", {"symbol": "AAPL"}, ("symbol", "forward_estimates", "recent_quarters")),
     _case("dividends_info", {"symbol": "AAPL"}, ("symbol", "recent_dividends", "stock_splits")),
     _case(
@@ -195,9 +195,8 @@ CANONICAL_CASES = [
     ),
     _case(
         "intraday_prices",
-        {"symbol": "AAPL", "interval": "5m", "days_back": 1},
-        ("symbol", "interval", "candle_count", "summary", "candles"),
-        fallback_args=({"symbol": "AAPL", "interval": "5m", "days_back": 7},),
+        {"symbol": "AAPL"},
+        ("symbol", "mode", "candle_count", "summary", "candles"),
     ),
     _case("historical_market_cap", {"symbol": "AAPL", "limit": 10}, ("symbol", "current_market_cap", "data_points", "history")),
     _case("technical_indicators", {"symbol": "AAPL", "indicator": "rsi", "period_length": 14}, ("symbol", "indicator", "current_value", "data_points", "values")),

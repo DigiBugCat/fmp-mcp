@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import math
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import TYPE_CHECKING
+from zoneinfo import ZoneInfo
 
+import toon
 from polygon_client import PolygonClient as _PolygonClientRuntime
 from tools._helpers import (
     TTL_12H,
@@ -22,6 +24,8 @@ from tools._helpers import (
     _safe_first,
     _to_date,
 )
+
+_EST = ZoneInfo("America/New_York")
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -147,15 +151,17 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient, polygon_client: PolygonCl
     async def price_history(
         symbol: str,
         period: str = "1y",
+        detail: bool = False,
     ) -> dict:
         """Get price performance, key levels, and momentum indicators.
 
         Returns current price, 52-week range, SMA-50/200, performance across
-        timeframes, volatility, and recent daily closes. Not for raw chart data.
+        timeframes, and volatility. Use detail=True to include recent daily closes.
 
         Args:
             symbol: Stock ticker symbol (e.g. "AAPL")
             period: Time period - "1w", "1m", "3m", "6m", "ytd", "1y", "2y", "5y" (default "1y")
+            detail: If True, include recent daily closes in TOON format (default False)
         """
         symbol = symbol.upper().strip()
 
@@ -206,12 +212,6 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient, polygon_client: PolygonCl
                 if perf is not None:
                     performance[perf_period] = perf
 
-        # Recent 30 daily closes for context
-        recent_closes = [
-            {"date": d.get("date"), "close": d.get("close"), "volume": d.get("volume")}
-            for d in historical[:30]
-        ]
-
         result = {
             "symbol": symbol,
             "current_price": current_price,
@@ -221,9 +221,15 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient, polygon_client: PolygonCl
             "sma_200": quote.get("priceAvg200") or _calc_sma(closes, 200),
             "performance_pct": performance,
             "daily_volatility_annualized_pct": _calc_volatility(historical),
-            "recent_closes": recent_closes,
             "data_points": len(historical),
         }
+
+        if detail:
+            closes_rows = [
+                {"d": d.get("date"), "c": d.get("close"), "v": d.get("volume")}
+                for d in historical[:30]
+            ]
+            result["recent_closes"] = toon.encode(closes_rows)
 
         errors = []
         if not quote:
@@ -854,18 +860,24 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient, polygon_client: PolygonCl
     )
     async def intraday_prices(
         symbol: str,
+        detail: bool = False,
         interval: str = "5m",
         days_back: int = 1,
     ) -> dict:
         """Get intraday price candles with summary statistics and extended-hours trades.
 
-        Returns OHLCV candles (max 500) plus volume, VWAP, range statistics.
-        Includes latest pre-market and after-hours trades when available.
+        Default mode returns adaptive-resolution candles: 5m for last ~2 hours,
+        15m for rest of today, 1h for older data. Candles in compact TOON format
+        with EST timestamps (12h AM/PM).
+
+        Use detail=True for uniform single-interval candles (up to 500), useful
+        for charting/backtesting. interval and days_back are only used in detail mode.
 
         Args:
             symbol: Stock ticker symbol (e.g. "AAPL")
-            interval: Candle interval - "1m", "5m", "15m", "30m", "1h", "4h" (default "5m")
-            days_back: Number of days to look back (default 1, max 7)
+            detail: If True, return uniform candles at specified interval (default False)
+            interval: Candle interval for detail mode - "1m", "5m", "15m", "30m", "1h", "4h" (default "5m")
+            days_back: Days to look back for detail mode (default 1, max 7)
         """
         symbol = symbol.upper().strip()
         interval_map = {
@@ -877,116 +889,237 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient, polygon_client: PolygonCl
             "4h": "4hour",
         }
 
-        if interval not in interval_map:
+        if detail and interval not in interval_map:
             return {"error": f"Invalid interval '{interval}'. Use: {', '.join(interval_map.keys())}"}
 
         days_back = max(1, min(days_back, 7))
-
-        # Calculate date range
         today = date.today()
-        from_date = today - timedelta(days=days_back)
 
-        # Fetch intraday candles + extended-hours trades in parallel
-        data, premarket_data, afterhours_data = await asyncio.gather(
-            _safe_call(
-                client.company.get_intraday_prices,
-                symbol=symbol,
-                interval=interval_map[interval],
-                from_date=from_date,
-                to_date=today,
-                ttl=TTL_REALTIME,
-                default=[],
-            ),
-            _safe_call(client.market.get_pre_post_market, ttl=TTL_REALTIME, default=[]),
-            _safe_call(client.company.get_aftermarket_trade, symbol=symbol, ttl=TTL_REALTIME, default=None),
-        )
+        def _parse_candle_dt(date_val) -> datetime | None:
+            """Parse FMP candle date value to EST-aware datetime."""
+            if not date_val:
+                return None
+            if isinstance(date_val, datetime):
+                if date_val.tzinfo is None:
+                    return date_val.replace(tzinfo=_EST)
+                return date_val.astimezone(_EST)
+            try:
+                return datetime.strptime(str(date_val), "%Y-%m-%d %H:%M:%S").replace(tzinfo=_EST)
+            except ValueError:
+                return None
 
-        candles = _as_list(data)
+        def _format_est(dt: datetime, include_date: bool) -> str:
+            """Format datetime as EST 12h AM/PM string."""
+            if include_date:
+                return dt.strftime("%b %-d %-I:%M %p")
+            return dt.strftime("%-I:%M %p")
 
-        if not candles:
-            return {"error": f"No intraday data found for '{symbol}' with interval {interval}"}
-
-        # Sort newest first
-        candles.sort(key=lambda c: c.get("date") or "", reverse=True)
-
-        # Limit to 500 most recent candles
-        trimmed = candles[:500]
-
-        # Calculate summary statistics
-        total_volume = sum(c.get("volume") or 0 for c in trimmed)
-        high_prices = [c.get("high") for c in trimmed if c.get("high")]
-        low_prices = [c.get("low") for c in trimmed if c.get("low")]
-
-        period_high = max(high_prices) if high_prices else None
-        period_low = min(low_prices) if low_prices else None
-
-        range_pct = None
-        if period_high and period_low and period_low > 0:
-            range_pct = round((period_high / period_low - 1) * 100, 2)
-
-        # Calculate VWAP (volume-weighted average price)
-        vwap = None
-        if total_volume > 0:
-            vwap_sum = sum((c.get("close") or 0) * (c.get("volume") or 0) for c in trimmed)
-            vwap = round(vwap_sum / total_volume, 2)
-
-        # Format candles for output
-        formatted_candles = []
-        for c in trimmed:
-            formatted_candles.append({
-                "date": c.get("date"),
-                "open": c.get("open"),
-                "high": c.get("high"),
-                "low": c.get("low"),
-                "close": c.get("close"),
-                "volume": c.get("volume"),
-            })
-
-        # Build extended-hours section from pre/post-market trades
-        extended_hours = {}
-        pre_candidates = [
-            item for item in _as_list(premarket_data)
-            if (item.get("symbol") or "").upper() == symbol and (item.get("session") or "").lower() == "pre"
-        ]
-        pre = _as_dict(pre_candidates)
-        if pre and pre.get("price"):
-            ts = pre.get("timestamp")
-            extended_hours["premarket"] = {
-                "price": pre["price"],
-                "size": pre.get("tradeSize"),
-                "timestamp": _ms_to_str(ts),
-            }
-        post = _as_dict(afterhours_data)
-        if post and post.get("price"):
-            ts = post.get("timestamp")
-            extended_hours["afterhours"] = {
-                "price": post["price"],
-                "size": post.get("tradeSize"),
-                "timestamp": _ms_to_str(ts),
-            }
-        # Compute change vs last regular-session close
-        last_close = trimmed[0].get("close") if trimmed else None
-        if last_close and last_close > 0:
-            for key in ("premarket", "afterhours"):
-                eh = extended_hours.get(key)
-                if eh and eh.get("price"):
-                    eh["change_pct"] = round((eh["price"] / last_close - 1) * 100, 2)
-
-        result = {
-            "symbol": symbol,
-            "interval": interval,
-            "days_back": days_back,
-            "candle_count": len(formatted_candles),
-            "summary": {
+        def _build_summary(candles_list: list[dict]) -> dict:
+            """Compute summary stats from a list of raw candle dicts."""
+            total_volume = sum(c.get("volume") or 0 for c in candles_list)
+            highs = [c.get("high") for c in candles_list if c.get("high")]
+            lows = [c.get("low") for c in candles_list if c.get("low")]
+            period_high = max(highs) if highs else None
+            period_low = min(lows) if lows else None
+            range_pct = None
+            if period_high and period_low and period_low > 0:
+                range_pct = round((period_high / period_low - 1) * 100, 2)
+            vwap = None
+            if total_volume > 0:
+                vwap_sum = sum((c.get("close") or 0) * (c.get("volume") or 0) for c in candles_list)
+                vwap = round(vwap_sum / total_volume, 2)
+            return {
                 "total_volume": total_volume,
                 "vwap": vwap,
                 "period_high": period_high,
                 "period_low": period_low,
                 "range_pct": range_pct,
-            },
-            "candles": formatted_candles,
-        }
+            }
 
+        def _build_extended_hours_section(
+            premarket_data, afterhours_data, last_close: float | None
+        ) -> dict:
+            """Build extended-hours dict from pre/post-market data."""
+            extended_hours: dict = {}
+            pre_candidates = [
+                item for item in _as_list(premarket_data)
+                if (item.get("symbol") or "").upper() == symbol and (item.get("session") or "").lower() == "pre"
+            ]
+            pre = _as_dict(pre_candidates)
+            if pre and pre.get("price"):
+                ts = pre.get("timestamp")
+                extended_hours["premarket"] = {
+                    "price": pre["price"],
+                    "size": pre.get("tradeSize"),
+                    "timestamp": _ms_to_str(ts),
+                }
+            post = _as_dict(afterhours_data)
+            if post and post.get("price"):
+                ts = post.get("timestamp")
+                extended_hours["afterhours"] = {
+                    "price": post["price"],
+                    "size": post.get("tradeSize"),
+                    "timestamp": _ms_to_str(ts),
+                }
+            if last_close and last_close > 0:
+                for key in ("premarket", "afterhours"):
+                    eh = extended_hours.get(key)
+                    if eh and eh.get("price"):
+                        eh["change_pct"] = round((eh["price"] / last_close - 1) * 100, 2)
+            return extended_hours
+
+        if detail:
+            # --- Detail mode: single-interval, up to 500 candles ---
+            from_date = today - timedelta(days=days_back)
+            data, premarket_data, afterhours_data = await asyncio.gather(
+                _safe_call(
+                    client.company.get_intraday_prices,
+                    symbol=symbol,
+                    interval=interval_map[interval],
+                    from_date=from_date,
+                    to_date=today,
+                    ttl=TTL_REALTIME,
+                    default=[],
+                ),
+                _safe_call(client.market.get_pre_post_market, ttl=TTL_REALTIME, default=[]),
+                _safe_call(client.company.get_aftermarket_trade, symbol=symbol, ttl=TTL_REALTIME, default=None),
+            )
+            candles = _as_list(data)
+            if not candles:
+                return {"error": f"No intraday data found for '{symbol}' with interval {interval}"}
+
+            candles.sort(key=lambda c: c.get("date") or "", reverse=True)
+            trimmed = candles[:500]
+
+            today_date = today.isoformat()
+            toon_rows = []
+            for c in trimmed:
+                dt = _parse_candle_dt(c.get("date") or "")
+                if dt:
+                    include_date = dt.strftime("%Y-%m-%d") != today_date
+                    t_str = _format_est(dt, include_date)
+                else:
+                    t_str = c.get("date") or ""
+                toon_rows.append({
+                    "t": t_str,
+                    "o": c.get("open"),
+                    "h": c.get("high"),
+                    "l": c.get("low"),
+                    "c": c.get("close"),
+                    "v": c.get("volume"),
+                })
+
+            summary = _build_summary(trimmed)
+            last_close = trimmed[0].get("close") if trimmed else None
+            extended_hours = _build_extended_hours_section(premarket_data, afterhours_data, last_close)
+
+            result = {
+                "symbol": symbol,
+                "mode": "detail",
+                "interval": interval,
+                "days_back": days_back,
+                "candle_count": len(toon_rows),
+                "summary": summary,
+                "candles": toon.encode(toon_rows),
+            }
+            if extended_hours:
+                result["extended_hours"] = extended_hours
+            return result
+
+        # --- Adaptive mode (default): tiered resolution ---
+        from_date = today - timedelta(days=2)  # fetch 2 days for yesterday + today
+
+        data_5m, data_15m, data_1h, premarket_data, afterhours_data = await asyncio.gather(
+            _safe_call(
+                client.company.get_intraday_prices,
+                symbol=symbol, interval="5min", from_date=from_date, to_date=today,
+                ttl=TTL_REALTIME, default=[],
+            ),
+            _safe_call(
+                client.company.get_intraday_prices,
+                symbol=symbol, interval="15min", from_date=from_date, to_date=today,
+                ttl=TTL_REALTIME, default=[],
+            ),
+            _safe_call(
+                client.company.get_intraday_prices,
+                symbol=symbol, interval="1hour", from_date=from_date, to_date=today,
+                ttl=TTL_REALTIME, default=[],
+            ),
+            _safe_call(client.market.get_pre_post_market, ttl=TTL_REALTIME, default=[]),
+            _safe_call(client.company.get_aftermarket_trade, symbol=symbol, ttl=TTL_REALTIME, default=None),
+        )
+
+        candles_5m = _as_list(data_5m)
+        candles_15m = _as_list(data_15m)
+        candles_1h = _as_list(data_1h)
+
+        if not candles_5m and not candles_15m and not candles_1h:
+            return {"error": f"No intraday data found for '{symbol}'"}
+
+        # Determine time boundaries in EST
+        now_est = datetime.now(_EST)
+        cutoff_2h = now_est - timedelta(hours=2)
+        cutoff_today = now_est.replace(hour=0, minute=0, second=0, microsecond=0)
+        today_date = today.isoformat()
+
+        # Tier 1: 5m candles for last ~2 hours
+        rows: list[tuple[datetime, dict]] = []
+        for c in candles_5m:
+            dt = _parse_candle_dt(c.get("date") or "")
+            if dt and dt >= cutoff_2h:
+                include_date = dt.strftime("%Y-%m-%d") != today_date
+                rows.append((dt, {
+                    "t": _format_est(dt, include_date),
+                    "o": c.get("open"), "h": c.get("high"),
+                    "l": c.get("low"), "c": c.get("close"),
+                    "v": c.get("volume"), "tier": "5m",
+                }))
+
+        # Tier 2: 15m candles for rest of today (before 2h cutoff)
+        for c in candles_15m:
+            dt = _parse_candle_dt(c.get("date") or "")
+            if dt and cutoff_today <= dt < cutoff_2h:
+                include_date = dt.strftime("%Y-%m-%d") != today_date
+                rows.append((dt, {
+                    "t": _format_est(dt, include_date),
+                    "o": c.get("open"), "h": c.get("high"),
+                    "l": c.get("low"), "c": c.get("close"),
+                    "v": c.get("volume"), "tier": "15m",
+                }))
+
+        # Tier 3: 1h candles for yesterday and older
+        for c in candles_1h:
+            dt = _parse_candle_dt(c.get("date") or "")
+            if dt and dt < cutoff_today:
+                rows.append((dt, {
+                    "t": _format_est(dt, True),
+                    "o": c.get("open"), "h": c.get("high"),
+                    "l": c.get("low"), "c": c.get("close"),
+                    "v": c.get("volume"), "tier": "1h",
+                }))
+
+        # Sort newest first
+        rows.sort(key=lambda r: r[0], reverse=True)
+        toon_rows = [r[1] for r in rows]
+
+        # Summary stats from 5m candles for accuracy (fallback to all if no 5m)
+        summary_source = candles_5m if candles_5m else (candles_15m or candles_1h)
+        summary = _build_summary(summary_source)
+
+        last_close_val = candles_5m[0].get("close") if candles_5m else None
+        if not last_close_val:
+            # Fallback to most recent candle from any tier
+            if rows:
+                last_close_val = rows[0][1].get("c")
+        extended_hours = _build_extended_hours_section(premarket_data, afterhours_data, last_close_val)
+
+        result = {
+            "symbol": symbol,
+            "mode": "adaptive",
+            "candle_count": len(toon_rows),
+            "summary": summary,
+            "candles": toon.encode(toon_rows),
+        }
         if extended_hours:
             result["extended_hours"] = extended_hours
 

@@ -841,6 +841,18 @@ AAPL_INTRADAY_5M = [
     {"date": "2026-02-11 15:45:00", "open": 274.80, "high": 275.10, "low": 274.70, "close": 275.00, "volume": 1300000},
 ]
 
+AAPL_INTRADAY_15M = [
+    {"date": "2026-02-11 13:30:00", "open": 274.10, "high": 274.50, "low": 274.00, "close": 274.30, "volume": 3500000},
+    {"date": "2026-02-11 13:15:00", "open": 273.90, "high": 274.20, "low": 273.80, "close": 274.10, "volume": 3200000},
+    {"date": "2026-02-11 13:00:00", "open": 273.50, "high": 274.00, "low": 273.40, "close": 273.90, "volume": 3800000},
+]
+
+AAPL_INTRADAY_1H = [
+    {"date": "2026-02-10 14:00:00", "open": 272.80, "high": 273.20, "low": 272.50, "close": 273.00, "volume": 8200000},
+    {"date": "2026-02-10 13:00:00", "open": 272.00, "high": 272.90, "low": 271.80, "close": 272.80, "volume": 7500000},
+    {"date": "2026-02-10 12:00:00", "open": 271.50, "high": 272.30, "low": 271.20, "close": 272.00, "volume": 6800000},
+]
+
 # Historical market cap
 AAPL_HISTORICAL_MARKET_CAP = [
     {"date": "2026-02-11", "marketCap": 4022528102504},

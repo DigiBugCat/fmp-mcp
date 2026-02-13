@@ -33,8 +33,41 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
             "openWorldHint": True,
         }
     )
-    async def company_overview(symbol: str) -> dict:
+    async def company_overview(symbol: str, detail: bool = False) -> dict:
+        """Get company profile, price data, and financial ratios.
+
+        Default mode returns quote-level data only (1 API call).
+        Use detail=True for full profile with sector, industry, description,
+        and valuation ratios (3 API calls).
+
+        Args:
+            symbol: Stock ticker symbol (e.g. "AAPL")
+            detail: If True, include full profile and ratios (default False)
+        """
         symbol = symbol.upper().strip()
+
+        if not detail:
+            # Lean mode: quote only (1 API call)
+            quote_data = await _safe_call(
+                client.company.get_quote, symbol=symbol, ttl=TTL_REALTIME, default=None
+            )
+            quote = _as_dict(quote_data)
+            if not quote:
+                return {"error": f"No data found for symbol '{symbol}'"}
+            return {
+                "symbol": symbol,
+                "name": quote.get("name"),
+                "price": quote.get("price"),
+                "market_cap": quote.get("marketCap"),
+                "volume": quote.get("volume"),
+                "change_pct": quote.get("changePercentage"),
+                "day_range": {"low": quote.get("dayLow"), "high": quote.get("dayHigh")},
+                "year_range": {"low": quote.get("yearLow"), "high": quote.get("yearHigh")},
+                "sma_50": quote.get("priceAvg50"),
+                "sma_200": quote.get("priceAvg200"),
+            }
+
+        # Detail mode: full profile + quote + ratios (3 API calls)
         profile_data, quote_data, ratios_data = await asyncio.gather(
             _safe_call(client.company.get_profile, symbol=symbol, ttl=TTL_DAILY, default=None),
             _safe_call(client.company.get_quote, symbol=symbol, ttl=TTL_REALTIME, default=None),

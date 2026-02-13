@@ -51,7 +51,8 @@ from tests.conftest import (
     AAPL_EXECUTIVE_COMPENSATION, AAPL_EXECUTIVE_COMPENSATION_BENCHMARK,
     AAPL_EMPLOYEE_COUNT, DELISTED_COMPANIES, CIK_SEARCH_RESULTS,
     VANGUARD_HOLDINGS, VANGUARD_PERFORMANCE, VANGUARD_INDUSTRY_BREAKDOWN,
-    AAPL_INTRADAY_5M, AAPL_HISTORICAL_MARKET_CAP,
+    AAPL_INTRADAY_5M, AAPL_INTRADAY_15M, AAPL_INTRADAY_1H,
+    AAPL_HISTORICAL_MARKET_CAP,
     QQQ_INFO, QQQ_SECTOR_WEIGHTING, QQQ_COUNTRY_ALLOCATION,
     INDEX_QUOTES, INDEX_HISTORICAL,
     MARKET_HOURS_DATA, MARKET_HOLIDAYS,
@@ -130,10 +131,9 @@ def _make_server(register_fn) -> tuple[FastMCP, AsyncFMPDataClient]:
 class TestCompanyOverview:
     @pytest.mark.asyncio
     @respx.mock
-    async def test_full_overview(self):
-        respx.get(f"{BASE}/stable/profile").mock(return_value=httpx.Response(200, json=AAPL_PROFILE))
+    async def test_lean_overview(self):
+        """Default mode: quote-only, no profile or ratios."""
         respx.get(f"{BASE}/stable/quote").mock(return_value=httpx.Response(200, json=AAPL_QUOTE))
-        respx.get(f"{BASE}/stable/ratios-ttm").mock(return_value=httpx.Response(200, json=AAPL_RATIOS))
 
         mcp, fmp = _make_server(register_overview)
         async with Client(mcp) as c:
@@ -141,23 +141,46 @@ class TestCompanyOverview:
 
         data = result.data
         assert data["symbol"] == "AAPL"
+        assert data["price"] == 273.68
+        assert data["sma_50"] == 268.66
+        assert "ratios" not in data
+        assert "sector" not in data
+        assert "description" not in data
+        await fmp.aclose()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_detail_overview(self):
+        """detail=True: full profile + quote + ratios."""
+        respx.get(f"{BASE}/stable/profile").mock(return_value=httpx.Response(200, json=AAPL_PROFILE))
+        respx.get(f"{BASE}/stable/quote").mock(return_value=httpx.Response(200, json=AAPL_QUOTE))
+        respx.get(f"{BASE}/stable/ratios-ttm").mock(return_value=httpx.Response(200, json=AAPL_RATIOS))
+
+        mcp, fmp = _make_server(register_overview)
+        async with Client(mcp) as c:
+            result = await c.call_tool("company_overview", {"symbol": "AAPL", "detail": True})
+
+        data = result.data
+        assert data["symbol"] == "AAPL"
         assert data["name"] == "Apple Inc."
         assert data["price"] == 273.68
         assert data["ratios"]["pe_ttm"] == 34.27
         assert data["sma_50"] == 268.66
+        assert data["sector"] == "Technology"
         assert "_warnings" not in data
         await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
-    async def test_partial_data(self):
+    async def test_detail_partial_data(self):
+        """detail=True with missing ratios shows warning."""
         respx.get(f"{BASE}/stable/profile").mock(return_value=httpx.Response(200, json=AAPL_PROFILE))
         respx.get(f"{BASE}/stable/quote").mock(return_value=httpx.Response(200, json=AAPL_QUOTE))
         respx.get(f"{BASE}/stable/ratios-ttm").mock(return_value=httpx.Response(500, text="error"))
 
         mcp, fmp = _make_server(register_overview)
         async with Client(mcp) as c:
-            result = await c.call_tool("company_overview", {"symbol": "AAPL"})
+            result = await c.call_tool("company_overview", {"symbol": "AAPL", "detail": True})
 
         data = result.data
         assert data["name"] == "Apple Inc."
@@ -167,9 +190,7 @@ class TestCompanyOverview:
     @pytest.mark.asyncio
     @respx.mock
     async def test_unknown_symbol(self):
-        respx.get(f"{BASE}/stable/profile").mock(return_value=httpx.Response(200, json=[]))
         respx.get(f"{BASE}/stable/quote").mock(return_value=httpx.Response(200, json=[]))
-        respx.get(f"{BASE}/stable/ratios-ttm").mock(return_value=httpx.Response(200, json=[]))
 
         mcp, fmp = _make_server(register_overview)
         async with Client(mcp) as c:
@@ -279,7 +300,8 @@ class TestAnalystConsensus:
 class TestPriceHistory:
     @pytest.mark.asyncio
     @respx.mock
-    async def test_price_history(self):
+    async def test_price_history_lean(self):
+        """Default mode: no recent_closes."""
         respx.get(f"{BASE}/stable/historical-price-eod/full").mock(return_value=httpx.Response(200, json=AAPL_HISTORICAL))
         respx.get(f"{BASE}/stable/quote").mock(return_value=httpx.Response(200, json=AAPL_QUOTE))
 
@@ -291,7 +313,26 @@ class TestPriceHistory:
         assert data["current_price"] == 273.68
         assert data["year_high"] == 288.62
         assert data["sma_50"] == 268.66
-        assert len(data["recent_closes"]) <= 30
+        assert "recent_closes" not in data
+        await fmp.aclose()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_price_history_detail(self):
+        """detail=True: includes TOON-encoded recent_closes."""
+        respx.get(f"{BASE}/stable/historical-price-eod/full").mock(return_value=httpx.Response(200, json=AAPL_HISTORICAL))
+        respx.get(f"{BASE}/stable/quote").mock(return_value=httpx.Response(200, json=AAPL_QUOTE))
+
+        mcp, fmp = _make_server(register_market)
+        async with Client(mcp) as c:
+            result = await c.call_tool("price_history", {"symbol": "AAPL", "detail": True})
+
+        data = result.data
+        assert data["current_price"] == 273.68
+        assert "recent_closes" in data
+        # TOON-encoded string starts with array length marker
+        assert isinstance(data["recent_closes"], str)
+        assert data["recent_closes"].startswith("[")
         await fmp.aclose()
 
     @pytest.mark.asyncio
@@ -1584,6 +1625,108 @@ class TestSecFilings:
 
         data = result.data
         assert "error" in data
+        await fmp.aclose()
+
+
+class TestIntradayPrices:
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_adaptive_mode(self):
+        """Default adaptive mode: tiered candles in TOON format."""
+        respx.get(f"{BASE}/stable/historical-chart/5min").mock(return_value=httpx.Response(200, json=AAPL_INTRADAY_5M))
+        respx.get(f"{BASE}/stable/historical-chart/15min").mock(return_value=httpx.Response(200, json=AAPL_INTRADAY_15M))
+        respx.get(f"{BASE}/stable/historical-chart/1hour").mock(return_value=httpx.Response(200, json=AAPL_INTRADAY_1H))
+        respx.get(f"{BASE}/stable/pre-post-market").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/aftermarket-trade").mock(return_value=httpx.Response(200, json=[]))
+
+        mcp, fmp = _make_server(register_market)
+        async with Client(mcp) as c:
+            result = await c.call_tool("intraday_prices", {"symbol": "AAPL"})
+
+        data = result.data
+        assert data["symbol"] == "AAPL"
+        assert data["mode"] == "adaptive"
+        assert data["candle_count"] > 0
+        assert isinstance(data["candles"], str)
+        assert "tier" in data["candles"]
+        assert data["summary"]["total_volume"] > 0
+        assert data["summary"]["vwap"] is not None
+        await fmp.aclose()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_detail_mode(self):
+        """detail=True: uniform candles in TOON format."""
+        respx.get(f"{BASE}/stable/historical-chart/5min").mock(return_value=httpx.Response(200, json=AAPL_INTRADAY_5M))
+        respx.get(f"{BASE}/stable/pre-post-market").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/aftermarket-trade").mock(return_value=httpx.Response(200, json=[]))
+
+        mcp, fmp = _make_server(register_market)
+        async with Client(mcp) as c:
+            result = await c.call_tool("intraday_prices", {"symbol": "AAPL", "detail": True})
+
+        data = result.data
+        assert data["symbol"] == "AAPL"
+        assert data["mode"] == "detail"
+        assert data["interval"] == "5m"
+        assert data["candle_count"] == 3
+        assert isinstance(data["candles"], str)
+        # TOON format has column headers
+        assert "{t,o,h,l,c,v}" in data["candles"]
+        # No tier column in detail mode
+        assert "tier" not in data["candles"]
+        assert data["summary"]["total_volume"] == 1200000 + 1100000 + 1300000
+        await fmp.aclose()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_detail_invalid_interval(self):
+        """detail=True with invalid interval returns error."""
+        mcp, fmp = _make_server(register_market)
+        async with Client(mcp) as c:
+            result = await c.call_tool("intraday_prices", {"symbol": "AAPL", "detail": True, "interval": "2m"})
+
+        data = result.data
+        assert "error" in data
+        await fmp.aclose()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_no_data(self):
+        """Returns error when no candle data available."""
+        respx.get(f"{BASE}/stable/historical-chart/5min").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/historical-chart/15min").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/historical-chart/1hour").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/pre-post-market").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/aftermarket-trade").mock(return_value=httpx.Response(200, json=[]))
+
+        mcp, fmp = _make_server(register_market)
+        async with Client(mcp) as c:
+            result = await c.call_tool("intraday_prices", {"symbol": "ZZZZ"})
+
+        data = result.data
+        assert "error" in data
+        await fmp.aclose()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_adaptive_est_timestamps(self):
+        """Adaptive mode candles use EST 12h AM/PM timestamps."""
+        respx.get(f"{BASE}/stable/historical-chart/5min").mock(return_value=httpx.Response(200, json=AAPL_INTRADAY_5M))
+        respx.get(f"{BASE}/stable/historical-chart/15min").mock(return_value=httpx.Response(200, json=AAPL_INTRADAY_15M))
+        respx.get(f"{BASE}/stable/historical-chart/1hour").mock(return_value=httpx.Response(200, json=AAPL_INTRADAY_1H))
+        respx.get(f"{BASE}/stable/pre-post-market").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/aftermarket-trade").mock(return_value=httpx.Response(200, json=[]))
+
+        mcp, fmp = _make_server(register_market)
+        async with Client(mcp) as c:
+            result = await c.call_tool("intraday_prices", {"symbol": "AAPL"})
+
+        data = result.data
+        # All fixture dates are from Feb 10-11 (in the past), so timestamps should include date
+        # and use AM/PM format
+        candles_str = data["candles"]
+        assert "AM" in candles_str or "PM" in candles_str
         await fmp.aclose()
 
 
