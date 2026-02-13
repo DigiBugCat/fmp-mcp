@@ -8,19 +8,16 @@ from datetime import date, timedelta
 from typing import TYPE_CHECKING
 
 import httpx
+from polygon_client import PolygonClient as _PolygonClientRuntime
+from tools._helpers import TTL_DAILY, TTL_HOURLY, _as_dict, _as_list, _date_only, _safe_call
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
-    from fmp_client import FMPClient
+    from fmp_data import AsyncFMPDataClient
     from polygon_client import PolygonClient
 
 FINRA_URL = "https://api.finra.org/data/group/otcMarket/name/consolidatedShortInterest"
-
-
-def _safe_first(data: list | None) -> dict:
-    if isinstance(data, list) and data:
-        return data[0]
-    return {}
+polygon_TTL_HOURLY = _PolygonClientRuntime.TTL_HOURLY
 
 
 def _latest_quarter() -> tuple[int, int]:
@@ -51,33 +48,43 @@ def _quarter_candidates(lookback_quarters: int = 6) -> list[tuple[int, int]]:
     return out
 
 
+def _quarter_end_date(year: int, quarter: int) -> date:
+    """Convert (year, quarter) to quarter-end date for SDK report_date params."""
+    month = quarter * 3
+    day = calendar.monthrange(year, month)[1]
+    return date(year, month, day)
+
+
 async def _resolve_latest_symbol_institutional_period(
-    client: FMPClient,
+    client: AsyncFMPDataClient,
     symbol: str,
     lookback_quarters: int = 6,
 ) -> tuple[int, int, list[dict], list[dict]]:
     """Find most recent quarter with institutional ownership data for a symbol."""
     candidates = _quarter_candidates(lookback_quarters)
     default_year, default_quarter = candidates[0]
-    sym_params = {"symbol": symbol}
 
     for year, quarter in candidates:
+        report_date = _quarter_end_date(year, quarter)
         summary_data, holders_data = await asyncio.gather(
-            client.get_safe(
-                "/stable/institutional-ownership/symbol-positions-summary",
-                params={**sym_params, "year": year, "quarter": quarter},
-                cache_ttl=client.TTL_HOURLY,
+            _safe_call(
+                client.institutional.get_symbol_positions_summary,
+                symbol=symbol,
+                report_date=report_date,
+                ttl=TTL_HOURLY,
                 default=[],
             ),
-            client.get_safe(
-                "/stable/institutional-ownership/extract-analytics/holder",
-                params={**sym_params, "year": year, "quarter": quarter, "limit": 20},
-                cache_ttl=client.TTL_HOURLY,
+            _safe_call(
+                client.institutional.get_institutional_ownership_analytics,
+                symbol=symbol,
+                report_date=report_date,
+                limit=20,
+                ttl=TTL_HOURLY,
                 default=[],
             ),
         )
-        summary_list = summary_data if isinstance(summary_data, list) else []
-        holders_list = holders_data if isinstance(holders_data, list) else []
+        summary_list = _as_list(summary_data)
+        holders_list = _as_list(holders_data)
         if summary_list or holders_list:
             return year, quarter, summary_list, holders_list
 
@@ -85,33 +92,34 @@ async def _resolve_latest_symbol_institutional_period(
 
 
 async def _resolve_latest_fund_period(
-    client: FMPClient,
+    client: AsyncFMPDataClient,
     cik: str,
     lookback_quarters: int = 8,
 ) -> tuple[int, int, list[dict], list[dict]]:
     """Find most recent quarter with holdings/industry data for a fund CIK."""
     candidates = _quarter_candidates(lookback_quarters)
     default_year, default_quarter = candidates[0]
-    cik_params = {"cik": cik}
 
     for year, quarter in candidates:
-        period_params = {**cik_params, "year": year, "quarter": quarter}
+        report_date = _quarter_end_date(year, quarter)
         holdings_data, industry_data = await asyncio.gather(
-            client.get_safe(
-                "/stable/institutional-ownership/extract",
-                params={**period_params, "limit": 50},
-                cache_ttl=client.TTL_HOURLY,
+            _safe_call(
+                client.institutional.get_institutional_ownership_extract,
+                cik=cik,
+                report_date=report_date,
+                ttl=TTL_HOURLY,
                 default=[],
             ),
-            client.get_safe(
-                "/stable/institutional-ownership/holder-industry-breakdown",
-                params=period_params,
-                cache_ttl=client.TTL_HOURLY,
+            _safe_call(
+                client.institutional.get_holder_industry_breakdown,
+                cik=cik,
+                report_date=report_date,
+                ttl=TTL_HOURLY,
                 default=[],
             ),
         )
-        holdings_list = holdings_data if isinstance(holdings_data, list) else []
-        industry_list = industry_data if isinstance(industry_data, list) else []
+        holdings_list = _as_list(holdings_data)
+        industry_list = _as_list(industry_data)
         if holdings_list or industry_list:
             return year, quarter, holdings_list, industry_list
 
@@ -196,7 +204,7 @@ async def _fetch_polygon_short_volume(
     data = await polygon_client.get_safe(
         "/stocks/v1/short-interest",
         params={"ticker": symbol, "limit": 5, "sort": "settlement_date.desc"},
-        cache_ttl=polygon_client.TTL_HOURLY,
+        cache_ttl=polygon_TTL_HOURLY,
     )
     if not data or not isinstance(data, dict):
         return None
@@ -213,7 +221,7 @@ async def _fetch_polygon_short_volume(
     }
 
 
-def register(mcp: FastMCP, client: FMPClient, polygon_client: PolygonClient | None = None) -> None:
+def register(mcp: FastMCP, client: AsyncFMPDataClient, polygon_client: PolygonClient | None = None) -> None:
     @mcp.tool(
         annotations={
             "title": "Insider Activity",
@@ -233,32 +241,32 @@ def register(mcp: FastMCP, client: FMPClient, polygon_client: PolygonClient | No
             symbol: Stock ticker symbol (e.g. "AAPL")
         """
         symbol = symbol.upper().strip()
-        sym_params = {"symbol": symbol}
 
         trades_data, stats_data, float_data = await asyncio.gather(
-            client.get_safe(
-                "/stable/insider-trading/search",
-                params={**sym_params, "limit": 100},
-                cache_ttl=client.TTL_HOURLY,
+            _safe_call(
+                client.institutional.search_insider_trading,
+                symbol=symbol,
+                limit=100,
+                ttl=TTL_HOURLY,
                 default=[],
             ),
-            client.get_safe(
-                "/stable/insider-trading/statistics",
-                params=sym_params,
-                cache_ttl=client.TTL_HOURLY,
-                default=[],
+            _safe_call(
+                client.institutional.get_insider_statistics,
+                symbol=symbol,
+                ttl=TTL_HOURLY,
+                default=None,
             ),
-            client.get_safe(
-                "/stable/shares-float",
-                params=sym_params,
-                cache_ttl=client.TTL_DAILY,
-                default=[],
+            _safe_call(
+                client.company.get_share_float,
+                symbol=symbol,
+                ttl=TTL_DAILY,
+                default=None,
             ),
         )
 
-        trades_list = trades_data if isinstance(trades_data, list) else []
-        stats = _safe_first(stats_data)
-        float_info = _safe_first(float_data)
+        trades_list = _as_list(trades_data)
+        stats = _as_dict(stats_data)
+        float_info = _as_dict(float_data)
 
         if not trades_list and not stats:
             return {"error": f"No insider data found for '{symbol}'"}
@@ -273,7 +281,7 @@ def register(mcp: FastMCP, client: FMPClient, polygon_client: PolygonClient | No
         notable_trades = []
 
         for trade in trades_list:
-            trade_date = trade.get("filingDate", trade.get("transactionDate", ""))
+            trade_date = _date_only(trade.get("filingDate") or trade.get("transactionDate")) or ""
             tx_type = (trade.get("transactionType") or "").lower()
             shares = trade.get("securitiesTransacted") or 0
             price = trade.get("price") or 0
@@ -389,13 +397,13 @@ def register(mcp: FastMCP, client: FMPClient, polygon_client: PolygonClient | No
         """
         symbol = symbol.upper().strip()
         year, quarter, summary_list, holders_list = await _resolve_latest_symbol_institutional_period(client, symbol)
-        float_data = await client.get_safe(
-            "/stable/shares-float",
-            params={"symbol": symbol},
-            cache_ttl=client.TTL_DAILY,
-            default=[],
+        float_data = await _safe_call(
+            client.company.get_share_float,
+            symbol=symbol,
+            ttl=TTL_DAILY,
+            default=None,
         )
-        float_info = _safe_first(float_data)
+        float_info = _as_dict(float_data)
 
         if not summary_list and not holders_list:
             return {"error": f"No institutional ownership data found for '{symbol}'"}
@@ -417,7 +425,7 @@ def register(mcp: FastMCP, client: FMPClient, polygon_client: PolygonClient | No
             })
 
         # Aggregate position changes from summary
-        summary = _safe_first(summary_list)
+        summary = _as_dict(summary_list)
         investors_holding = summary.get("investorsHolding", 0)
         investors_change = summary.get("investorsHoldingChange", 0)
         total_institutional_shares = summary.get("numberOf13Fshares", 0)
@@ -486,11 +494,11 @@ def register(mcp: FastMCP, client: FMPClient, polygon_client: PolygonClient | No
 
         candidates = _short_interest_dates()
         finra_tasks = [_fetch_finra_short_interest(symbol, d) for d in candidates]
-        float_task = client.get_safe(
-            "/stable/shares-float",
-            params={"symbol": symbol},
-            cache_ttl=client.TTL_DAILY,
-            default=[],
+        float_task = _safe_call(
+            client.company.get_share_float,
+            symbol=symbol,
+            ttl=TTL_DAILY,
+            default=None,
         )
 
         # Include Polygon short volume if available
@@ -512,7 +520,7 @@ def register(mcp: FastMCP, client: FMPClient, polygon_client: PolygonClient | No
                 finra = r
                 break
 
-        float_info = _safe_first(float_data)
+        float_info = _as_dict(float_data)
 
         if finra is None and not float_info:
             return {"error": f"No short interest or float data found for '{symbol}'"}
@@ -598,38 +606,42 @@ def register(mcp: FastMCP, client: FMPClient, polygon_client: PolygonClient | No
         year = _to_int(year)
         quarter = _to_int(quarter)
 
-        cik_params = {"cik": cik}
         # If period is omitted, use most recent quarter where data is available.
         holdings_list: list[dict]
         industry_list: list[dict]
+        report_date: date | None = None
         if year is None or quarter is None:
             year, quarter, holdings_list, industry_list = await _resolve_latest_fund_period(client, cik)
+            report_date = _quarter_end_date(year, quarter)
         else:
-            period_params = {**cik_params, "year": year, "quarter": quarter}
+            report_date = _quarter_end_date(year, quarter)
             holdings_data, industry_data = await asyncio.gather(
-                client.get_safe(
-                    "/stable/institutional-ownership/extract",
-                    params={**period_params, "limit": 50},
-                    cache_ttl=client.TTL_HOURLY,
+                _safe_call(
+                    client.institutional.get_institutional_ownership_extract,
+                    cik=cik,
+                    report_date=report_date,
+                    ttl=TTL_HOURLY,
                     default=[],
                 ),
-                client.get_safe(
-                    "/stable/institutional-ownership/holder-industry-breakdown",
-                    params=period_params,
-                    cache_ttl=client.TTL_HOURLY,
+                _safe_call(
+                    client.institutional.get_holder_industry_breakdown,
+                    cik=cik,
+                    report_date=report_date,
+                    ttl=TTL_HOURLY,
                     default=[],
                 ),
             )
-            holdings_list = holdings_data if isinstance(holdings_data, list) else []
-            industry_list = industry_data if isinstance(industry_data, list) else []
+            holdings_list = _as_list(holdings_data)
+            industry_list = _as_list(industry_data)
 
-        performance_data = await client.get_safe(
-            "/stable/institutional-ownership/holder-performance-summary",
-            params=cik_params,
-            cache_ttl=client.TTL_HOURLY,
+        performance_data = await _safe_call(
+            client.institutional.get_holder_performance_summary,
+            cik=cik,
+            report_date=report_date,
+            ttl=TTL_HOURLY,
             default=[],
         )
-        performance_list = performance_data if isinstance(performance_data, list) else []
+        performance_list = _as_list(performance_data)
 
         if not holdings_list and not performance_list and not industry_list:
             return {"error": f"No fund data found for CIK '{cik}'"}
@@ -659,7 +671,7 @@ def register(mcp: FastMCP, client: FMPClient, polygon_client: PolygonClient | No
 
         # Performance summary
         performance_summary = {}
-        perf = _safe_first(performance_list)
+        perf = _as_dict(performance_list)
         if perf:
             performance_summary = {
                 "total_value": perf.get("totalValue"),
@@ -727,22 +739,21 @@ def register(mcp: FastMCP, client: FMPClient, polygon_client: PolygonClient | No
             symbol: Stock ticker symbol (e.g. "AAPL")
         """
         symbol = symbol.upper().strip()
-        sym_params = {"symbol": symbol}
         year, quarter, institutional_list, _holders_unused = await _resolve_latest_symbol_institutional_period(client, symbol)
 
         # Fetch float, insider stats, institutional summary, short interest, and Polygon short in parallel
         tasks = [
-            client.get_safe(
-                "/stable/shares-float",
-                params=sym_params,
-                cache_ttl=client.TTL_DAILY,
-                default=[],
+            _safe_call(
+                client.company.get_share_float,
+                symbol=symbol,
+                ttl=TTL_DAILY,
+                default=None,
             ),
-            client.get_safe(
-                "/stable/insider-trading/statistics",
-                params=sym_params,
-                cache_ttl=client.TTL_HOURLY,
-                default=[],
+            _safe_call(
+                client.institutional.get_insider_statistics,
+                symbol=symbol,
+                ttl=TTL_HOURLY,
+                default=None,
             ),
             asyncio.gather(
                 *[_fetch_finra_short_interest(symbol, d) for d in _short_interest_dates()]
@@ -757,9 +768,9 @@ def register(mcp: FastMCP, client: FMPClient, polygon_client: PolygonClient | No
         finra_results = all_results[2]
         polygon_short = all_results[3] if polygon_client is not None else None
 
-        float_info = _safe_first(float_data)
-        insider_stats = _safe_first(insider_stats_data)
-        institutional_summary = _safe_first(institutional_list)
+        float_info = _as_dict(float_data)
+        insider_stats = _as_dict(insider_stats_data)
+        institutional_summary = _as_dict(institutional_list)
 
         # Process FINRA results
         finra = None

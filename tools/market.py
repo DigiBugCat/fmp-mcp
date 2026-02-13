@@ -4,19 +4,29 @@ from __future__ import annotations
 
 import asyncio
 import math
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from typing import TYPE_CHECKING
+
+from polygon_client import PolygonClient as _PolygonClientRuntime
+from tools._helpers import (
+    TTL_12H,
+    TTL_6H,
+    TTL_DAILY,
+    TTL_HOURLY,
+    TTL_REALTIME,
+    _as_dict,
+    _as_list,
+    _date_only,
+    _ms_to_str,
+    _safe_call,
+    _safe_first,
+    _to_date,
+)
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
-    from fmp_client import FMPClient
+    from fmp_data import AsyncFMPDataClient
     from polygon_client import PolygonClient
-
-
-def _safe_first(data: list | None) -> dict:
-    if isinstance(data, list) and data:
-        return data[0]
-    return {}
 
 
 PERIOD_DAYS = {
@@ -30,12 +40,21 @@ PERIOD_DAYS = {
     "5y": 1825,
 }
 
+polygon_TTL_HOURLY = _PolygonClientRuntime.TTL_HOURLY
+polygon_TTL_REALTIME = _PolygonClientRuntime.TTL_REALTIME
+
 
 def _calc_sma(prices: list[float], window: int) -> float | None:
     """Calculate simple moving average from a list of prices."""
     if len(prices) < window:
         return None
     return round(sum(prices[:window]) / window, 2)
+
+
+def _format_split_value(value) -> str:
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
 
 
 def _calc_performance(current: float, history: list[dict], days: int) -> float | None:
@@ -115,7 +134,7 @@ def _format_exposure(symbol: str, exposure: list, limit: int) -> dict:
     }
 
 
-def register(mcp: FastMCP, client: FMPClient, polygon_client: PolygonClient | None = None) -> None:
+def register(mcp: FastMCP, client: AsyncFMPDataClient, polygon_client: PolygonClient | None = None) -> None:
     @mcp.tool(
         annotations={
             "title": "Price History",
@@ -152,27 +171,24 @@ def register(mcp: FastMCP, client: FMPClient, polygon_client: PolygonClient | No
 
         # /stable/historical-price-eod/full returns a flat list of {symbol, date, open, high, low, close, volume, ...}
         history_data, quote_data = await asyncio.gather(
-            client.get_safe(
-                "/stable/historical-price-eod/full",
-                params={
-                    "symbol": symbol,
-                    "from": from_date.isoformat(),
-                    "to": today.isoformat(),
-                },
-                cache_ttl=client.TTL_12H,
-                default=[],
+            _safe_call(
+                client.company.get_historical_prices,
+                symbol=symbol,
+                from_date=from_date,
+                to_date=today,
+                ttl=TTL_12H,
+                default=None,
             ),
-            client.get_safe(
-                "/stable/quote",
-                params={"symbol": symbol},
-                cache_ttl=client.TTL_REALTIME,
-                default=[],
+            _safe_call(
+                client.company.get_quote,
+                symbol=symbol,
+                ttl=TTL_REALTIME,
+                default=None,
             ),
         )
 
-        quote = _safe_first(quote_data)
-        # Stable API returns flat list directly (not nested under "historical")
-        historical = history_data if isinstance(history_data, list) else []
+        quote = _as_dict(quote_data)
+        historical = _as_list(history_data, list_key="historical")
 
         if not quote and not historical:
             return {"error": f"No price data found for '{symbol}'"}
@@ -242,22 +258,26 @@ def register(mcp: FastMCP, client: FMPClient, polygon_client: PolygonClient | No
         # Use analyst-estimates for per-symbol forward-looking estimates
         # and income-statement for historical actuals
         estimates_data, income_data = await asyncio.gather(
-            client.get_safe(
-                "/stable/analyst-estimates",
-                params={"symbol": symbol, "period": "quarter", "limit": 8},
-                cache_ttl=client.TTL_6H,
+            _safe_call(
+                client.company.get_analyst_estimates,
+                symbol=symbol,
+                period="quarter",
+                limit=8,
+                ttl=TTL_6H,
                 default=[],
             ),
-            client.get_safe(
-                "/stable/income-statement",
-                params={"symbol": symbol, "period": "quarter", "limit": 8},
-                cache_ttl=client.TTL_HOURLY,
+            _safe_call(
+                client.fundamental.get_income_statement,
+                symbol=symbol,
+                period="quarter",
+                limit=8,
+                ttl=TTL_HOURLY,
                 default=[],
             ),
         )
 
-        estimates_list = estimates_data if isinstance(estimates_data, list) else []
-        income_list = income_data if isinstance(income_data, list) else []
+        estimates_list = _as_list(estimates_data)
+        income_list = _as_list(income_data)
 
         if not estimates_list and not income_list:
             return {"error": f"No earnings data found for '{symbol}'"}
@@ -267,16 +287,34 @@ def register(mcp: FastMCP, client: FMPClient, polygon_client: PolygonClient | No
 
         forward_estimates = []
         for entry in estimates_list:
+            eps_avg = entry.get("epsAvg")
+            if eps_avg is None:
+                eps_avg = entry.get("estimatedEpsAvg")
+            eps_high = entry.get("epsHigh")
+            if eps_high is None:
+                eps_high = entry.get("estimatedEpsHigh")
+            eps_low = entry.get("epsLow")
+            if eps_low is None:
+                eps_low = entry.get("estimatedEpsLow")
+            revenue_avg = entry.get("revenueAvg")
+            if revenue_avg is None:
+                revenue_avg = entry.get("estimatedRevenueAvg")
+            revenue_high = entry.get("revenueHigh")
+            if revenue_high is None:
+                revenue_high = entry.get("estimatedRevenueHigh")
+            revenue_low = entry.get("revenueLow")
+            if revenue_low is None:
+                revenue_low = entry.get("estimatedRevenueLow")
             forward_estimates.append({
                 "date": entry.get("date"),
-                "eps_avg": entry.get("epsAvg"),
-                "eps_high": entry.get("epsHigh"),
-                "eps_low": entry.get("epsLow"),
-                "revenue_avg": entry.get("revenueAvg"),
-                "revenue_high": entry.get("revenueHigh"),
-                "revenue_low": entry.get("revenueLow"),
-                "num_analysts_eps": entry.get("numAnalystsEps"),
-                "num_analysts_revenue": entry.get("numAnalystsRevenue"),
+                "eps_avg": eps_avg,
+                "eps_high": eps_high,
+                "eps_low": eps_low,
+                "revenue_avg": revenue_avg,
+                "revenue_high": revenue_high,
+                "revenue_low": revenue_low,
+                "num_analysts_eps": entry.get("numAnalystsEps") or entry.get("numberAnalystsEstimatedEps"),
+                "num_analysts_revenue": entry.get("numAnalystsRevenue") or entry.get("numberAnalystEstimatedRevenue"),
             })
 
         # Build recent quarterly actuals from income statements
@@ -326,38 +364,21 @@ def register(mcp: FastMCP, client: FMPClient, polygon_client: PolygonClient | No
             symbol: Stock ticker symbol (e.g. "AAPL")
         """
         symbol = symbol.upper().strip()
-        sym_params = {"symbol": symbol}
-
         dividends_data, splits_data, quote_data = await asyncio.gather(
-            client.get_safe(
-                "/stable/dividends",
-                params=sym_params,
-                cache_ttl=client.TTL_6H,
-                default=[],
-            ),
-            client.get_safe(
-                "/stable/splits",
-                params=sym_params,
-                cache_ttl=client.TTL_DAILY,
-                default=[],
-            ),
-            client.get_safe(
-                "/stable/quote",
-                params=sym_params,
-                cache_ttl=client.TTL_REALTIME,
-                default=[],
-            ),
+            _safe_call(client.company.get_dividends, symbol=symbol, ttl=TTL_6H, default=[]),
+            _safe_call(client.company.get_stock_splits, symbol=symbol, ttl=TTL_DAILY, default=[]),
+            _safe_call(client.company.get_quote, symbol=symbol, ttl=TTL_REALTIME, default=None),
         )
 
-        div_list = dividends_data if isinstance(dividends_data, list) else []
-        split_list = splits_data if isinstance(splits_data, list) else []
-        quote = _safe_first(quote_data)
+        div_list = _as_list(dividends_data)
+        split_list = _as_list(splits_data)
+        quote = _as_dict(quote_data)
 
         if not div_list and not split_list:
             return {"error": f"No dividend or split data found for '{symbol}'"}
 
         # Sort dividends newest first
-        div_list.sort(key=lambda d: d.get("date") or "", reverse=True)
+        div_list.sort(key=lambda d: _date_only(d.get("date")) or "", reverse=True)
 
         current_price = quote.get("price")
 
@@ -386,9 +407,9 @@ def register(mcp: FastMCP, client: FMPClient, polygon_client: PolygonClient | No
             current_yield = round(trailing_annual / current_price * 100, 2)
 
         # Filter dividends to post-split only for CAGR (FMP doesn't adjust for splits)
-        split_list.sort(key=lambda s: s.get("date") or "", reverse=True)
-        latest_split_date = split_list[0].get("date", "") if split_list else ""
-        cagr_divs = [d for d in div_list if (d.get("date") or "") > latest_split_date] if latest_split_date else div_list
+        split_list.sort(key=lambda s: _date_only(s.get("date")) or "", reverse=True)
+        latest_split_date = _date_only(split_list[0].get("date")) if split_list else None
+        cagr_divs = [d for d in div_list if (_date_only(d.get("date")) or "") > latest_split_date] if latest_split_date else div_list
 
         # Build full-year totals using rolling 4-quarter windows for CAGR
         yearly_totals = []
@@ -412,18 +433,18 @@ def register(mcp: FastMCP, client: FMPClient, polygon_client: PolygonClient | No
                 return None
 
         # Upcoming ex-date (future or very recent)
-        today_str = date.today().isoformat()
+        today_date = date.today()
         upcoming_ex_date = None
         for d in div_list:
-            pay_date = d.get("paymentDate") or ""
-            ex_date = d.get("date") or ""
+            pay_date = _to_date(d.get("paymentDate"))
+            ex_date = _to_date(d.get("date"))
             # Show if payment hasn't happened yet or ex-date is within a week
-            if pay_date >= today_str or ex_date >= today_str:
+            if (pay_date and pay_date >= today_date) or (ex_date and ex_date >= today_date):
                 upcoming_ex_date = {
-                    "ex_date": ex_date,
+                    "ex_date": _date_only(d.get("date")),
                     "dividend": d.get("dividend"),
-                    "payment_date": d.get("paymentDate"),
-                    "record_date": d.get("recordDate"),
+                    "payment_date": _date_only(d.get("paymentDate")),
+                    "record_date": _date_only(d.get("recordDate")),
                 }
                 break
 
@@ -431,9 +452,9 @@ def register(mcp: FastMCP, client: FMPClient, polygon_client: PolygonClient | No
         recent_dividends = []
         for d in div_list[:8]:
             recent_dividends.append({
-                "date": d.get("date"),
+                "date": _date_only(d.get("date")),
                 "dividend": d.get("dividend"),
-                "payment_date": d.get("paymentDate"),
+                "payment_date": _date_only(d.get("paymentDate")),
             })
 
         # Stock splits
@@ -441,9 +462,9 @@ def register(mcp: FastMCP, client: FMPClient, polygon_client: PolygonClient | No
         for s in split_list:
             num = s.get("numerator")
             den = s.get("denominator")
-            label = f"{num}:{den}" if num and den else None
+            label = f"{_format_split_value(num)}:{_format_split_value(den)}" if num is not None and den is not None else None
             splits.append({
-                "date": s.get("date"),
+                "date": _date_only(s.get("date")),
                 "numerator": num,
                 "denominator": den,
                 "label": label,
@@ -489,7 +510,7 @@ def register(mcp: FastMCP, client: FMPClient, polygon_client: PolygonClient | No
                 data = await polygon_client.get_safe(
                     f"/v3/snapshot/options/{sym}",
                     params={"limit": 250},
-                    cache_ttl=polygon_client.TTL_REALTIME,
+                    cache_ttl=polygon_TTL_REALTIME,
                 )
             if not data or not isinstance(data, dict):
                 return sym, None
@@ -551,17 +572,15 @@ def register(mcp: FastMCP, client: FMPClient, polygon_client: PolygonClient | No
         today = date.today()
         to_date = today + timedelta(days=days_ahead)
 
-        data = await client.get_safe(
-            "/stable/earnings-calendar",
-            params={
-                "from": today.isoformat(),
-                "to": to_date.isoformat(),
-            },
-            cache_ttl=client.TTL_REALTIME,
+        data = await _safe_call(
+            client.intelligence.get_earnings_calendar,
+            start_date=today,
+            end_date=to_date,
+            ttl=TTL_REALTIME,
             default=[],
         )
 
-        entries = data if isinstance(data, list) else []
+        entries = _as_list(data)
 
         # Single-symbol lookup: skip market cap filtering, enrich with OI
         if symbol:
@@ -622,16 +641,16 @@ def register(mcp: FastMCP, client: FMPClient, polygon_client: PolygonClient | No
             chunk_size = 200
             chunks = [symbols[i:i + chunk_size] for i in range(0, len(symbols), chunk_size)]
             batch_results = await asyncio.gather(*(
-                client.get_safe(
-                    "/stable/batch-quote",
-                    params={"symbols": ",".join(chunk)},
-                    cache_ttl=client.TTL_REALTIME,
+                _safe_call(
+                    client.batch.get_quotes,
+                    symbols=chunk,
+                    ttl=TTL_REALTIME,
                     default=[],
                 )
                 for chunk in chunks
             ))
             for batch in batch_results:
-                for q in (batch if isinstance(batch, list) else []):
+                for q in _as_list(batch):
                     sym = q.get("symbol")
                     mc = q.get("marketCap")
                     if sym and mc:
@@ -709,58 +728,28 @@ def register(mcp: FastMCP, client: FMPClient, polygon_client: PolygonClient | No
             return {"error": f"Invalid mode '{mode}'. Use: holdings, exposure, profile, auto"}
 
         async def _try_holdings() -> list | None:
-            data = await client.get_safe(
-                "/stable/etf/holdings",
-                params={"symbol": symbol},
-                cache_ttl=client.TTL_DAILY,
-                default=[],
-            )
-            result = data if isinstance(data, list) else []
+            data = await _safe_call(client.investment.get_etf_holdings, symbol=symbol, ttl=TTL_DAILY, default=[])
+            result = _as_list(data)
             return result if result else None
 
         async def _try_exposure() -> list | None:
-            data = await client.get_safe(
-                "/stable/etf/asset-exposure",
-                params={"symbol": symbol},
-                cache_ttl=client.TTL_DAILY,
-                default=[],
-            )
-            result = data if isinstance(data, list) else []
+            data = await _safe_call(client.investment.get_etf_exposure, symbol=symbol, ttl=TTL_DAILY, default=[])
+            result = _as_list(data)
             return result if result else None
 
         # Profile mode: comprehensive ETF analysis
         if mode == "profile":
             info_data, holdings_data, sector_data, country_data = await asyncio.gather(
-                client.get_safe(
-                    "/stable/etf/info",
-                    params={"symbol": symbol},
-                    cache_ttl=client.TTL_DAILY,
-                    default=[],
-                ),
-                client.get_safe(
-                    "/stable/etf/holdings",
-                    params={"symbol": symbol},
-                    cache_ttl=client.TTL_DAILY,
-                    default=[],
-                ),
-                client.get_safe(
-                    "/stable/etf/sector-weightings",
-                    params={"symbol": symbol},
-                    cache_ttl=client.TTL_DAILY,
-                    default=[],
-                ),
-                client.get_safe(
-                    "/stable/etf/country-weightings",
-                    params={"symbol": symbol},
-                    cache_ttl=client.TTL_DAILY,
-                    default=[],
-                ),
+                _safe_call(client.investment.get_etf_info, symbol=symbol, ttl=TTL_DAILY, default=None),
+                _safe_call(client.investment.get_etf_holdings, symbol=symbol, ttl=TTL_DAILY, default=[]),
+                _safe_call(client.investment.get_etf_sector_weightings, symbol=symbol, ttl=TTL_DAILY, default=[]),
+                _safe_call(client.investment.get_etf_country_weightings, symbol=symbol, ttl=TTL_DAILY, default=[]),
             )
 
-            info = _safe_first(info_data)
-            holdings_list = holdings_data if isinstance(holdings_data, list) else []
-            sectors = sector_data if isinstance(sector_data, list) else []
-            countries = country_data if isinstance(country_data, list) else []
+            info = _as_dict(info_data)
+            holdings_list = _as_list(holdings_data)
+            sectors = _as_list(sector_data)
+            countries = _as_list(country_data)
 
             if not info and not holdings_list:
                 return {"error": f"No ETF profile data found for '{symbol}'. Is it an ETF ticker?"}
@@ -897,35 +886,22 @@ def register(mcp: FastMCP, client: FMPClient, polygon_client: PolygonClient | No
         today = date.today()
         from_date = today - timedelta(days=days_back)
 
-        sym_params = {"symbol": symbol}
-
         # Fetch intraday candles + extended-hours trades in parallel
         data, premarket_data, afterhours_data = await asyncio.gather(
-            client.get_safe(
-                f"/stable/historical-chart/{interval_map[interval]}",
-                params={
-                    **sym_params,
-                    "from": from_date.isoformat(),
-                    "to": today.isoformat(),
-                },
-                cache_ttl=client.TTL_REALTIME,
+            _safe_call(
+                client.company.get_intraday_prices,
+                symbol=symbol,
+                interval=interval_map[interval],
+                from_date=from_date,
+                to_date=today,
+                ttl=TTL_REALTIME,
                 default=[],
             ),
-            client.get_safe(
-                "/stable/premarket-trade",
-                params=sym_params,
-                cache_ttl=client.TTL_REALTIME,
-                default=[],
-            ),
-            client.get_safe(
-                "/stable/aftermarket-trade",
-                params=sym_params,
-                cache_ttl=client.TTL_REALTIME,
-                default=[],
-            ),
+            _safe_call(client.market.get_pre_post_market, ttl=TTL_REALTIME, default=[]),
+            _safe_call(client.company.get_aftermarket_trade, symbol=symbol, ttl=TTL_REALTIME, default=None),
         )
 
-        candles = data if isinstance(data, list) else []
+        candles = _as_list(data)
 
         if not candles:
             return {"error": f"No intraday data found for '{symbol}' with interval {interval}"}
@@ -968,21 +944,25 @@ def register(mcp: FastMCP, client: FMPClient, polygon_client: PolygonClient | No
 
         # Build extended-hours section from pre/post-market trades
         extended_hours = {}
-        pre = _safe_first(premarket_data)
+        pre_candidates = [
+            item for item in _as_list(premarket_data)
+            if (item.get("symbol") or "").upper() == symbol and (item.get("session") or "").lower() == "pre"
+        ]
+        pre = _as_dict(pre_candidates)
         if pre and pre.get("price"):
             ts = pre.get("timestamp")
             extended_hours["premarket"] = {
                 "price": pre["price"],
                 "size": pre.get("tradeSize"),
-                "timestamp": datetime.fromtimestamp(ts / 1000).strftime("%Y-%m-%d %H:%M:%S") if ts else None,
+                "timestamp": _ms_to_str(ts),
             }
-        post = _safe_first(afterhours_data)
+        post = _as_dict(afterhours_data)
         if post and post.get("price"):
             ts = post.get("timestamp")
             extended_hours["afterhours"] = {
                 "price": post["price"],
                 "size": post.get("tradeSize"),
-                "timestamp": datetime.fromtimestamp(ts / 1000).strftime("%Y-%m-%d %H:%M:%S") if ts else None,
+                "timestamp": _ms_to_str(ts),
             }
         # Compute change vs last regular-session close
         last_close = trimmed[0].get("close") if trimmed else None
@@ -1037,14 +1017,14 @@ def register(mcp: FastMCP, client: FMPClient, polygon_client: PolygonClient | No
         symbol = symbol.upper().strip()
         limit = max(1, min(limit, 100))
 
-        data = await client.get_safe(
-            "/stable/historical-market-capitalization",
-            params={"symbol": symbol, "limit": limit},
-            cache_ttl=client.TTL_12H,
+        data = await _safe_call(
+            client.company.get_historical_market_cap,
+            symbol=symbol,
+            ttl=TTL_12H,
             default=[],
         )
 
-        history = data if isinstance(data, list) else []
+        history = _as_list(data)
 
         if not history:
             return {"error": f"No historical market cap data found for '{symbol}'"}
@@ -1128,7 +1108,7 @@ def register(mcp: FastMCP, client: FMPClient, polygon_client: PolygonClient | No
                     "limit": 30,
                     "order": "desc",
                 },
-                cache_ttl=polygon_client.TTL_HOURLY,
+                cache_ttl=polygon_TTL_HOURLY,
             )
 
             if not data or not isinstance(data, dict):
@@ -1143,7 +1123,7 @@ def register(mcp: FastMCP, client: FMPClient, polygon_client: PolygonClient | No
             values = []
             for d in raw_values[:30]:
                 ts = d.get("timestamp")
-                date_str = datetime.fromtimestamp(ts / 1000).strftime("%Y-%m-%d") if ts else None
+                date_str = _ms_to_str(ts, "%Y-%m-%d")
                 values.append({
                     "date": date_str,
                     "macd": d.get("value"),
@@ -1165,18 +1145,27 @@ def register(mcp: FastMCP, client: FMPClient, polygon_client: PolygonClient | No
             }
 
         # All other indicators via FMP
-        data = await client.get_safe(
-            f"/stable/technical-indicators/{indicator}",
-            params={
-                "symbol": symbol,
-                "periodLength": period_length,
-                "timeframe": timeframe,
-            },
-            cache_ttl=client.TTL_HOURLY,
+        indicator_map = {
+            "sma": client.technical.get_sma,
+            "ema": client.technical.get_ema,
+            "rsi": client.technical.get_rsi,
+            "adx": client.technical.get_adx,
+            "wma": client.technical.get_wma,
+            "dema": client.technical.get_dema,
+            "tema": client.technical.get_tema,
+            "williams": client.technical.get_williams,
+            "standarddeviation": client.technical.get_standard_deviation,
+        }
+        data = await _safe_call(
+            indicator_map[indicator],
+            symbol=symbol,
+            period_length=period_length,
+            timeframe=timeframe,
+            ttl=TTL_HOURLY,
             default=[],
         )
 
-        data_list = data if isinstance(data, list) else []
+        data_list = _as_list(data)
 
         if not data_list:
             return {"error": f"No {indicator.upper()} data found for '{symbol}'"}

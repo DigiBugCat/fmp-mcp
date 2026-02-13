@@ -114,7 +114,7 @@ uv run pytest tests/test_live.py -m live_full -n 4 -q
 
 ```
 server.py          # FastMCP entry point, registers all tool modules
-fmp_client.py      # Async HTTP client with TTL caching and graceful error handling
+tools/_helpers.py  # Shared SDK helpers: safe calls, TTL cache, model dumping/normalization
 tools/
   overview.py      # company_overview, stock_search
   financials.py    # financial_statements, revenue_segments
@@ -129,8 +129,9 @@ tools/
 
 Key design decisions:
 - **Module pattern**: Each tool file exports `register(mcp, client)` to keep tools organized
+- **SDK-first FMP client**: Uses `AsyncFMPDataClient` (`fmp-data==2.2.0`) directly for typed endpoint coverage
 - **Parallel fetches**: Workflow tools use `asyncio.gather()` to call multiple endpoints concurrently
-- **Graceful degradation**: `FMPClient.get_safe()` returns defaults on error so composite tools return partial data instead of failing entirely
+- **Graceful degradation**: `_safe_call()` returns defaults on error so composite tools return partial data instead of failing entirely
 - **In-memory TTL cache**: Avoids redundant API calls with configurable TTLs per data type (60s for quotes, 24h for profiles)
 
 ## License

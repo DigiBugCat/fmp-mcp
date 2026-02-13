@@ -18,7 +18,7 @@ import pytest
 import pytest_asyncio
 
 from fastmcp import Client, FastMCP
-from fmp_client import FMPClient
+from tests.conftest import build_test_client
 from tools import assets, financials, macro, market, meta, news, overview, ownership, transcripts, valuation, workflows
 
 
@@ -254,7 +254,7 @@ assert len(CANONICAL_CASES) == 54
 async def live_server() -> FastMCP:
     """Create one FastMCP instance with all tool modules registered."""
     mcp = FastMCP("Live E2E")
-    client = FMPClient(api_key=API_KEY)
+    client = build_test_client(API_KEY)
 
     overview.register(mcp, client)
     financials.register(mcp, client)
@@ -271,7 +271,7 @@ async def live_server() -> FastMCP:
     try:
         yield mcp
     finally:
-        await client.close()
+        await client.aclose()
 
 
 @pytest.mark.asyncio

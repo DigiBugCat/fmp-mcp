@@ -7,20 +7,28 @@ import statistics
 from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+from tools._helpers import (
+    TTL_12H,
+    TTL_6H,
+    TTL_DAILY,
+    TTL_HOURLY,
+    TTL_REALTIME,
+    _as_dict,
+    _as_list,
+    _date_only,
+    _ms_to_str,
+    _safe_call,
+    _safe_first,
+    _to_date,
+)
 from tools.macro import _fetch_movers_with_mcap, _fetch_sectors
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
-    from fmp_client import FMPClient
+    from fmp_data import AsyncFMPDataClient
 
 
 # --- Helpers ---
-
-
-def _safe_first(data: list | None) -> dict:
-    if isinstance(data, list) and data:
-        return data[0]
-    return {}
 
 
 def _pct_change(new: float | None, old: float | None) -> float | None:
@@ -46,7 +54,7 @@ def _filter_recent(
 ) -> list[dict]:
     """Filter list by recency."""
     cutoff = (date.today() - timedelta(days=days)).isoformat()
-    return [i for i in items if (i.get(date_field) or "") >= cutoff]
+    return [i for i in items if (_date_only(i.get(date_field)) or "") >= cutoff]
 
 
 def _median(values: list[float]) -> float | None:
@@ -82,7 +90,7 @@ def _build_extended_hours(
         entry: dict = {
             "price": pre["price"],
             "size": pre.get("tradeSize"),
-            "timestamp": datetime.fromtimestamp(ts / 1000).strftime("%Y-%m-%d %H:%M:%S") if ts else None,
+            "timestamp": _ms_to_str(ts),
         }
         if last_close and last_close > 0:
             entry["change_pct"] = round((pre["price"] / last_close - 1) * 100, 2)
@@ -93,7 +101,7 @@ def _build_extended_hours(
         entry = {
             "price": post["price"],
             "size": post.get("tradeSize"),
-            "timestamp": datetime.fromtimestamp(ts / 1000).strftime("%Y-%m-%d %H:%M:%S") if ts else None,
+            "timestamp": _ms_to_str(ts),
         }
         if last_close and last_close > 0:
             entry["change_pct"] = round((post["price"] / last_close - 1) * 100, 2)
@@ -266,7 +274,7 @@ def _default_bear_triggers(ticker: str, thesis_alignment: list[dict], setup: dic
 # --- Registration ---
 
 
-def register(mcp: FastMCP, client: FMPClient) -> None:
+def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
 
     # ================================================================
     # 1. stock_brief — "Give me a quick read on this stock"
@@ -294,26 +302,37 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             grades_data, targets_data, insider_data, news_data,
             premarket_data, afterhours_data,
         ) = await asyncio.gather(
-            client.get_safe("/stable/profile", params=sym, cache_ttl=client.TTL_DAILY, default=[]),
-            client.get_safe("/stable/quote", params=sym, cache_ttl=client.TTL_REALTIME, default=[]),
-            client.get_safe("/stable/ratios-ttm", params=sym, cache_ttl=client.TTL_HOURLY, default=[]),
-            client.get_safe("/stable/historical-price-eod/full", params={**sym, "from": (date.today() - timedelta(days=365)).isoformat(), "to": date.today().isoformat()}, cache_ttl=client.TTL_12H, default=[]),
-            client.get_safe("/stable/grades-consensus", params=sym, cache_ttl=client.TTL_6H, default=[]),
-            client.get_safe("/stable/price-target-consensus", params=sym, cache_ttl=client.TTL_6H, default=[]),
-            client.get_safe("/stable/insider-trading/search", params={**sym, "limit": 50}, cache_ttl=client.TTL_HOURLY, default=[]),
-            client.get_safe("/stable/news/stock", params={"symbols": symbol, "limit": 5}, cache_ttl=client.TTL_REALTIME, default=[]),
-            client.get_safe("/stable/premarket-trade", params=sym, cache_ttl=client.TTL_REALTIME, default=[]),
-            client.get_safe("/stable/aftermarket-trade", params=sym, cache_ttl=client.TTL_REALTIME, default=[]),
+            _safe_call(client.company.get_profile, symbol=symbol, ttl=TTL_DAILY, default=None),
+            _safe_call(client.company.get_quote, symbol=symbol, ttl=TTL_REALTIME, default=None),
+            _safe_call(client.company.get_financial_ratios_ttm, symbol=symbol, ttl=TTL_HOURLY, default=None),
+            _safe_call(
+                client.company.get_historical_prices,
+                symbol=symbol,
+                from_date=date.today() - timedelta(days=365),
+                to_date=date.today(),
+                ttl=TTL_12H,
+                default=None,
+            ),
+            _safe_call(client.intelligence.get_grades_consensus, symbol=symbol, ttl=TTL_6H, default=None),
+            _safe_call(client.company.get_price_target_consensus, symbol=symbol, ttl=TTL_6H, default=None),
+            _safe_call(client.institutional.search_insider_trading, symbol=symbol, limit=50, ttl=TTL_HOURLY, default=[]),
+            _safe_call(client.intelligence.get_stock_symbol_news, symbol=symbol, limit=5, ttl=TTL_REALTIME, default=[]),
+            _safe_call(client.market.get_pre_post_market, ttl=TTL_REALTIME, default=[]),
+            _safe_call(client.company.get_aftermarket_trade, symbol=symbol, ttl=TTL_REALTIME, default=None),
         )
 
-        profile = _safe_first(profile_data)
-        quote = _safe_first(quote_data)
-        ratios = _safe_first(ratios_data)
-        grades = _safe_first(grades_data)
-        targets = _safe_first(targets_data)
-        historical = history_data if isinstance(history_data, list) else []
-        insider_list = insider_data if isinstance(insider_data, list) else []
-        news_list = news_data if isinstance(news_data, list) else []
+        profile = _as_dict(profile_data)
+        quote = _as_dict(quote_data)
+        ratios = _as_dict(ratios_data)
+        grades = _as_dict(grades_data)
+        targets = _as_dict(targets_data)
+        historical = _as_list(history_data, list_key="historical")
+        insider_list = _as_list(insider_data)
+        news_list = _as_list(news_data)
+        premarket_list = [
+            item for item in _as_list(premarket_data)
+            if (item.get("symbol") or "").upper() == symbol and (item.get("session") or "").lower() == "pre"
+        ]
 
         if not profile and not quote:
             return {"error": f"No data found for symbol '{symbol}'"}
@@ -330,7 +349,7 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             if days is None:
                 # YTD
                 jan1 = date(date.today().year, 1, 1).isoformat()
-                ytd_prices = [h for h in historical if (h.get("date") or "") >= jan1]
+                ytd_prices = [h for h in historical if (_date_only(h.get("date")) or "") >= jan1]
                 if ytd_prices and current_price:
                     oldest = ytd_prices[-1].get("close") if ytd_prices else None
                     momentum["ytd"] = _pct_change(current_price, oldest)
@@ -353,7 +372,7 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         buys_30, sells_30 = 0, 0
         cluster_buyers = set()
         for t in insider_list:
-            trade_date = t.get("filingDate", t.get("transactionDate", ""))
+            trade_date = _date_only(t.get("filingDate") or t.get("transactionDate")) or ""
             if trade_date < cutoff_30:
                 continue
             tx = (t.get("transactionType") or "").lower()
@@ -420,7 +439,7 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
                 "52w_high": year_high,
                 "52w_low": year_low,
                 "from_high_pct": from_high_pct,
-                **_build_extended_hours(premarket_data, afterhours_data, current_price),
+                **_build_extended_hours(premarket_list, [_as_dict(afterhours_data)], current_price),
             },
             "momentum": momentum,
             "valuation": {
@@ -491,16 +510,16 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             rates_data, erp_data, calendar_data,
             sectors_list, (gainers_list, losers_list, actives_list),
         ) = await asyncio.gather(
-            client.get_safe("/stable/treasury-rates", cache_ttl=client.TTL_HOURLY, default=[]),
-            client.get_safe("/stable/market-risk-premium", cache_ttl=client.TTL_DAILY, default=[]),
-            client.get_safe("/stable/economic-calendar", params={"from": today_dt.isoformat(), "to": end_dt.isoformat()}, cache_ttl=client.TTL_HOURLY, default=[]),
+            _safe_call(client.economics.get_treasury_rates, ttl=TTL_HOURLY, default=[]),
+            _safe_call(client.economics.get_market_risk_premium, ttl=TTL_DAILY, default=[]),
+            _safe_call(client.economics.get_economic_calendar, start_date=today_dt, end_date=end_dt, ttl=TTL_HOURLY, default=[]),
             _fetch_sectors(client),
             _fetch_movers_with_mcap(client),
         )
 
-        latest_rate = _safe_first(rates_data if isinstance(rates_data, list) else [])
-        erp_list = erp_data if isinstance(erp_data, list) else []
-        calendar_list = calendar_data if isinstance(calendar_data, list) else []
+        latest_rate = _as_dict(rates_data)
+        erp_list = _as_list(erp_data)
+        calendar_list = _as_list(calendar_data)
 
         if not latest_rate and not sectors_list:
             return {"error": "No market data available"}
@@ -562,15 +581,15 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             name = (evt.get("event") or "").lower()
             if not any(kw in name for kw in high_impact_kw):
                 continue
+            event_date = _date_only(evt.get("date"))
             formatted = {
-                "date": evt.get("date"),
+                "date": event_date,
                 "event": evt.get("event"),
                 "estimate": evt.get("estimate"),
                 "previous": evt.get("previous"),
                 "impact": evt.get("impact"),
             }
-            evt_date = (evt.get("date") or "")[:10]
-            if evt_date == today_str:
+            if event_date == today_str:
                 today_events.append(formatted)
             else:
                 week_events.append(formatted)
@@ -673,23 +692,30 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             profile_data, quote_data, earnings_data, grades_data,
             history_data, insider_data, insider_stats_data, float_data,
         ) = await asyncio.gather(
-            client.get_safe("/stable/profile", params=sym, cache_ttl=client.TTL_DAILY, default=[]),
-            client.get_safe("/stable/quote", params=sym, cache_ttl=client.TTL_REALTIME, default=[]),
-            client.get_safe("/stable/earnings", params=sym, cache_ttl=client.TTL_HOURLY, default=[]),
-            client.get_safe("/stable/grades", params=sym, cache_ttl=client.TTL_6H, default=[]),
-            client.get_safe("/stable/historical-price-eod/full", params={**sym, "from": (date.today() - timedelta(days=90)).isoformat(), "to": date.today().isoformat()}, cache_ttl=client.TTL_12H, default=[]),
-            client.get_safe("/stable/insider-trading/search", params={**sym, "limit": 50}, cache_ttl=client.TTL_HOURLY, default=[]),
-            client.get_safe("/stable/insider-trading/statistics", params=sym, cache_ttl=client.TTL_HOURLY, default=[]),
-            client.get_safe("/stable/shares-float", params=sym, cache_ttl=client.TTL_DAILY, default=[]),
+            _safe_call(client.company.get_profile, symbol=symbol, ttl=TTL_DAILY, default=None),
+            _safe_call(client.company.get_quote, symbol=symbol, ttl=TTL_REALTIME, default=None),
+            _safe_call(client.company.get_earnings, symbol=symbol, ttl=TTL_HOURLY, default=[]),
+            _safe_call(client.intelligence.get_grades, symbol=symbol, ttl=TTL_6H, default=[]),
+            _safe_call(
+                client.company.get_historical_prices,
+                symbol=symbol,
+                from_date=date.today() - timedelta(days=90),
+                to_date=date.today(),
+                ttl=TTL_12H,
+                default=None,
+            ),
+            _safe_call(client.institutional.search_insider_trading, symbol=symbol, limit=50, ttl=TTL_HOURLY, default=[]),
+            _safe_call(client.institutional.get_insider_statistics, symbol=symbol, ttl=TTL_HOURLY, default=None),
+            _safe_call(client.company.get_share_float, symbol=symbol, ttl=TTL_DAILY, default=None),
         )
 
-        profile = _safe_first(profile_data)
-        quote = _safe_first(quote_data)
-        earnings_list = earnings_data if isinstance(earnings_data, list) else []
-        grades_list = grades_data if isinstance(grades_data, list) else []
-        historical = history_data if isinstance(history_data, list) else []
-        insider_list = insider_data if isinstance(insider_data, list) else []
-        float_info = _safe_first(float_data)
+        profile = _as_dict(profile_data)
+        quote = _as_dict(quote_data)
+        earnings_list = _as_list(earnings_data)
+        grades_list = _as_list(grades_data)
+        historical = _as_list(history_data, list_key="historical")
+        insider_list = _as_list(insider_data)
+        float_info = _as_dict(float_data)
 
         if not quote and not earnings_list:
             return {"error": f"No data found for symbol '{symbol}'"}
@@ -702,26 +728,24 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         future_earnings = []
         historical_earnings = []
         for e in earnings_list:
-            edate = e.get("date", "")
+            edate = _date_only(e.get("date")) or ""
             if edate > today_str and e.get("epsActual") is None:
                 future_earnings.append(e)
             elif e.get("epsActual") is not None and e.get("epsEstimated") is not None:
                 historical_earnings.append(e)
 
         # Sort: future ascending, historical descending
-        future_earnings.sort(key=lambda e: e.get("date", ""))
-        historical_earnings.sort(key=lambda e: e.get("date", ""), reverse=True)
+        future_earnings.sort(key=lambda e: _date_only(e.get("date")) or "")
+        historical_earnings.sort(key=lambda e: _date_only(e.get("date")) or "", reverse=True)
 
         # Next earnings
         next_earnings = future_earnings[0] if future_earnings else None
-        earnings_date = next_earnings.get("date") if next_earnings else None
+        earnings_date = _date_only(next_earnings.get("date")) if next_earnings else None
         days_until = None
         if earnings_date:
-            try:
-                ed = datetime.strptime(earnings_date, "%Y-%m-%d").date()
-                days_until = (ed - today_dt).days
-            except ValueError:
-                pass
+            earnings_dt = _to_date(earnings_date)
+            if earnings_dt is not None:
+                days_until = (earnings_dt - today_dt).days
 
         # Consensus
         consensus = {}
@@ -796,7 +820,7 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         cluster_buyers = set()
         notable_insiders = []
         for t in insider_list:
-            trade_date = t.get("filingDate", t.get("transactionDate", ""))
+            trade_date = _date_only(t.get("filingDate") or t.get("transactionDate")) or ""
             if trade_date < cutoff_30:
                 continue
             tx = (t.get("transactionType") or "").lower()
@@ -1078,26 +1102,26 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             metrics_data, ratios_data, estimates_data, targets_data,
             peers_data,
         ) = await asyncio.gather(
-            client.get_safe("/stable/quote", params=sym, cache_ttl=client.TTL_REALTIME, default=[]),
-            client.get_safe("/stable/income-statement", params={**sym, "limit": 4}, cache_ttl=client.TTL_HOURLY, default=[]),
-            client.get_safe("/stable/balance-sheet-statement", params={**sym, "limit": 1}, cache_ttl=client.TTL_HOURLY, default=[]),
-            client.get_safe("/stable/cash-flow-statement", params={**sym, "limit": 1}, cache_ttl=client.TTL_HOURLY, default=[]),
-            client.get_safe("/stable/key-metrics-ttm", params=sym, cache_ttl=client.TTL_HOURLY, default=[]),
-            client.get_safe("/stable/ratios-ttm", params=sym, cache_ttl=client.TTL_HOURLY, default=[]),
-            client.get_safe("/stable/analyst-estimates", params={**sym, "period": "quarter", "limit": 4}, cache_ttl=client.TTL_6H, default=[]),
-            client.get_safe("/stable/price-target-consensus", params=sym, cache_ttl=client.TTL_6H, default=[]),
-            client.get_safe("/stable/stock-peers", params=sym, cache_ttl=client.TTL_DAILY, default=[]),
+            _safe_call(client.company.get_quote, symbol=symbol, ttl=TTL_REALTIME, default=None),
+            _safe_call(client.fundamental.get_income_statement, symbol=symbol, limit=4, ttl=TTL_HOURLY, default=[]),
+            _safe_call(client.fundamental.get_balance_sheet, symbol=symbol, limit=1, ttl=TTL_HOURLY, default=[]),
+            _safe_call(client.fundamental.get_cash_flow, symbol=symbol, limit=1, ttl=TTL_HOURLY, default=[]),
+            _safe_call(client.company.get_key_metrics_ttm, symbol=symbol, ttl=TTL_HOURLY, default=None),
+            _safe_call(client.company.get_financial_ratios_ttm, symbol=symbol, ttl=TTL_HOURLY, default=None),
+            _safe_call(client.company.get_analyst_estimates, symbol=symbol, period="quarter", limit=4, ttl=TTL_6H, default=[]),
+            _safe_call(client.company.get_price_target_consensus, symbol=symbol, ttl=TTL_6H, default=None),
+            _safe_call(client.company.get_company_peers, symbol=symbol, ttl=TTL_DAILY, default=[]),
         )
 
-        quote = _safe_first(quote_data)
-        income_list = income_data if isinstance(income_data, list) else []
-        balance = _safe_first(balance_data)
-        cashflow = _safe_first(cashflow_data)
-        metrics = _safe_first(metrics_data)
-        ratios = _safe_first(ratios_data)
-        estimates_list = estimates_data if isinstance(estimates_data, list) else []
-        targets = _safe_first(targets_data)
-        peers_list = peers_data if isinstance(peers_data, list) else []
+        quote = _as_dict(quote_data)
+        income_list = _as_list(income_data)
+        balance = _as_dict(balance_data)
+        cashflow = _as_dict(cashflow_data)
+        metrics = _as_dict(metrics_data)
+        ratios = _as_dict(ratios_data)
+        estimates_list = _as_list(estimates_data)
+        targets = _as_dict(targets_data)
+        peers_list = _as_list(peers_data)
 
         if not quote:
             return {"error": f"No data found for symbol '{symbol}'"}
@@ -1122,8 +1146,8 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
 
         # Forward estimates: sum next 4 quarters for forward EPS/revenue
         estimates_list.sort(key=lambda e: e.get("date", ""))
-        fwd_eps = sum(e.get("epsAvg") or 0 for e in estimates_list[:4]) if estimates_list else None
-        fwd_revenue = sum(e.get("revenueAvg") or 0 for e in estimates_list[:4]) if estimates_list else None
+        fwd_eps = sum((e.get("epsAvg") or e.get("estimatedEpsAvg") or 0) for e in estimates_list[:4]) if estimates_list else None
+        fwd_revenue = sum((e.get("revenueAvg") or e.get("estimatedRevenueAvg") or 0) for e in estimates_list[:4]) if estimates_list else None
 
         # Growth rates
         rev_growth_fwd = _pct_change(fwd_revenue, ttm_revenue) if fwd_revenue and ttm_revenue else None
@@ -1147,11 +1171,11 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
 
         async def _fetch_peer(s: str) -> dict:
             r, m = await asyncio.gather(
-                client.get_safe("/stable/ratios-ttm", params={"symbol": s}, cache_ttl=client.TTL_HOURLY, default=[]),
-                client.get_safe("/stable/key-metrics-ttm", params={"symbol": s}, cache_ttl=client.TTL_HOURLY, default=[]),
+                _safe_call(client.company.get_financial_ratios_ttm, symbol=s, ttl=TTL_HOURLY, default=None),
+                _safe_call(client.company.get_key_metrics_ttm, symbol=s, ttl=TTL_HOURLY, default=None),
             )
-            rd = _safe_first(r)
-            md = _safe_first(m)
+            rd = _as_dict(r)
+            md = _as_dict(m)
             return {
                 "symbol": s,
                 "pe": rd.get("priceToEarningsRatioTTM"),
@@ -1352,36 +1376,47 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             targets_data, history_data, quote_data,
             transcript_dates_data,
         ) = await asyncio.gather(
-            client.get_safe("/stable/earnings", params=sym, cache_ttl=client.TTL_HOURLY, default=[]),
-            client.get_safe("/stable/income-statement", params={**sym, "period": "quarter", "limit": 8}, cache_ttl=client.TTL_HOURLY, default=[]),
-            client.get_safe("/stable/grades", params=sym, cache_ttl=client.TTL_6H, default=[]),
-            client.get_safe("/stable/price-target-consensus", params=sym, cache_ttl=client.TTL_6H, default=[]),
-            client.get_safe("/stable/historical-price-eod/full", params={**sym, "from": (date.today() - timedelta(days=90)).isoformat(), "to": date.today().isoformat()}, cache_ttl=client.TTL_12H, default=[]),
-            client.get_safe("/stable/quote", params=sym, cache_ttl=client.TTL_REALTIME, default=[]),
-            client.get_safe("/stable/earning-call-transcript-dates", params=sym, cache_ttl=client.TTL_REALTIME, default=[]),
+            _safe_call(client.company.get_earnings, symbol=symbol, ttl=TTL_HOURLY, default=[]),
+            _safe_call(client.fundamental.get_income_statement, symbol=symbol, period="quarter", limit=8, ttl=TTL_HOURLY, default=[]),
+            _safe_call(client.intelligence.get_grades, symbol=symbol, ttl=TTL_6H, default=[]),
+            _safe_call(client.company.get_price_target_consensus, symbol=symbol, ttl=TTL_6H, default=None),
+            _safe_call(
+                client.company.get_historical_prices,
+                symbol=symbol,
+                from_date=date.today() - timedelta(days=90),
+                to_date=date.today(),
+                ttl=TTL_12H,
+                default=None,
+            ),
+            _safe_call(client.company.get_quote, symbol=symbol, ttl=TTL_REALTIME, default=None),
+            _safe_call(client.transcripts.get_available_dates, symbol=symbol, ttl=TTL_REALTIME, default=[]),
         )
 
-        earnings_list = earnings_data if isinstance(earnings_data, list) else []
-        income_list = income_data if isinstance(income_data, list) else []
-        grades_list = grades_data if isinstance(grades_data, list) else []
-        targets = _safe_first(targets_data)
-        historical = history_data if isinstance(history_data, list) else []
-        quote = _safe_first(quote_data)
-        transcript_dates = transcript_dates_data if isinstance(transcript_dates_data, list) else []
+        earnings_list = _as_list(earnings_data)
+        income_list = _as_list(income_data)
+        grades_list = _as_list(grades_data)
+        targets = _as_dict(targets_data)
+        historical = _as_list(history_data, list_key="historical")
+        quote = _as_dict(quote_data)
+        transcript_dates = _as_list(transcript_dates_data)
 
         if not earnings_list:
             return {"error": f"No earnings data found for '{symbol}'"}
 
         # Find the target earnings report
-        today_str = date.today().isoformat()
-        actual_earnings = [e for e in earnings_list if e.get("epsActual") is not None and (e.get("date") or "") <= today_str]
-        actual_earnings.sort(key=lambda e: e.get("date", ""), reverse=True)
+        today_date = date.today()
+        actual_earnings = [
+            e
+            for e in earnings_list
+            if e.get("epsActual") is not None and (report_date := _to_date(e.get("date"))) and report_date <= today_date
+        ]
+        actual_earnings.sort(key=lambda e: _date_only(e.get("date")) or "", reverse=True)
 
         transcript_period_by_date: dict[str, tuple[int, int]] = {}
         for t in transcript_dates:
-            t_date = t.get("date")
+            t_date = _date_only(t.get("date"))
             t_year = _to_int(t.get("fiscalYear") or t.get("year"))
-            t_quarter = _to_int(t.get("quarter"))
+            t_quarter = _to_int(t.get("quarter") or t.get("period"))
             if t_date and t_year is not None and t_quarter in (1, 2, 3, 4):
                 transcript_period_by_date[t_date] = (t_year, t_quarter)
 
@@ -1389,7 +1424,7 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         if quarter is not None and year is not None:
             # Prefer transcript date mapping to avoid fiscal calendar mismatches.
             for e in actual_earnings:
-                report_date = e.get("date", "")
+                report_date = _date_only(e.get("date")) or ""
                 report_period = transcript_period_by_date.get(report_date) or _period_from_report(e)
                 if report_period == (year, quarter):
                     target_report = e
@@ -1400,7 +1435,7 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         if not target_report:
             return {"error": f"No completed earnings found for '{symbol}'"}
 
-        earnings_date = target_report.get("date", "")
+        earnings_date = _date_only(target_report.get("date")) or ""
         actual_eps = target_report.get("epsActual")
         est_eps = target_report.get("epsEstimated")
         actual_rev = target_report.get("revenueActual")
@@ -1412,13 +1447,14 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         beat = (actual_eps or 0) > (est_eps or 0) if actual_eps is not None and est_eps is not None else None
 
         # YoY and QoQ from income statements
-        income_list.sort(key=lambda i: i.get("date", ""), reverse=True)
+        income_list.sort(key=lambda i: _date_only(i.get("date")) or "", reverse=True)
 
         # Find matching quarter in income statements by date proximity
-        target_fiscal = target_report.get("fiscalDateEnding", "")
+        target_fiscal = _date_only(target_report.get("fiscalDateEnding")) or ""
         current_q = None
         for i, inc in enumerate(income_list):
-            if inc.get("date") == target_fiscal or (target_fiscal and inc.get("date", "")[:7] == target_fiscal[:7]):
+            inc_date = _date_only(inc.get("date")) or ""
+            if inc_date == target_fiscal or (target_fiscal and inc_date[:7] == target_fiscal[:7]):
                 current_q = i
                 break
         if current_q is None and income_list:
@@ -1453,7 +1489,9 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         post_5d_pct = None
         if earnings_date and historical:
             # Find the earnings date and day after in history
-            hist_by_date = {h.get("date"): h for h in historical}
+            hist_by_date = {
+                d: h for h in historical if (d := _date_only(h.get("date")))
+            }
             # Day of = close on earnings date vs previous close
             dates_sorted = sorted(hist_by_date.keys())
             ed_idx = None
@@ -1485,7 +1523,7 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
                 reaction_quality = "proportional"
 
         # Analyst reaction post-print
-        post_grades = [g for g in grades_list if (g.get("date") or "") >= earnings_date]
+        post_grades = [g for g in grades_list if (_date_only(g.get("date")) or "") >= earnings_date]
         upgrades_since = len([g for g in post_grades if (g.get("action") or "").lower() in ("upgrade", "initiate")])
         downgrades_since = len([g for g in post_grades if (g.get("action") or "").lower() == "downgrade"])
         recent_analyst = []
@@ -1494,7 +1532,7 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
                 "firm": g.get("gradingCompany"),
                 "action": g.get("action"),
                 "new_grade": g.get("newGrade"),
-                "date": g.get("date"),
+                "date": _date_only(g.get("date")),
             })
 
         # Guidance tone from transcript (if available)
@@ -1503,7 +1541,7 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         transcript_quarter = None
 
         matched_transcript: dict | None = next(
-            (t for t in transcript_dates if (t.get("date") or "") == earnings_date),
+            (t for t in transcript_dates if (_date_only(t.get("date")) or "") == earnings_date),
             None,
         )
         if matched_transcript is None and earnings_date:
@@ -1511,7 +1549,7 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
                 earnings_dt = datetime.strptime(earnings_date, "%Y-%m-%d").date()
                 nearest_match: tuple[int, dict] | None = None
                 for t in transcript_dates:
-                    t_date = t.get("date") or ""
+                    t_date = _date_only(t.get("date")) or ""
                     try:
                         td = datetime.strptime(t_date, "%Y-%m-%d").date()
                     except ValueError:
@@ -1526,20 +1564,22 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
 
         if matched_transcript is not None:
             transcript_year = _to_int(matched_transcript.get("fiscalYear") or matched_transcript.get("year"))
-            transcript_quarter = _to_int(matched_transcript.get("quarter"))
+            transcript_quarter = _to_int(matched_transcript.get("quarter") or matched_transcript.get("period"))
         else:
             report_period = _period_from_report(target_report)
             if report_period is not None:
                 transcript_year, transcript_quarter = report_period
 
         if transcript_year is not None and transcript_quarter in (1, 2, 3, 4):
-            transcript_data = await client.get_safe(
-                "/stable/earning-call-transcript",
-                params={"symbol": symbol, "year": transcript_year, "quarter": transcript_quarter},
-                cache_ttl=client.TTL_REALTIME,
+            transcript_data = await _safe_call(
+                client.transcripts.get_transcript,
+                symbol=symbol,
+                year=transcript_year,
+                quarter=transcript_quarter,
+                ttl=TTL_REALTIME,
                 default=[],
             )
-            transcript_list = transcript_data if isinstance(transcript_data, list) else []
+            transcript_list = _as_list(transcript_data)
             if transcript_list:
                 content = " ".join(t.get("content", "") for t in transcript_list)
                 guidance["has_transcript"] = True
@@ -1660,7 +1700,6 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         # Import ownership tools from the ownership module
         from tools.ownership import (
             _resolve_latest_symbol_institutional_period,
-            _safe_first,
             _short_interest_dates,
             _fetch_finra_short_interest,
         )
@@ -1675,23 +1714,23 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             institutional_period_data,
             finra_tasks,
         ) = await asyncio.gather(
-            client.get_safe("/stable/shares-float", params=sym_params, cache_ttl=client.TTL_DAILY, default=[]),
-            client.get_safe("/stable/profile", params=sym_params, cache_ttl=client.TTL_DAILY, default=[]),
-            client.get_safe("/stable/quote", params=sym_params, cache_ttl=client.TTL_REALTIME, default=[]),
-            client.get_safe("/stable/insider-trading/search", params={**sym_params, "limit": 100}, cache_ttl=client.TTL_HOURLY, default=[]),
-            client.get_safe("/stable/insider-trading/statistics", params=sym_params, cache_ttl=client.TTL_HOURLY, default=[]),
+            _safe_call(client.company.get_share_float, symbol=symbol, ttl=TTL_DAILY, default=None),
+            _safe_call(client.company.get_profile, symbol=symbol, ttl=TTL_DAILY, default=None),
+            _safe_call(client.company.get_quote, symbol=symbol, ttl=TTL_REALTIME, default=None),
+            _safe_call(client.institutional.search_insider_trading, symbol=symbol, limit=100, ttl=TTL_HOURLY, default=[]),
+            _safe_call(client.institutional.get_insider_statistics, symbol=symbol, ttl=TTL_HOURLY, default=None),
             period_task,
             asyncio.gather(*[_fetch_finra_short_interest(symbol, d) for d in _short_interest_dates()]),
         )
         year, quarter, institutional_summary_data, institutional_holders_data = institutional_period_data
 
-        float_info = _safe_first(float_data)
-        profile = _safe_first(profile_data)
-        quote = _safe_first(quote_data)
-        insider_trades = insider_trades_data if isinstance(insider_trades_data, list) else []
-        insider_stats = _safe_first(insider_stats_data)
-        institutional_summary = _safe_first(institutional_summary_data)
-        institutional_holders = institutional_holders_data if isinstance(institutional_holders_data, list) else []
+        float_info = _as_dict(float_data)
+        profile = _as_dict(profile_data)
+        quote = _as_dict(quote_data)
+        insider_trades = _as_list(insider_trades_data)
+        insider_stats = _as_dict(insider_stats_data)
+        institutional_summary = _as_dict(institutional_summary_data)
+        institutional_holders = _as_list(institutional_holders_data)
 
         # Process FINRA short interest
         finra = None
@@ -1720,7 +1759,6 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         retail_implied_pct = round(retail_implied_shares / outstanding_shares * 100, 2) if outstanding_shares > 0 else 0
 
         # --- Insider Activity Analysis ---
-        from datetime import date, timedelta
         today = date.today()
         cutoff_30 = (today - timedelta(days=30)).isoformat()
         cutoff_90 = (today - timedelta(days=90)).isoformat()
@@ -1730,7 +1768,7 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         notable_insider_trades = []
 
         for t in insider_trades:
-            trade_date = t.get("filingDate", t.get("transactionDate", ""))
+            trade_date = _date_only(t.get("filingDate") or t.get("transactionDate")) or ""
             tx_type = (t.get("transactionType") or "").lower()
             shares = t.get("securitiesTransacted") or 0
             price = t.get("price") or 0
@@ -1928,25 +1966,31 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             nyse_pe_data, nasdaq_pe_data,
             screener_data,
         ) = await asyncio.gather(
-            client.get_safe("/stable/industry-performance-snapshot", params={"date": today_str, "exchange": "NYSE"}, cache_ttl=client.TTL_REALTIME, default=[]),
-            client.get_safe("/stable/industry-performance-snapshot", params={"date": today_str, "exchange": "NASDAQ"}, cache_ttl=client.TTL_REALTIME, default=[]),
-            client.get_safe("/stable/industry-pe-snapshot", params={"date": today_str, "exchange": "NYSE"}, cache_ttl=client.TTL_DAILY, default=[]),
-            client.get_safe("/stable/industry-pe-snapshot", params={"date": today_str, "exchange": "NASDAQ"}, cache_ttl=client.TTL_DAILY, default=[]),
-            client.get_safe("/stable/company-screener", params={"industry": industry, "limit": limit * 3}, cache_ttl=client.TTL_HOURLY, default=[]),
+            _safe_call(client.market.get_industry_performance_snapshot, date=today_dt, exchange="NYSE", ttl=TTL_REALTIME, default=[]),
+            _safe_call(client.market.get_industry_performance_snapshot, date=today_dt, exchange="NASDAQ", ttl=TTL_REALTIME, default=[]),
+            _safe_call(client.market.get_industry_pe_snapshot, date=today_dt, exchange="NYSE", ttl=TTL_DAILY, default=[]),
+            _safe_call(client.market.get_industry_pe_snapshot, date=today_dt, exchange="NASDAQ", ttl=TTL_DAILY, default=[]),
+            _safe_call(client.market.get_company_screener, industry=industry, limit=limit * 3, ttl=TTL_HOURLY, default=[]),
         )
 
-        nyse_perf = nyse_perf_data if isinstance(nyse_perf_data, list) else []
-        nasdaq_perf = nasdaq_perf_data if isinstance(nasdaq_perf_data, list) else []
-        nyse_pe = nyse_pe_data if isinstance(nyse_pe_data, list) else []
-        nasdaq_pe = nasdaq_pe_data if isinstance(nasdaq_pe_data, list) else []
-        screener_list = screener_data if isinstance(screener_data, list) else []
+        nyse_perf = _as_list(nyse_perf_data)
+        nasdaq_perf = _as_list(nasdaq_perf_data)
+        nyse_pe = _as_list(nyse_pe_data)
+        nasdaq_pe = _as_list(nasdaq_pe_data)
+        screener_list = _as_list(screener_data)
 
         # Industry performance (average across exchanges)
         perf_entries = [e for e in nyse_perf + nasdaq_perf if (e.get("industry") or "").lower() == industry.lower()]
         industry_change = None
         industry_sector = None
         if perf_entries:
-            changes = [e.get("averageChange") for e in perf_entries if e.get("averageChange") is not None]
+            changes = []
+            for e in perf_entries:
+                val = e.get("averageChange")
+                if val is None:
+                    val = e.get("changePercentage")
+                if val is not None:
+                    changes.append(val)
             if changes:
                 industry_change = round(sum(changes) / len(changes), 4)
             industry_sector = perf_entries[0].get("sector")
@@ -1972,11 +2016,11 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         # Fetch ratios and income statements for top stocks
         async def _fetch_stock_data(sym: str) -> tuple[str, dict, dict, dict]:
             ratios, income, quote = await asyncio.gather(
-                client.get_safe("/stable/ratios-ttm", params={"symbol": sym}, cache_ttl=client.TTL_HOURLY, default=[]),
-                client.get_safe("/stable/income-statement", params={"symbol": sym, "limit": 4}, cache_ttl=client.TTL_HOURLY, default=[]),
-                client.get_safe("/stable/quote", params={"symbol": sym}, cache_ttl=client.TTL_REALTIME, default=[]),
+                _safe_call(client.company.get_financial_ratios_ttm, symbol=sym, ttl=TTL_HOURLY, default=None),
+                _safe_call(client.fundamental.get_income_statement, symbol=sym, limit=4, ttl=TTL_HOURLY, default=[]),
+                _safe_call(client.company.get_quote, symbol=sym, ttl=TTL_REALTIME, default=None),
             )
-            return sym, _safe_first(ratios), income if isinstance(income, list) else [], _safe_first(quote)
+            return sym, _as_dict(ratios), _as_list(income), _as_dict(quote)
 
         stock_data_results = await asyncio.gather(*[_fetch_stock_data(s) for s in symbols]) if symbols else []
 

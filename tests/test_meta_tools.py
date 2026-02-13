@@ -5,13 +5,13 @@ from __future__ import annotations
 import pytest
 
 from fastmcp import Client, FastMCP
-from fmp_client import FMPClient
+from tests.conftest import build_test_client
 from tools.meta import register as register_meta
 
 
 def _make_server() -> FastMCP:
     mcp = FastMCP("Test")
-    client = FMPClient(api_key="test_key")
+    client = build_test_client("test_key")
     register_meta(mcp, client)
     return mcp
 

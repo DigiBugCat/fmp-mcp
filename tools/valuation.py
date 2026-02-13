@@ -6,15 +6,11 @@ import asyncio
 from datetime import date, timedelta
 from typing import TYPE_CHECKING
 
+from tools._helpers import TTL_6H, TTL_DAILY, TTL_HOURLY, TTL_REALTIME, _as_dict, _as_list, _date_only, _safe_call
+
 if TYPE_CHECKING:
     from fastmcp import FastMCP
-    from fmp_client import FMPClient
-
-
-def _safe_first(data: list | None) -> dict:
-    if isinstance(data, list) and data:
-        return data[0]
-    return {}
+    from fmp_data import AsyncFMPDataClient
 
 
 def _percentile(values: list[float], target: float | None) -> float | None:
@@ -28,7 +24,7 @@ def _percentile(values: list[float], target: float | None) -> float | None:
     return round(below / len(clean) * 100, 1)
 
 
-def register(mcp: FastMCP, client: FMPClient) -> None:
+def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
     @mcp.tool(
         annotations={
             "title": "Valuation History",
@@ -55,26 +51,27 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             limit: Number of historical periods to fetch (default 10)
         """
         symbol = symbol.upper().strip()
-        params = {"symbol": symbol, "period": period, "limit": limit}
 
         # Fetch historical metrics and current TTM ratios
         key_metrics_data, ratios_ttm_data = await asyncio.gather(
-            client.get_safe(
-                "/stable/key-metrics",
-                params=params,
-                cache_ttl=client.TTL_HOURLY,
+            _safe_call(
+                client.fundamental.get_key_metrics,
+                symbol=symbol,
+                period=period,
+                limit=limit,
+                ttl=TTL_HOURLY,
                 default=[],
             ),
-            client.get_safe(
-                "/stable/ratios-ttm",
-                params={"symbol": symbol},
-                cache_ttl=client.TTL_HOURLY,
+            _safe_call(
+                client.company.get_financial_ratios_ttm,
+                symbol=symbol,
+                ttl=TTL_HOURLY,
                 default=[],
             ),
         )
 
-        key_metrics = key_metrics_data if isinstance(key_metrics_data, list) else []
-        ratios_ttm = _safe_first(ratios_ttm_data)
+        key_metrics = _as_list(key_metrics_data)
+        ratios_ttm = _as_dict(ratios_ttm_data)
 
         if not key_metrics and not ratios_ttm:
             return {"error": f"No valuation data found for '{symbol}'"}
@@ -107,7 +104,7 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             pe = round(1.0 / earnings_yield, 2) if earnings_yield and earnings_yield != 0 else m.get("peRatio")
 
             historical.append({
-                "date": m.get("date"),
+                "date": _date_only(m.get("date")),
                 "period": m.get("period"),
                 "pe": pe,
                 "ps": m.get("evToSales") or m.get("priceToSalesRatio"),
@@ -184,39 +181,18 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             symbol: Stock ticker symbol (e.g. "AAPL")
         """
         symbol = symbol.upper().strip()
-        sym_params = {"symbol": symbol}
 
         targets_data, grades_data, rating_data, quote_data = await asyncio.gather(
-            client.get_safe(
-                "/stable/price-target-consensus",
-                params=sym_params,
-                cache_ttl=client.TTL_6H,
-                default=[],
-            ),
-            client.get_safe(
-                "/stable/grades-consensus",
-                params=sym_params,
-                cache_ttl=client.TTL_6H,
-                default=[],
-            ),
-            client.get_safe(
-                "/stable/ratings-snapshot",
-                params=sym_params,
-                cache_ttl=client.TTL_6H,
-                default=[],
-            ),
-            client.get_safe(
-                "/stable/quote",
-                params=sym_params,
-                cache_ttl=client.TTL_REALTIME,
-                default=[],
-            ),
+            _safe_call(client.company.get_price_target_consensus, symbol=symbol, ttl=TTL_6H, default=None),
+            _safe_call(client.intelligence.get_grades_consensus, symbol=symbol, ttl=TTL_6H, default=None),
+            _safe_call(client.intelligence.get_ratings_snapshot, symbol=symbol, ttl=TTL_6H, default=[]),
+            _safe_call(client.company.get_quote, symbol=symbol, ttl=TTL_REALTIME, default=None),
         )
 
-        targets = _safe_first(targets_data)
-        grades = _safe_first(grades_data)
-        rating = _safe_first(rating_data)
-        quote = _safe_first(quote_data)
+        targets = _as_dict(targets_data)
+        grades = _as_dict(grades_data)
+        rating = _as_dict(rating_data)
+        quote = _as_dict(quote_data)
 
         if not targets and not grades and not rating:
             return {"error": f"No analyst data found for '{symbol}'"}
@@ -300,14 +276,14 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             peer_symbols = [p.upper().strip() for p in peer_symbols]
         else:
             # /stable/stock-peers returns a flat list of peer companies
-            peers_data = await client.get_safe(
-                "/stable/stock-peers",
-                params={"symbol": symbol},
-                cache_ttl=client.TTL_DAILY,
+            peers_data = await _safe_call(
+                client.company.get_company_peers,
+                symbol=symbol,
+                ttl=TTL_DAILY,
                 default=[],
             )
 
-            peers_list = peers_data if isinstance(peers_data, list) else []
+            peers_list = _as_list(peers_data)
             if not peers_list:
                 return {"error": f"No peer data found for '{symbol}'"}
 
@@ -324,35 +300,29 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
 
         async def _fetch_metrics(sym: str) -> dict:
             ratios, metrics, estimates, income = await asyncio.gather(
-                client.get_safe(
-                    "/stable/ratios-ttm",
-                    params={"symbol": sym},
-                    cache_ttl=client.TTL_HOURLY,
+                _safe_call(client.company.get_financial_ratios_ttm, symbol=sym, ttl=TTL_HOURLY, default=[]),
+                _safe_call(client.company.get_key_metrics_ttm, symbol=sym, ttl=TTL_HOURLY, default=[]),
+                _safe_call(
+                    client.company.get_analyst_estimates,
+                    symbol=sym,
+                    period="quarter",
+                    limit=1,
+                    ttl=TTL_6H,
                     default=[],
                 ),
-                client.get_safe(
-                    "/stable/key-metrics-ttm",
-                    params={"symbol": sym},
-                    cache_ttl=client.TTL_HOURLY,
-                    default=[],
-                ),
-                client.get_safe(
-                    "/stable/analyst-estimates",
-                    params={"symbol": sym, "period": "quarter", "limit": 1},
-                    cache_ttl=client.TTL_6H,
-                    default=[],
-                ),
-                client.get_safe(
-                    "/stable/income-statement",
-                    params={"symbol": sym, "period": "annual", "limit": 2},
-                    cache_ttl=client.TTL_HOURLY,
+                _safe_call(
+                    client.fundamental.get_income_statement,
+                    symbol=sym,
+                    period="annual",
+                    limit=2,
+                    ttl=TTL_HOURLY,
                     default=[],
                 ),
             )
-            r = _safe_first(ratios)
-            m = _safe_first(metrics)
-            est = _safe_first(estimates)
-            inc_list = income if isinstance(income, list) else []
+            r = _as_dict(ratios)
+            m = _as_dict(metrics)
+            est = _as_dict(estimates)
+            inc_list = _as_list(income)
 
             # Calculate 1Y growth rates
             revenue_growth_1y = None
@@ -368,15 +338,21 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             # Forward P/E and P/S
             forward_pe = None
             forward_ps = None
-            if est.get("epsAvg") and est["epsAvg"] > 0 and m.get("marketCapTTM"):
+            est_eps_avg = est.get("epsAvg")
+            if est_eps_avg is None:
+                est_eps_avg = est.get("estimatedEpsAvg")
+            est_revenue_avg = est.get("revenueAvg")
+            if est_revenue_avg is None:
+                est_revenue_avg = est.get("estimatedRevenueAvg")
+            if est_eps_avg and est_eps_avg > 0 and m.get("marketCapTTM"):
                 # Approximate: market_cap / (forward_eps * shares)
                 # We don't have shares easily, so use ratio of current P/E
                 pe_current = r.get("priceToEarningsRatioTTM")
                 eps_current = r.get("earningsYield")  # Inverse of P/E
                 if pe_current:
-                    forward_pe = pe_current * (est["epsAvg"] / (1 / eps_current if eps_current else 1))
-            if est.get("revenueAvg") and est["revenueAvg"] > 0 and m.get("marketCapTTM"):
-                forward_ps = m["marketCapTTM"] / est["revenueAvg"]
+                    forward_pe = pe_current * (est_eps_avg / (1 / eps_current if eps_current else 1))
+            if est_revenue_avg and est_revenue_avg > 0 and m.get("marketCapTTM"):
+                forward_ps = m["marketCapTTM"] / est_revenue_avg
 
             # PEG ratio
             peg = None
@@ -491,57 +467,54 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             symbol: Stock ticker symbol (e.g. "AAPL")
         """
         symbol = symbol.upper().strip()
-        sym_params = {"symbol": symbol}
 
         estimates_data, grades_data, earnings_data = await asyncio.gather(
-            client.get_safe(
-                "/stable/analyst-estimates",
-                params={"symbol": symbol, "period": "quarter", "limit": 4},
-                cache_ttl=client.TTL_6H,
+            _safe_call(
+                client.company.get_analyst_estimates,
+                symbol=symbol,
+                period="quarter",
+                limit=4,
+                ttl=TTL_6H,
                 default=[],
             ),
-            client.get_safe(
-                "/stable/grades",
-                params={"symbol": symbol, "limit": 20},
-                cache_ttl=client.TTL_6H,
-                default=[],
-            ),
-            client.get_safe(
-                "/stable/earnings",
-                params={"symbol": symbol, "limit": 8},
-                cache_ttl=client.TTL_HOURLY,
-                default=[],
-            ),
+            _safe_call(client.intelligence.get_grades, symbol=symbol, page=0, ttl=TTL_6H, default=[]),
+            _safe_call(client.company.get_earnings, symbol=symbol, limit=8, ttl=TTL_HOURLY, default=[]),
         )
 
-        estimates_list = estimates_data if isinstance(estimates_data, list) else []
-        grades_list = grades_data if isinstance(grades_data, list) else []
-        earnings_list = earnings_data if isinstance(earnings_data, list) else []
+        estimates_list = _as_list(estimates_data)
+        grades_list = _as_list(grades_data)
+        earnings_list = _as_list(earnings_data)
 
         if not estimates_list and not grades_list and not earnings_list:
             return {"error": f"No estimate or analyst data found for '{symbol}'"}
 
         # --- Forward estimates ---
-        estimates_list.sort(key=lambda e: e.get("date", ""))
+        estimates_list.sort(key=lambda e: _date_only(e.get("date")) or "")
         forward_estimates = []
         for e in estimates_list:
+            eps_avg = e.get("epsAvg")
+            if eps_avg is None:
+                eps_avg = e.get("estimatedEpsAvg")
+            revenue_avg = e.get("revenueAvg")
+            if revenue_avg is None:
+                revenue_avg = e.get("estimatedRevenueAvg")
             forward_estimates.append({
-                "date": e.get("date"),
-                "eps_avg": e.get("epsAvg"),
-                "revenue_avg": e.get("revenueAvg"),
-                "num_analysts_eps": e.get("numAnalystsEps"),
+                "date": _date_only(e.get("date")),
+                "eps_avg": eps_avg,
+                "revenue_avg": revenue_avg,
+                "num_analysts_eps": e.get("numAnalystsEps") or e.get("numberAnalystsEstimatedEps"),
             })
 
         # --- Recent analyst actions (last 90 days) ---
         cutoff = (date.today() - timedelta(days=90)).isoformat()
-        recent_grades = [g for g in grades_list if (g.get("date") or "") >= cutoff]
+        recent_grades = [g for g in grades_list if (_date_only(g.get("date")) or "") >= cutoff]
 
         actions = []
         upgrades = downgrades = initiations = maintains = 0
         for g in recent_grades:
             action = (g.get("action") or "").lower()
             actions.append({
-                "date": g.get("date"),
+                "date": _date_only(g.get("date")),
                 "firm": g.get("gradingCompany"),
                 "action": action,
                 "new_grade": g.get("newGrade"),
@@ -599,7 +572,7 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
                 rev_surprise_pct = round((rev_actual - rev_est) / abs(rev_est) * 100, 2)
 
             track.append({
-                "date": e.get("date"),
+                "date": _date_only(e.get("date")),
                 "eps_surprise_pct": eps_surprise_pct,
                 "revenue_surprise_pct": rev_surprise_pct,
             })

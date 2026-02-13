@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import re
-from pathlib import Path
 from typing import TYPE_CHECKING
+
+from tools._endpoint_registry import IMPLEMENTED_FAMILIES
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
-    from fmp_client import FMPClient
+    from fmp_data import AsyncFMPDataClient
 
 DOCS_URL = "https://site.financialmodelingprep.com/developer/docs"
 
@@ -130,29 +130,9 @@ DOCUMENTED_FAMILIES_BY_CATEGORY: dict[str, list[str]] = {
 }
 
 
-def _normalize_family(path_fragment: str) -> str:
-    """Normalize endpoint path to a family-level token."""
-    family = path_fragment.split("/", 1)[0]
-    family = family.split("{", 1)[0]
-    return family.strip()
-
-
 def _extract_implemented_families() -> set[str]:
-    """Scan tools/*.py and extract used /stable/ endpoint families."""
-    tools_dir = Path(__file__).resolve().parent
-    pattern = re.compile(r"""["']/stable/([^"'?]+)""")
-
-    families: set[str] = set()
-    for path in tools_dir.glob("*.py"):
-        if path.name in {"__init__.py", "meta.py"}:
-            continue
-        text = path.read_text(encoding="utf-8")
-        for match in pattern.finditer(text):
-            family = _normalize_family(match.group(1))
-            if family:
-                families.add(family)
-
-    return families
+    """Return static implemented endpoint families."""
+    return set(IMPLEMENTED_FAMILIES)
 
 
 def _build_coverage_snapshot(include_implemented_categories: bool) -> dict:
@@ -199,14 +179,14 @@ def _build_coverage_snapshot(include_implemented_categories: bool) -> dict:
         "unimplemented_families": missing_families,
         "categories": categories,
         "notes": [
-            "Coverage is computed from /stable/* paths found in tools/*.py.",
+            "Coverage is computed from a static endpoint-family registry.",
             "Families are category-level prefixes, not exhaustive endpoint-by-endpoint parity.",
             "WebSocket support is tracked as a docs capability but is not a /stable REST family.",
         ],
     }
 
 
-def register(mcp: FastMCP, client: FMPClient) -> None:
+def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
     # client is accepted for consistent module signature; unused by this tool.
     del client
 

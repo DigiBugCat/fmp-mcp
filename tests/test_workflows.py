@@ -7,7 +7,8 @@ import respx
 import httpx
 
 from fastmcp import FastMCP, Client
-from fmp_client import FMPClient
+from fmp_data import AsyncFMPDataClient
+from tests.conftest import build_test_client
 from tests.conftest import (
     AAPL_PROFILE, AAPL_QUOTE, AAPL_RATIOS,
     AAPL_INCOME, AAPL_BALANCE, AAPL_CASHFLOW,
@@ -32,9 +33,9 @@ from tools.workflows import register as register_workflows
 BASE = "https://financialmodelingprep.com"
 
 
-def _make_server() -> tuple[FastMCP, FMPClient]:
+def _make_server() -> tuple[FastMCP, AsyncFMPDataClient]:
     mcp = FastMCP("Test")
-    client = FMPClient(api_key="test_key")
+    client = build_test_client("test_key")
     register_workflows(mcp, client)
     return mcp, client
 
@@ -56,7 +57,7 @@ class TestStockBrief:
         respx.get(f"{BASE}/stable/price-target-consensus").mock(return_value=httpx.Response(200, json=AAPL_PRICE_TARGET))
         respx.get(f"{BASE}/stable/insider-trading/search").mock(return_value=httpx.Response(200, json=AAPL_INSIDER_TRADES))
         respx.get(f"{BASE}/stable/news/stock").mock(return_value=httpx.Response(200, json=AAPL_NEWS))
-        respx.get(f"{BASE}/stable/premarket-trade").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/pre-post-market").mock(return_value=httpx.Response(200, json=[]))
         respx.get(f"{BASE}/stable/aftermarket-trade").mock(return_value=httpx.Response(200, json=[{"symbol": "AAPL", "price": 275.00, "tradeSize": 5, "timestamp": 1700000000000}]))
 
         mcp, fmp = _make_server()
@@ -79,7 +80,7 @@ class TestStockBrief:
         assert data["price"]["extended_hours"]["afterhours"]["price"] == 275.00
         assert "change_pct" in data["price"]["extended_hours"]["afterhours"]
         assert "_warnings" not in data
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -92,7 +93,7 @@ class TestStockBrief:
         respx.get(f"{BASE}/stable/price-target-consensus").mock(return_value=httpx.Response(500, text="error"))
         respx.get(f"{BASE}/stable/insider-trading/search").mock(return_value=httpx.Response(500, text="error"))
         respx.get(f"{BASE}/stable/news/stock").mock(return_value=httpx.Response(200, json=[]))
-        respx.get(f"{BASE}/stable/premarket-trade").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/pre-post-market").mock(return_value=httpx.Response(200, json=[]))
         respx.get(f"{BASE}/stable/aftermarket-trade").mock(return_value=httpx.Response(200, json=[]))
 
         mcp, fmp = _make_server()
@@ -104,7 +105,7 @@ class TestStockBrief:
         assert data["company_name"] == "Apple Inc."
         assert "ratios unavailable" in data["_warnings"]
         assert "historical prices unavailable" in data["_warnings"]
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -117,7 +118,7 @@ class TestStockBrief:
         respx.get(f"{BASE}/stable/price-target-consensus").mock(return_value=httpx.Response(200, json=[]))
         respx.get(f"{BASE}/stable/insider-trading/search").mock(return_value=httpx.Response(200, json=[]))
         respx.get(f"{BASE}/stable/news/stock").mock(return_value=httpx.Response(200, json=[]))
-        respx.get(f"{BASE}/stable/premarket-trade").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/pre-post-market").mock(return_value=httpx.Response(200, json=[]))
         respx.get(f"{BASE}/stable/aftermarket-trade").mock(return_value=httpx.Response(200, json=[]))
 
         mcp, fmp = _make_server()
@@ -126,7 +127,7 @@ class TestStockBrief:
 
         data = result.data
         assert "error" in data
-        await fmp.close()
+        await fmp.aclose()
 
 
 # ================================================================
@@ -167,7 +168,7 @@ class TestMarketContext:
         gainer_symbols = [g["symbol"] for g in data["movers"]["gainers"]]
         assert "TINY" not in gainer_symbols
         assert "_warnings" not in data
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -190,7 +191,7 @@ class TestMarketContext:
         assert data["rates"]["10y"] == 4.05
         assert data["rates"]["erp"] is None
         assert "risk premium unavailable" in data["_warnings"]
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -211,7 +212,7 @@ class TestMarketContext:
 
         data = result.data
         assert "error" in data
-        await fmp.close()
+        await fmp.aclose()
 
 
 # ================================================================
@@ -255,7 +256,7 @@ class TestEarningsSetup:
         assert data["setup_summary"]["signal"] in ("bullish", "neutral", "bearish")
         assert isinstance(data["setup_summary"]["key_factors"], list)
         assert "_warnings" not in data
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -278,7 +279,7 @@ class TestEarningsSetup:
         assert data["surprise_history"]["beat_rate"] is not None  # earnings data still works
         assert "analyst grades unavailable" in data["_warnings"]
         assert "historical prices unavailable" in data["_warnings"]
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -298,7 +299,7 @@ class TestEarningsSetup:
 
         data = result.data
         assert "error" in data
-        await fmp.close()
+        await fmp.aclose()
 
 
 # ================================================================
@@ -322,7 +323,7 @@ class TestEarningsPreview:
         respx.get(f"{BASE}/stable/grades-consensus").mock(return_value=httpx.Response(200, json=AAPL_GRADES))
         respx.get(f"{BASE}/stable/price-target-consensus").mock(return_value=httpx.Response(200, json=AAPL_PRICE_TARGET))
         respx.get(f"{BASE}/stable/news/stock").mock(return_value=httpx.Response(200, json=AAPL_NEWS))
-        respx.get(f"{BASE}/stable/premarket-trade").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/pre-post-market").mock(return_value=httpx.Response(200, json=[]))
         respx.get(f"{BASE}/stable/aftermarket-trade").mock(return_value=httpx.Response(200, json=[]))
 
         mcp, fmp = _make_server()
@@ -339,7 +340,7 @@ class TestEarningsPreview:
         assert isinstance(data["key_questions"], list)
         assert isinstance(data["bull_triggers"], list)
         assert isinstance(data["bear_triggers"], list)
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -356,7 +357,7 @@ class TestEarningsPreview:
         respx.get(f"{BASE}/stable/grades-consensus").mock(return_value=httpx.Response(200, json=AAPL_GRADES))
         respx.get(f"{BASE}/stable/price-target-consensus").mock(return_value=httpx.Response(200, json=AAPL_PRICE_TARGET))
         respx.get(f"{BASE}/stable/news/stock").mock(return_value=httpx.Response(200, json=AAPL_NEWS))
-        respx.get(f"{BASE}/stable/premarket-trade").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/pre-post-market").mock(return_value=httpx.Response(200, json=[]))
         respx.get(f"{BASE}/stable/aftermarket-trade").mock(return_value=httpx.Response(200, json=[]))
 
         mcp, fmp = _make_server()
@@ -367,7 +368,7 @@ class TestEarningsPreview:
         assert data["ticker"] == "AAPL"
         assert data["in_window"] is False
         assert "outside requested horizon" in " ".join(data.get("_warnings", []))
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -384,7 +385,7 @@ class TestEarningsPreview:
         respx.get(f"{BASE}/stable/grades-consensus").mock(return_value=httpx.Response(200, json=[]))
         respx.get(f"{BASE}/stable/price-target-consensus").mock(return_value=httpx.Response(200, json=[]))
         respx.get(f"{BASE}/stable/news/stock").mock(return_value=httpx.Response(200, json=[]))
-        respx.get(f"{BASE}/stable/premarket-trade").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/pre-post-market").mock(return_value=httpx.Response(200, json=[]))
         respx.get(f"{BASE}/stable/aftermarket-trade").mock(return_value=httpx.Response(200, json=[]))
 
         mcp, fmp = _make_server()
@@ -393,7 +394,7 @@ class TestEarningsPreview:
 
         data = result.data
         assert "error" in data
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -410,7 +411,7 @@ class TestEarningsPreview:
         respx.get(f"{BASE}/stable/grades-consensus").mock(return_value=httpx.Response(500, text="error"))
         respx.get(f"{BASE}/stable/price-target-consensus").mock(return_value=httpx.Response(500, text="error"))
         respx.get(f"{BASE}/stable/news/stock").mock(return_value=httpx.Response(200, json=[]))
-        respx.get(f"{BASE}/stable/premarket-trade").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/pre-post-market").mock(return_value=httpx.Response(200, json=[]))
         respx.get(f"{BASE}/stable/aftermarket-trade").mock(return_value=httpx.Response(200, json=[]))
 
         mcp, fmp = _make_server()
@@ -423,7 +424,7 @@ class TestEarningsPreview:
         assert data["signals"]["analyst"] == 0.0
         assert data["signals"]["insider"] == 0.0
         assert isinstance(data.get("_warnings"), list)
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -440,7 +441,7 @@ class TestEarningsPreview:
         respx.get(f"{BASE}/stable/grades-consensus").mock(return_value=httpx.Response(200, json=AAPL_GRADES))
         respx.get(f"{BASE}/stable/price-target-consensus").mock(return_value=httpx.Response(200, json=AAPL_PRICE_TARGET))
         respx.get(f"{BASE}/stable/news/stock").mock(return_value=httpx.Response(200, json=AAPL_NEWS))
-        respx.get(f"{BASE}/stable/premarket-trade").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/pre-post-market").mock(return_value=httpx.Response(200, json=[]))
         respx.get(f"{BASE}/stable/aftermarket-trade").mock(return_value=httpx.Response(200, json=[]))
 
         mcp, fmp = _make_server()
@@ -460,7 +461,7 @@ class TestEarningsPreview:
         assert bull.data["setup_signal"] == "BULLISH"
         assert bear.data["setup_signal"] == "BEARISH"
         assert neutral.data["setup_signal"] == "NEUTRAL"
-        await fmp.close()
+        await fmp.aclose()
 
 
 # ================================================================
@@ -513,7 +514,7 @@ class TestFairValueEstimate:
         assert data["summary"]["rating"] in ("undervalued", "overvalued", "fairly_valued", "insufficient_data")
         assert data["summary"]["confidence"] in ("high", "medium", "low")
         assert "_warnings" not in data
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -537,7 +538,7 @@ class TestFairValueEstimate:
         # Should still have analyst target even without peers
         assert data["fair_value"]["analyst_target"] == 303.11
         assert "peer data unavailable" in data["_warnings"]
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -558,7 +559,7 @@ class TestFairValueEstimate:
 
         data = result.data
         assert "error" in data
-        await fmp.close()
+        await fmp.aclose()
 
 
 # ================================================================
@@ -597,7 +598,7 @@ class TestEarningsPostmortem:
         assert isinstance(data["summary"]["key_positives"], list)
         assert isinstance(data["summary"]["key_concerns"], list)
         assert "_warnings" not in data
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -620,7 +621,7 @@ class TestEarningsPostmortem:
         assert data["results"]["beat"] is True  # earnings data still works
         assert "income statement unavailable" in data["_warnings"]
         assert "analyst grades unavailable" in data["_warnings"]
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -639,7 +640,7 @@ class TestEarningsPostmortem:
 
         data = result.data
         assert "error" in data
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -686,7 +687,7 @@ class TestEarningsPostmortem:
         data = result.data
         assert data["earnings_date"] == "2025-02-06"
         assert data["guidance"]["has_transcript"] is True
-        await fmp.close()
+        await fmp.aclose()
 
 
 # ================================================================
@@ -744,7 +745,7 @@ class TestOwnershipDeepDive:
         assert isinstance(data["ownership_analysis"]["key_insights"], list)
         assert "_warnings" not in data
 
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -772,7 +773,7 @@ class TestOwnershipDeepDive:
         assert "institutional summary unavailable" in data["_warnings"]
         assert "FINRA short interest unavailable" in data["_warnings"]
 
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -795,7 +796,7 @@ class TestOwnershipDeepDive:
         data = result.data
         assert "error" in data
 
-        await fmp.close()
+        await fmp.aclose()
 
 
 # ================================================================
@@ -933,7 +934,7 @@ class TestIndustryAnalysis:
         assert data["rotation"]["signal"] in ("money_flowing_in", "money_flowing_out", "neutral")
 
         assert "_warnings" not in data
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -972,7 +973,7 @@ class TestIndustryAnalysis:
         assert "industry performance unavailable" in data["_warnings"]
         assert "sector performance unavailable for rotation signal" in data["_warnings"]
 
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -997,4 +998,4 @@ class TestIndustryAnalysis:
         data = result.data
         assert "error" in data
 
-        await fmp.close()
+        await fmp.aclose()

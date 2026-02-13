@@ -4,42 +4,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from tools._helpers import TTL_HOURLY, TTL_REALTIME, _as_list, _safe_call
+
 if TYPE_CHECKING:
     from fastmcp import FastMCP
-    from fmp_client import FMPClient
+    from fmp_data import AsyncFMPDataClient
 
 
-# Routing table: category -> (search endpoint, latest endpoint, supports symbol?)
-_NEWS_ROUTES = {
-    "stock": {
-        "search": "/stable/news/stock",
-        "latest": "/stable/news/stock-latest",
-        "has_symbol": True,
-    },
-    "press_releases": {
-        "search": "/stable/news/press-releases",
-        "latest": "/stable/news/press-releases-latest",
-        "has_symbol": True,
-    },
-    "crypto": {
-        "search": "/stable/news/crypto",
-        "latest": "/stable/news/crypto-latest",
-        "has_symbol": True,
-    },
-    "forex": {
-        "search": "/stable/news/forex",
-        "latest": "/stable/news/forex-latest",
-        "has_symbol": True,
-    },
-    "general": {
-        "search": None,
-        "latest": "/stable/news/general-latest",
-        "has_symbol": False,
-    },
-}
-
-
-def register(mcp: FastMCP, client: FMPClient) -> None:
+def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
     @mcp.tool(
         annotations={
             "title": "Market News",
@@ -55,46 +27,101 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         page: int = 0,
         limit: int = 20,
     ) -> dict:
-        """Get news articles across asset classes.
-
-        Categories: "stock" (equity news, pass symbol for company-specific),
-        "press_releases" (official filings), "crypto", "forex", "general" (macro, no symbol).
-        Use page param to paginate.
-
-        Args:
-            category: "stock", "press_releases", "crypto", "forex", "general"
-            symbol: Optional ticker (ignored for "general")
-            page: Page number (default 0)
-            limit: Max articles per page (default 20)
-        """
+        """Get news articles across asset classes."""
         category = category.lower().strip()
-        if category not in _NEWS_ROUTES:
-            return {"error": f"Invalid category '{category}'. Use: {', '.join(_NEWS_ROUTES.keys())}"}
-
-        route = _NEWS_ROUTES[category]
         limit = max(1, min(limit, 50))
         page = max(0, page)
 
-        # Decide which endpoint to hit
-        if symbol and route["has_symbol"]:
-            symbol = symbol.upper().strip()
-            path = route["search"]
-            params: dict = {"symbols": symbol, "page": page, "limit": limit}
+        data = []
+        if category == "stock":
+            if symbol:
+                symbol = symbol.upper().strip()
+                data = await _safe_call(
+                    client.intelligence.get_stock_symbol_news,
+                    symbol=symbol,
+                    page=page,
+                    limit=limit,
+                    ttl=TTL_REALTIME,
+                    default=[],
+                )
+            else:
+                data = await _safe_call(
+                    client.intelligence.get_stock_news,
+                    page=page,
+                    limit=limit,
+                    ttl=TTL_REALTIME,
+                    default=[],
+                )
+        elif category == "press_releases":
+            if symbol:
+                symbol = symbol.upper().strip()
+                data = await _safe_call(
+                    client.intelligence.get_press_releases_by_symbol,
+                    symbol=symbol,
+                    page=page,
+                    limit=limit,
+                    ttl=TTL_REALTIME,
+                    default=[],
+                )
+            else:
+                data = await _safe_call(
+                    client.intelligence.get_press_releases,
+                    page=page,
+                    limit=limit,
+                    ttl=TTL_REALTIME,
+                    default=[],
+                )
+        elif category == "crypto":
+            if symbol:
+                symbol = symbol.upper().strip()
+                data = await _safe_call(
+                    client.intelligence.get_crypto_symbol_news,
+                    symbol=symbol,
+                    page=page,
+                    limit=limit,
+                    ttl=TTL_REALTIME,
+                    default=[],
+                )
+            else:
+                data = await _safe_call(
+                    client.intelligence.get_crypto_news,
+                    page=page,
+                    limit=limit,
+                    ttl=TTL_REALTIME,
+                    default=[],
+                )
+        elif category == "forex":
+            if symbol:
+                symbol = symbol.upper().strip()
+                data = await _safe_call(
+                    client.intelligence.get_forex_symbol_news,
+                    symbol=symbol,
+                    page=page,
+                    limit=limit,
+                    ttl=TTL_REALTIME,
+                    default=[],
+                )
+            else:
+                data = await _safe_call(
+                    client.intelligence.get_forex_news,
+                    page=page,
+                    limit=limit,
+                    ttl=TTL_REALTIME,
+                    default=[],
+                )
+        elif category == "general":
+            symbol = None
+            data = await _safe_call(
+                client.intelligence.get_general_news,
+                page=page,
+                limit=limit,
+                ttl=TTL_REALTIME,
+                default=[],
+            )
         else:
-            path = route["latest"]
-            params = {"page": page, "limit": limit}
-            if symbol and not route["has_symbol"]:
-                symbol = None  # general doesn't support symbol
+            return {"error": f"Invalid category '{category}'. Use: stock, press_releases, crypto, forex, general"}
 
-        data = await client.get_safe(
-            path,
-            params=params,
-            cache_ttl=client.TTL_REALTIME,
-            default=[],
-        )
-
-        articles_list = data if isinstance(data, list) else []
-
+        articles_list = _as_list(data)
         if not articles_list:
             msg = f"No {category} news found"
             if symbol:
@@ -104,14 +131,16 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
 
         articles = []
         for a in articles_list:
-            articles.append({
-                "title": a.get("title"),
-                "date": a.get("publishedDate"),
-                "symbol": a.get("symbol"),
-                "source": a.get("site") or a.get("publisher"),
-                "url": a.get("url"),
-                "snippet": (a.get("text") or "")[:300],
-            })
+            articles.append(
+                {
+                    "title": a.get("title"),
+                    "date": a.get("publishedDate"),
+                    "symbol": a.get("symbol"),
+                    "source": a.get("site") or a.get("publisher"),
+                    "url": a.get("url"),
+                    "snippet": (a.get("text") or "")[:300],
+                }
+            )
 
         return {
             "category": category,
@@ -134,55 +163,50 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         symbol: str | None = None,
         limit: int = 20,
     ) -> dict:
-        """Get merger and acquisition activity.
-
-        Dual mode: pass a symbol to search for M&A involving that company,
-        or omit to see latest M&A filings market-wide.
-
-        Args:
-            symbol: Optional stock ticker to search for (e.g. "AAPL")
-            limit: Max results to return (default 20)
-        """
+        """Get merger and acquisition activity."""
         limit = max(1, min(limit, 50))
 
         if symbol:
             symbol = symbol.upper().strip()
-            data = await client.get_safe(
-                "/stable/mergers-acquisitions-search",
-                params={"name": symbol, "limit": limit},
-                cache_ttl=client.TTL_HOURLY,
+            data = await _safe_call(
+                client.company.get_mergers_acquisitions_search,
+                name=symbol,
+                page=0,
+                limit=limit,
+                ttl=TTL_HOURLY,
                 default=[],
             )
         else:
-            data = await client.get_safe(
-                "/stable/mergers-acquisitions-latest",
-                params={"page": 0, "limit": limit},
-                cache_ttl=client.TTL_HOURLY,
+            data = await _safe_call(
+                client.company.get_mergers_acquisitions_latest,
+                page=0,
+                limit=limit,
+                ttl=TTL_HOURLY,
                 default=[],
             )
 
-        entries = data if isinstance(data, list) else []
-
+        entries = _as_list(data)
         if not entries:
             msg = "No M&A activity found"
             if symbol:
                 msg += f" for '{symbol}'"
             return {"error": msg}
 
-        # Sort by transaction date descending
         entries.sort(key=lambda x: x.get("transactionDate") or "", reverse=True)
 
         deals = []
         for e in entries[:limit]:
-            deals.append({
-                "symbol": e.get("symbol"),
-                "company": e.get("companyName"),
-                "targeted_company": e.get("targetedCompanyName"),
-                "targeted_symbol": e.get("targetedSymbol"),
-                "transaction_date": e.get("transactionDate"),
-                "accepted_date": e.get("acceptedDate"),
-                "filing_url": e.get("link"),
-            })
+            deals.append(
+                {
+                    "symbol": e.get("symbol"),
+                    "company": e.get("companyName"),
+                    "targeted_company": e.get("targetedCompanyName"),
+                    "targeted_symbol": e.get("targetedSymbol"),
+                    "transaction_date": e.get("transactionDate"),
+                    "accepted_date": e.get("acceptedDate"),
+                    "filing_url": e.get("link"),
+                }
+            )
 
         return {
             "symbol": symbol,

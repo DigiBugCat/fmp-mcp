@@ -7,9 +7,9 @@ import pytest
 import respx
 
 from fastmcp import FastMCP, Client
-
-from fmp_client import FMPClient
+from fmp_data import AsyncFMPDataClient
 from polygon_client import PolygonClient
+from tests.conftest import build_test_client
 from tools.options import register as register_options
 from tools.economy import register as register_economy
 from tools.market import register as register_market
@@ -47,17 +47,17 @@ def _make_economy_server() -> tuple[FastMCP, PolygonClient]:
     return mcp, pc
 
 
-def _make_market_server(*, with_polygon: bool = True) -> tuple[FastMCP, FMPClient, PolygonClient | None]:
+def _make_market_server(*, with_polygon: bool = True) -> tuple[FastMCP, AsyncFMPDataClient, PolygonClient | None]:
     mcp = FastMCP("Test")
-    fmp = FMPClient(api_key="test_key")
+    fmp = build_test_client("test_key")
     pc = PolygonClient(api_key="test_polygon_key") if with_polygon else None
     register_market(mcp, fmp, polygon_client=pc)
     return mcp, fmp, pc
 
 
-def _make_ownership_server(*, with_polygon: bool = True) -> tuple[FastMCP, FMPClient, PolygonClient | None]:
+def _make_ownership_server(*, with_polygon: bool = True) -> tuple[FastMCP, AsyncFMPDataClient, PolygonClient | None]:
     mcp = FastMCP("Test")
-    fmp = FMPClient(api_key="test_key")
+    fmp = build_test_client("test_key")
     pc = PolygonClient(api_key="test_polygon_key") if with_polygon else None
     register_ownership(mcp, fmp, polygon_client=pc)
     return mcp, fmp, pc
@@ -212,7 +212,7 @@ class TestMACDIndicator:
         assert "signal" in v
         assert "histogram" in v
         assert "date" in v
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -227,7 +227,7 @@ class TestMACDIndicator:
         data = result.data
         assert "error" in data
         assert "POLYGON_API_KEY" in data["error"]
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -247,7 +247,7 @@ class TestMACDIndicator:
         assert data["symbol"] == "AAPL"
         assert data["indicator"] == "rsi"
         assert "source" not in data  # FMP path doesn't set source
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -265,7 +265,7 @@ class TestMACDIndicator:
 
         data = result.data
         assert "error" in data
-        await fmp.close()
+        await fmp.aclose()
 
 
 # ---------------------------------------------------------------------------
@@ -303,7 +303,7 @@ class TestEarningsCalendarOI:
             assert "call_oi" in e["options"]
             assert "put_oi" in e["options"]
             assert "put_call_ratio" in e["options"]
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -327,7 +327,7 @@ class TestEarningsCalendarOI:
         assert data["earnings"][0]["options"]["total_oi"] == 41000
         assert data["earnings"][0]["options"]["call_oi"] == 29000
         assert data["earnings"][0]["options"]["put_oi"] == 12000
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -348,7 +348,7 @@ class TestEarningsCalendarOI:
         assert data["count"] == 4
         for e in data["earnings"]:
             assert "options" not in e
-        await fmp.close()
+        await fmp.aclose()
 
 
 # ---------------------------------------------------------------------------
@@ -541,7 +541,7 @@ class TestShortInterestPolygon:
         assert polygon["source"] == "polygon.io"
         assert polygon["short_interest"] == 118000000
         assert polygon["settlement_date"] == "2026-02-10"
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -564,7 +564,7 @@ class TestShortInterestPolygon:
         assert data["symbol"] == "AAPL"
         assert "short_interest" in data
         assert "polygon_short_interest" not in data
-        await fmp.close()
+        await fmp.aclose()
 
 
 # ---------------------------------------------------------------------------
@@ -607,4 +607,4 @@ class TestOwnershipStructurePolygon:
         assert data["symbol"] == "AAPL"
         assert "polygon_short_interest" in data
         assert data["polygon_short_interest"]["source"] == "polygon.io"
-        await fmp.close()
+        await fmp.aclose()

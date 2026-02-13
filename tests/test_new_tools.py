@@ -9,8 +9,9 @@ import respx
 import httpx
 
 from fastmcp import FastMCP, Client
-from fmp_client import FMPClient
+from fmp_data import AsyncFMPDataClient
 from tests.conftest import (
+    build_test_client,
     AAPL_EMPLOYEE_COUNT, DELISTED_COMPANIES, CIK_SEARCH_RESULTS,
     VANGUARD_HOLDINGS, VANGUARD_PERFORMANCE, VANGUARD_INDUSTRY_BREAKDOWN,
     AAPL_SHARES_FLOAT, AAPL_INSIDER_STATS,
@@ -36,10 +37,10 @@ from tools.macro import register as register_macro
 BASE = "https://financialmodelingprep.com"
 
 
-def _make_server(register_fn) -> tuple[FastMCP, FMPClient]:
+def _make_server(register_fn) -> tuple[FastMCP, AsyncFMPDataClient]:
     """Create a FastMCP server with registered tools."""
     mcp = FastMCP("Test")
-    client = FMPClient(api_key="test_key")
+    client = build_test_client("test_key")
     register_fn(mcp, client)
     return mcp, client
 
@@ -62,7 +63,7 @@ class TestEmployeeHistory:
         assert len(data["history"]) == 4
         # Check growth metrics are present
         assert "growth_metrics" in data
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -75,7 +76,7 @@ class TestEmployeeHistory:
             result = await c.call_tool("employee_history", {"symbol": "ZZZZ"})
         data = result.data
         assert "error" in data
-        await fmp.close()
+        await fmp.aclose()
 
 
 class TestDelistedCompanies:
@@ -91,7 +92,7 @@ class TestDelistedCompanies:
         data = result.data
         assert data["count"] == 2
         assert data["companies"][0]["symbol"] == "OLDCO"
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -104,7 +105,7 @@ class TestDelistedCompanies:
             result = await c.call_tool("delisted_companies", {})
         data = result.data
         assert "error" in data
-        await fmp.close()
+        await fmp.aclose()
 
 
 class TestSymbolLookup:
@@ -121,7 +122,7 @@ class TestSymbolLookup:
         assert data["count"] == 1
         assert data["results"][0]["symbol"] == "AAPL"
         assert data["results"][0]["cik"] == "0000320193"
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -137,7 +138,7 @@ class TestSymbolLookup:
             result = await c.call_tool("symbol_lookup", {"query": "NONEXISTENT", "type": "name"})
         data = result.data
         assert "error" in data
-        await fmp.close()
+        await fmp.aclose()
 
 
 # --- OWNERSHIP TOOLS ---
@@ -164,7 +165,7 @@ class TestFundHoldings:
         assert data["top_holdings"][0]["symbol"] == "AAPL"
         assert "performance" in data
         assert "industry_allocation" in data
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -183,7 +184,7 @@ class TestFundHoldings:
             result = await c.call_tool("fund_holdings", {"cik": "0000000000"})
         data = result.data
         assert "error" in data
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -229,7 +230,7 @@ class TestFundHoldings:
         data = result.data
         assert data["reporting_period"] == f"Q{prev_quarter} {prev_year}"
         assert len(data["top_holdings"]) > 0
-        await fmp.close()
+        await fmp.aclose()
 
 
 class TestOwnershipStructure:
@@ -261,7 +262,7 @@ class TestOwnershipStructure:
         assert "shares_breakdown" in data
         assert "ownership_percentages" in data
         assert data["shares_breakdown"]["outstanding_shares"] == 15200000000
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -287,7 +288,7 @@ class TestOwnershipStructure:
             result = await c.call_tool("ownership_structure", {"symbol": "ZZZZ"})
         data = result.data
         assert "error" in data
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -332,7 +333,7 @@ class TestOwnershipStructure:
         data = result.data
         assert data["reporting_period"] == f"Q{prev_quarter} {prev_year}"
         assert data["ownership_percentages"]["institutional_pct"] > 0
-        await fmp.close()
+        await fmp.aclose()
 
 
 # --- VALUATION TOOLS ---
@@ -356,7 +357,7 @@ class TestValuationHistory:
         assert "historical" in data
         assert "percentiles" in data
         assert "pe" in data["percentiles"]
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -372,7 +373,7 @@ class TestValuationHistory:
             result = await c.call_tool("valuation_history", {"symbol": "ZZZZ"})
         data = result.data
         assert "error" in data
-        await fmp.close()
+        await fmp.aclose()
 
 
 # --- FINANCIALS TOOLS ---
@@ -381,7 +382,7 @@ class TestRatioHistory:
     @pytest.mark.asyncio
     @respx.mock
     async def test_full_ratios(self):
-        respx.get(f"{BASE}/stable/financial-ratios").mock(
+        respx.get(f"{BASE}/stable/ratios").mock(
             return_value=httpx.Response(200, json=AAPL_FINANCIAL_RATIOS_HISTORICAL)
         )
         respx.get(f"{BASE}/stable/key-metrics").mock(
@@ -395,12 +396,12 @@ class TestRatioHistory:
         assert "time_series" in data
         assert "trends" in data
         assert len(data["time_series"]) == 5
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
     async def test_no_data(self):
-        respx.get(f"{BASE}/stable/financial-ratios").mock(
+        respx.get(f"{BASE}/stable/ratios").mock(
             return_value=httpx.Response(200, json=[])
         )
         respx.get(f"{BASE}/stable/key-metrics").mock(
@@ -411,7 +412,7 @@ class TestRatioHistory:
             result = await c.call_tool("ratio_history", {"symbol": "ZZZZ"})
         data = result.data
         assert "error" in data
-        await fmp.close()
+        await fmp.aclose()
 
 
 # --- MARKET TOOLS ---
@@ -423,7 +424,7 @@ class TestIntradayPrices:
         respx.get(f"{BASE}/stable/historical-chart/5min").mock(
             return_value=httpx.Response(200, json=AAPL_INTRADAY_5M)
         )
-        respx.get(f"{BASE}/stable/premarket-trade").mock(
+        respx.get(f"{BASE}/stable/pre-post-market").mock(
             return_value=httpx.Response(200, json=[])
         )
         respx.get(f"{BASE}/stable/aftermarket-trade").mock(
@@ -442,7 +443,7 @@ class TestIntradayPrices:
         assert "extended_hours" in data
         assert data["extended_hours"]["afterhours"]["price"] == 176.50
         assert "change_pct" in data["extended_hours"]["afterhours"]
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -451,7 +452,7 @@ class TestIntradayPrices:
         respx.get(f"{BASE}/stable/historical-chart/5min").mock(
             return_value=httpx.Response(200, json=AAPL_INTRADAY_5M)
         )
-        respx.get(f"{BASE}/stable/premarket-trade").mock(
+        respx.get(f"{BASE}/stable/pre-post-market").mock(
             return_value=httpx.Response(200, json=[])
         )
         respx.get(f"{BASE}/stable/aftermarket-trade").mock(
@@ -463,7 +464,7 @@ class TestIntradayPrices:
         data = result.data
         assert data["symbol"] == "AAPL"
         assert "extended_hours" not in data
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -471,7 +472,7 @@ class TestIntradayPrices:
         respx.get(f"{BASE}/stable/historical-chart/5min").mock(
             return_value=httpx.Response(200, json=[])
         )
-        respx.get(f"{BASE}/stable/premarket-trade").mock(
+        respx.get(f"{BASE}/stable/pre-post-market").mock(
             return_value=httpx.Response(200, json=[])
         )
         respx.get(f"{BASE}/stable/aftermarket-trade").mock(
@@ -482,7 +483,7 @@ class TestIntradayPrices:
             result = await c.call_tool("intraday_prices", {"symbol": "ZZZZ", "interval": "5m"})
         data = result.data
         assert "error" in data
-        await fmp.close()
+        await fmp.aclose()
 
 
 class TestHistoricalMarketCap:
@@ -500,7 +501,7 @@ class TestHistoricalMarketCap:
         assert len(data["history"]) == 5
         assert data["current_market_cap"] == 4022528102504
         assert "change_pct" in data
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -513,7 +514,7 @@ class TestHistoricalMarketCap:
             result = await c.call_tool("historical_market_cap", {"symbol": "ZZZZ"})
         data = result.data
         assert "error" in data
-        await fmp.close()
+        await fmp.aclose()
 
 
 class TestETFLookupProfile:
@@ -543,7 +544,7 @@ class TestETFLookupProfile:
         assert "top_holdings" in data
         assert "sector_weights" in data
         assert "country_allocation" in data
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -565,7 +566,7 @@ class TestETFLookupProfile:
             result = await c.call_tool("etf_lookup", {"symbol": "NOTANETF", "mode": "profile"})
         data = result.data
         assert "error" in data
-        await fmp.close()
+        await fmp.aclose()
 
 
 # --- MACRO TOOLS ---
@@ -590,7 +591,7 @@ class TestIndexPerformance:
         assert data["count"] == 4
         assert data["indices"][0]["symbol"] == "^GSPC"
         assert "performance" in data["indices"][0]
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -603,7 +604,7 @@ class TestIndexPerformance:
             result = await c.call_tool("index_performance", {})
         data = result.data
         assert "error" in data
-        await fmp.close()
+        await fmp.aclose()
 
 
 class TestMarketHours:
@@ -624,7 +625,7 @@ class TestMarketHours:
         assert "is_open" in data
         assert "regular_hours" in data
         assert "upcoming_holidays" in data
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -640,7 +641,7 @@ class TestMarketHours:
             result = await c.call_tool("market_hours", {"exchange": "NYSE"})
         data = result.data
         assert "_warnings" in data
-        await fmp.close()
+        await fmp.aclose()
 
 
 class TestIndustryPerformance:
@@ -667,7 +668,7 @@ class TestIndustryPerformance:
         assert len(data["industries"]) >= 2
         assert "change_pct" in data["industries"][0]
         assert "median_pe" in data["industries"][0]
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -683,14 +684,14 @@ class TestIndustryPerformance:
             result = await c.call_tool("industry_performance", {})
         data = result.data
         assert "error" in data
-        await fmp.close()
+        await fmp.aclose()
 
 
 class TestSplitsCalendar:
     @pytest.mark.asyncio
     @respx.mock
     async def test_upcoming_splits(self):
-        respx.get(f"{BASE}/stable/stock-splits-calendar").mock(
+        respx.get(f"{BASE}/stable/splits-calendar").mock(
             return_value=httpx.Response(200, json=SPLITS_CALENDAR)
         )
         mcp, fmp = _make_server(register_macro)
@@ -700,12 +701,12 @@ class TestSplitsCalendar:
         assert data["count"] == 2
         assert data["splits"][0]["symbol"] == "NVDA"
         assert data["splits"][0]["label"] == "10:1"
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
     async def test_no_splits(self):
-        respx.get(f"{BASE}/stable/stock-splits-calendar").mock(
+        respx.get(f"{BASE}/stable/splits-calendar").mock(
             return_value=httpx.Response(200, json=[])
         )
         mcp, fmp = _make_server(register_macro)
@@ -713,7 +714,7 @@ class TestSplitsCalendar:
             result = await c.call_tool("splits_calendar", {})
         data = result.data
         assert data["count"] == 0
-        await fmp.close()
+        await fmp.aclose()
 
 
 class TestEnhancedIPOCalendar:
@@ -738,7 +739,7 @@ class TestEnhancedIPOCalendar:
         ipo_with_docs = [ipo for ipo in data["ipos"] if ipo["symbol"] == "NEWCO"][0]
         assert "prospectus" in ipo_with_docs
         assert "disclosures" in ipo_with_docs
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -757,4 +758,4 @@ class TestEnhancedIPOCalendar:
             result = await c.call_tool("ipo_calendar", {})
         data = result.data
         assert data["count"] == 0
-        await fmp.close()
+        await fmp.aclose()

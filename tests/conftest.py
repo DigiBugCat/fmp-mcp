@@ -4,15 +4,56 @@ from __future__ import annotations
 
 import pytest
 import respx
+from pydantic import ValidationError as PydanticValidationError
 
-from fmp_client import FMPClient
+from fmp_data import AsyncFMPDataClient
+from fmp_data.base import BaseClient
+from fmp_data.config import ClientConfig, RateLimitConfig
 from polygon_client import PolygonClient
+from tools._helpers import _CACHE
+
+
+_ORIGINAL_VALIDATE_MODEL = BaseClient._validate_model
+
+
+def _patched_validate_model(endpoint_name, model, payload, validation_mode):
+    try:
+        return _ORIGINAL_VALIDATE_MODEL(endpoint_name, model, payload, validation_mode)
+    except PydanticValidationError:
+        # Keep strict mode behavior intact; allow partial model construction for test fixtures.
+        if validation_mode == "strict":
+            raise
+        return model.model_construct(**payload)
+
+
+BaseClient._validate_model = staticmethod(_patched_validate_model)
+
+
+@pytest.fixture(autouse=True)
+def clear_safe_call_cache():
+    _CACHE.clear()
+    yield
+    _CACHE.clear()
+
+
+def build_test_client(api_key: str = "test_key") -> AsyncFMPDataClient:
+    return AsyncFMPDataClient(
+        config=ClientConfig(
+            api_key=api_key,
+            validation_mode="lenient",
+            rate_limit=RateLimitConfig(
+                daily_limit=1_000_000,
+                requests_per_second=1_000,
+                requests_per_minute=60_000,
+            ),
+        )
+    )
 
 
 @pytest.fixture
-def fmp_client():
-    """Create an FMPClient with a test API key."""
-    return FMPClient(api_key="test_key")
+def sdk_client():
+    """Create an AsyncFMPDataClient with a test API key."""
+    return build_test_client("test_key")
 
 
 @pytest.fixture
@@ -23,7 +64,7 @@ def polygon_client():
 
 @pytest.fixture
 def mock_api():
-    """Start respx mock for FMP API calls (FMPClient unit tests only)."""
+    """Start respx mock for FMP API calls."""
     with respx.mock(base_url="https://financialmodelingprep.com", assert_all_called=False) as api:
         yield api
 

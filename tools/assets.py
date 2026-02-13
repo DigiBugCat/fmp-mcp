@@ -4,18 +4,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from tools._helpers import TTL_REALTIME, _as_dict, _as_list, _safe_call
+
 if TYPE_CHECKING:
     from fastmcp import FastMCP
-    from fmp_client import FMPClient
+    from fmp_data import AsyncFMPDataClient
 
 
-def _safe_first(data: list | None) -> dict:
-    if isinstance(data, list) and data:
-        return data[0]
-    return {}
-
-
-def register(mcp: FastMCP, client: FMPClient) -> None:
+def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
     @mcp.tool(
         annotations={
             "title": "Commodity Quotes",
@@ -29,20 +25,7 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         symbol: str | None = None,
         limit: int = 10,
     ) -> dict:
-        """Get commodity price quotes.
-
-        Pass a symbol for a single quote (e.g. "GCUSD" for gold),
-        or omit for a market overview of all commodities sorted by top movers.
-
-        Args:
-            symbol: Optional commodity symbol (e.g. "GCUSD", "CLUSD")
-            limit: Max results for batch mode (default 10)
-        """
-        return await _fetch_asset_quotes(
-            client, "commodity", symbol, limit,
-            single_path="/stable/quote",
-            batch_path="/stable/batch-commodity-quotes",
-        )
+        return await _fetch_asset_quotes(client, "commodity", symbol, limit)
 
     @mcp.tool(
         annotations={
@@ -57,20 +40,7 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         symbol: str | None = None,
         limit: int = 10,
     ) -> dict:
-        """Get cryptocurrency price quotes.
-
-        Pass a symbol for a single quote (e.g. "BTCUSD"),
-        or omit for a market overview of all cryptos sorted by top movers.
-
-        Args:
-            symbol: Optional crypto symbol (e.g. "BTCUSD", "ETHUSD")
-            limit: Max results for batch mode (default 10)
-        """
-        return await _fetch_asset_quotes(
-            client, "crypto", symbol, limit,
-            single_path="/stable/quote",
-            batch_path="/stable/batch-crypto-quotes",
-        )
+        return await _fetch_asset_quotes(client, "crypto", symbol, limit)
 
     @mcp.tool(
         annotations={
@@ -85,43 +55,26 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         symbol: str | None = None,
         limit: int = 10,
     ) -> dict:
-        """Get forex currency pair quotes.
-
-        Pass a symbol for a single quote (e.g. "EURUSD"),
-        or omit for a market overview of all pairs sorted by top movers.
-
-        Args:
-            symbol: Optional forex pair (e.g. "EURUSD", "GBPUSD")
-            limit: Max results for batch mode (default 10)
-        """
-        return await _fetch_asset_quotes(
-            client, "forex", symbol, limit,
-            single_path="/stable/quote",
-            batch_path="/stable/batch-forex-quotes",
-        )
+        return await _fetch_asset_quotes(client, "forex", symbol, limit)
 
 
 async def _fetch_asset_quotes(
-    client: "FMPClient",
+    client: AsyncFMPDataClient,
     asset_type: str,
     symbol: str | None,
     limit: int,
-    single_path: str,
-    batch_path: str,
 ) -> dict:
-    """Shared logic for commodity/crypto/forex quote tools."""
     limit = max(1, min(limit, 50))
 
     if symbol:
         symbol = symbol.upper().strip()
-        data = await client.get_safe(
-            single_path,
-            params={"symbol": symbol},
-            cache_ttl=client.TTL_REALTIME,
-            default=[],
+        data = await _safe_call(
+            client.company.get_quote,
+            symbol=symbol,
+            ttl=TTL_REALTIME,
+            default=None,
         )
-
-        quote = _safe_first(data)
+        quote = _as_dict(data)
         if not quote:
             return {"error": f"No {asset_type} quote found for '{symbol}'"}
 
@@ -140,24 +93,20 @@ async def _fetch_asset_quotes(
             "name": quote.get("name"),
         }
 
-    # Batch mode
-    data = await client.get_safe(
-        batch_path,
-        cache_ttl=client.TTL_REALTIME,
-        default=[],
-    )
+    if asset_type == "commodity":
+        data = await _safe_call(client.batch.get_commodity_quotes, ttl=TTL_REALTIME, default=[])
+    elif asset_type == "crypto":
+        data = await _safe_call(client.batch.get_crypto_quotes, ttl=TTL_REALTIME, default=[])
+    else:
+        data = await _safe_call(client.batch.get_forex_quotes, ttl=TTL_REALTIME, default=[])
 
-    batch_list = data if isinstance(data, list) else []
-
+    batch_list = _as_list(data)
     if not batch_list:
         return {"error": f"No {asset_type} batch quotes available"}
 
-    # Sort by absolute change descending (top movers)
     batch_list.sort(key=lambda x: abs(x.get("change") or 0), reverse=True)
-
     quotes = []
     for q in batch_list[:limit]:
-        # Compute change_pct from change and price when not provided
         change = q.get("change")
         price = q.get("price")
         change_pct = q.get("changePercentage") or q.get("changesPercentage")
@@ -165,13 +114,15 @@ async def _fetch_asset_quotes(
             prev = price - change
             if prev != 0:
                 change_pct = round(change / prev * 100, 2)
-        quotes.append({
-            "symbol": q.get("symbol"),
-            "price": price,
-            "change": change,
-            "change_pct": change_pct,
-            "volume": q.get("volume"),
-        })
+        quotes.append(
+            {
+                "symbol": q.get("symbol"),
+                "price": price,
+                "change": change,
+                "change_pct": change_pct,
+                "volume": q.get("volume"),
+            }
+        )
 
     return {
         "mode": "batch",

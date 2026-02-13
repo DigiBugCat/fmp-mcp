@@ -5,9 +5,11 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
+from tools._helpers import TTL_DAILY, TTL_HOURLY, _as_list, _date_only, _safe_call, _safe_first
+
 if TYPE_CHECKING:
     from fastmcp import FastMCP
-    from fmp_client import FMPClient
+    from fmp_data import AsyncFMPDataClient
 
 
 def _calc_cagr(start_val: float | None, end_val: float | None, years: int) -> float | None:
@@ -25,7 +27,7 @@ def _calc_cagr(start_val: float | None, end_val: float | None, years: int) -> fl
 def _simplify_period(income: dict, balance: dict, cashflow: dict) -> dict:
     """Extract key metrics from a single period across all three statements."""
     return {
-        "date": income.get("date") or balance.get("date") or cashflow.get("date"),
+        "date": _date_only(income.get("date") or balance.get("date") or cashflow.get("date")),
         "period": income.get("period") or balance.get("period"),
         # Income statement
         "revenue": income.get("revenue"),
@@ -77,7 +79,7 @@ def _trend_direction(values: list[float | None]) -> str | None:
     return "stable"
 
 
-def register(mcp: FastMCP, client: FMPClient) -> None:
+def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
     @mcp.tool(
         annotations={
             "title": "Ratio History",
@@ -105,32 +107,35 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             limit: Number of historical periods to fetch (default 10)
         """
         symbol = symbol.upper().strip()
-        params = {"symbol": symbol, "period": period, "limit": limit}
 
         # Fetch financial ratios and key metrics
         ratios_data, metrics_data = await asyncio.gather(
-            client.get_safe(
-                "/stable/financial-ratios",
-                params=params,
-                cache_ttl=client.TTL_HOURLY,
+            _safe_call(
+                client.fundamental.get_financial_ratios,
+                symbol=symbol,
+                period=period,
+                limit=limit,
+                ttl=TTL_HOURLY,
                 default=[],
             ),
-            client.get_safe(
-                "/stable/key-metrics",
-                params=params,
-                cache_ttl=client.TTL_HOURLY,
+            _safe_call(
+                client.fundamental.get_key_metrics,
+                symbol=symbol,
+                period=period,
+                limit=limit,
+                ttl=TTL_HOURLY,
                 default=[],
             ),
         )
 
-        ratios_list = ratios_data if isinstance(ratios_data, list) else []
-        metrics_list = metrics_data if isinstance(metrics_data, list) else []
+        ratios_list = _as_list(ratios_data)
+        metrics_list = _as_list(metrics_data)
 
         if not ratios_list and not metrics_list:
             return {"error": f"No ratio data found for '{symbol}'"}
 
         # Build indexed lookups by date
-        metrics_by_date = {m["date"]: m for m in metrics_list} if metrics_list else {}
+        metrics_by_date = {_date_only(m.get("date")): m for m in metrics_list} if metrics_list else {}
 
         # Build time series
         time_series = []
@@ -138,7 +143,7 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         if ratios_list:
             # Primary path: use financial-ratios with key-metrics supplementation
             for r in ratios_list:
-                date = r.get("date", "")
+                date = _date_only(r.get("date")) or ""
                 m = metrics_by_date.get(date, {})
 
                 entry = {
@@ -170,7 +175,7 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             # return empty financial-ratios but populated key-metrics)
             for m in metrics_list:
                 entry = {
-                    "date": m.get("date", ""),
+                    "date": _date_only(m.get("date")) or "",
                     "period": m.get("period"),
                     # Profitability
                     "roic": m.get("roic"),
@@ -271,25 +276,30 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             limit: Number of periods to return (default 5)
         """
         symbol = symbol.upper().strip()
-        params = {"symbol": symbol, "period": period, "limit": limit}
 
         income_data, balance_data, cashflow_data = await asyncio.gather(
-            client.get_safe(
-                "/stable/income-statement",
-                params=params,
-                cache_ttl=client.TTL_HOURLY,
+            _safe_call(
+                client.fundamental.get_income_statement,
+                symbol=symbol,
+                period=period,
+                limit=limit,
+                ttl=TTL_HOURLY,
                 default=[],
             ),
-            client.get_safe(
-                "/stable/balance-sheet-statement",
-                params=params,
-                cache_ttl=client.TTL_HOURLY,
+            _safe_call(
+                client.fundamental.get_balance_sheet,
+                symbol=symbol,
+                period=period,
+                limit=limit,
+                ttl=TTL_HOURLY,
                 default=[],
             ),
-            client.get_safe(
-                "/stable/cash-flow-statement",
-                params=params,
-                cache_ttl=client.TTL_HOURLY,
+            _safe_call(
+                client.fundamental.get_cash_flow,
+                symbol=symbol,
+                period=period,
+                limit=limit,
+                ttl=TTL_HOURLY,
                 default=[],
             ),
         )
@@ -298,20 +308,28 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             return {"error": f"No financial data found for '{symbol}'"}
 
         # Ensure lists
-        income_list = income_data if isinstance(income_data, list) else []
-        balance_list = balance_data if isinstance(balance_data, list) else []
-        cashflow_list = cashflow_data if isinstance(cashflow_data, list) else []
+        income_list = _as_list(income_data)
+        balance_list = _as_list(balance_data)
+        cashflow_list = _as_list(cashflow_data)
 
         # Build indexed lookups by date
-        balance_by_date = {b["date"]: b for b in balance_list}
-        cashflow_by_date = {c["date"]: c for c in cashflow_list}
+        balance_by_date = {}
+        for b in balance_list:
+            key = _date_only(b.get("date"))
+            if key:
+                balance_by_date[key] = b
+        cashflow_by_date = {}
+        for c in cashflow_list:
+            key = _date_only(c.get("date"))
+            if key:
+                cashflow_by_date[key] = c
 
         # Build simplified periods (income-statement-led since it's most complete)
         periods = []
         for inc in income_list:
-            date = inc.get("date", "")
-            bal = balance_by_date.get(date, {})
-            cf = cashflow_by_date.get(date, {})
+            period_date = _date_only(inc.get("date")) or ""
+            bal = balance_by_date.get(period_date, {})
+            cf = cashflow_by_date.get(period_date, {})
             periods.append(_simplify_period(inc, bal, cf))
 
         # Calculate 3-year CAGRs if we have enough data
@@ -374,26 +392,23 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         Args:
             symbol: Stock ticker symbol (e.g. "AAPL")
         """
-        symbol = symbol.upper().strip()
-        sym_params = {"symbol": symbol}
-
         product_data, geo_data = await asyncio.gather(
-            client.get_safe(
-                "/stable/revenue-product-segmentation",
-                params=sym_params,
-                cache_ttl=client.TTL_HOURLY,
+            _safe_call(
+                client.company.get_product_revenue_segmentation,
+                symbol=symbol.upper().strip(),
+                ttl=TTL_HOURLY,
                 default=[],
             ),
-            client.get_safe(
-                "/stable/revenue-geographic-segmentation",
-                params=sym_params,
-                cache_ttl=client.TTL_HOURLY,
+            _safe_call(
+                client.company.get_geographic_revenue_segmentation,
+                symbol=symbol.upper().strip(),
+                ttl=TTL_HOURLY,
                 default=[],
             ),
         )
 
-        product_list = product_data if isinstance(product_data, list) else []
-        geo_list = geo_data if isinstance(geo_data, list) else []
+        product_list = _as_list(product_data)
+        geo_list = _as_list(geo_data)
 
         if not product_list and not geo_list:
             return {"error": f"No revenue segmentation data found for '{symbol}'"}
@@ -408,7 +423,9 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             # Sort by date to get latest and prior periods
             periods = []
             for item in data_list:
-                # item is like {"2025-09-27": {"iPhone": 200000, "Mac": 50000}}
+                if isinstance(item.get("data"), dict):
+                    periods.append({"date": item.get("date"), "segments": item.get("data")})
+                    continue
                 for date_key, segments in item.items():
                     if isinstance(segments, dict):
                         periods.append({"date": date_key, "segments": segments})
@@ -497,33 +514,27 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             symbol: Stock ticker symbol (e.g. "AAPL")
         """
         symbol = symbol.upper().strip()
-        sym_params = {"symbol": symbol}
 
         scores_data, owner_data = await asyncio.gather(
-            client.get_safe(
-                "/stable/financial-scores",
-                params=sym_params,
-                cache_ttl=client.TTL_DAILY,
+            _safe_call(
+                client.company.get_financial_scores,
+                symbol=symbol,
+                ttl=TTL_DAILY,
                 default=[],
             ),
-            client.get_safe(
-                "/stable/owner-earnings",
-                params=sym_params,
-                cache_ttl=client.TTL_DAILY,
+            _safe_call(
+                client.fundamental.get_owner_earnings,
+                symbol=symbol,
+                ttl=TTL_DAILY,
                 default=[],
             ),
         )
 
-        scores_list = scores_data if isinstance(scores_data, list) else []
-        owner_list = owner_data if isinstance(owner_data, list) else []
+        scores_list = _as_list(scores_data)
+        owner_list = _as_list(owner_data)
 
         if not scores_list and not owner_list:
             return {"error": f"No financial health data found for '{symbol}'"}
-
-        def _safe_first(data: list | None) -> dict:
-            if isinstance(data, list) and data:
-                return data[0]
-            return {}
 
         scores = _safe_first(scores_list)
         owner = _safe_first(owner_list)
@@ -547,8 +558,11 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
 
         if owner:
             result["owner_earnings"] = {
-                "owner_earnings": owner.get("ownersEarnings"),
-                "owner_earnings_per_share": owner.get("ownersEarningsPerShare"),
+                "owner_earnings": owner.get("reportedOwnerEarnings")
+                or owner.get("ownerEarnings")
+                or owner.get("ownersEarnings"),
+                "owner_earnings_per_share": owner.get("ownerEarningsPerShare")
+                or owner.get("ownersEarningsPerShare"),
                 "average_ppe": owner.get("averagePPE"),
                 "maintenance_capex": owner.get("maintenanceCapex"),
                 "growth_capex": owner.get("growthCapex"),

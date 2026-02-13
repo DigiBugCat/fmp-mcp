@@ -6,8 +6,9 @@ import os
 from contextlib import asynccontextmanager
 
 from fastmcp import FastMCP
+from fmp_data import AsyncFMPDataClient
+from fmp_data.config import ClientConfig, RateLimitConfig
 
-from fmp_client import FMPClient
 from polygon_client import PolygonClient
 from tools import assets, economy, financials, macro, market, meta, news, options, overview, ownership, transcripts, valuation, workflows
 
@@ -16,7 +17,7 @@ from tools import assets, economy, financials, macro, market, meta, news, option
 async def lifespan(server):
     """Manage client lifecycles."""
     yield
-    await client.close()
+    await client.aclose()
     if polygon_client is not None:
         await polygon_client.close()
 
@@ -35,10 +36,33 @@ mcp = FastMCP(
 # Initialize shared FMP client
 api_key = os.environ.get("FMP_API_KEY", "")
 if not api_key:
-    import warnings
-    warnings.warn("FMP_API_KEY not set - API calls will fail", stacklevel=1)
+    raise RuntimeError("FMP_API_KEY is required")
 
-client = FMPClient(api_key=api_key)
+
+def _env_int(name: str, default: int) -> int:
+    value = os.environ.get(name)
+    if not value:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
+
+rate_limit_config = RateLimitConfig(
+    daily_limit=_env_int("FMP_DAILY_LIMIT", 1_000_000),
+    requests_per_second=_env_int("FMP_REQUESTS_PER_SECOND", 30),
+    requests_per_minute=_env_int("FMP_REQUESTS_PER_MINUTE", 6_000),
+)
+
+client = AsyncFMPDataClient(
+    config=ClientConfig(
+        api_key=api_key,
+        timeout=30,
+        max_retries=3,
+        rate_limit=rate_limit_config,
+    )
+)
 
 # Initialize optional Polygon client
 polygon_api_key = os.environ.get("POLYGON_API_KEY", "")

@@ -6,49 +6,60 @@ import asyncio
 from datetime import date, timedelta
 from typing import TYPE_CHECKING
 
+from tools._helpers import (
+    TTL_12H,
+    TTL_DAILY,
+    TTL_HOURLY,
+    TTL_REALTIME,
+    _as_dict,
+    _as_list,
+    _date_only,
+    _safe_call,
+    _safe_first,
+    _to_date,
+)
+
 if TYPE_CHECKING:
-    from fmp_client import FMPClient
+    from fmp_data import AsyncFMPDataClient
     from fastmcp import FastMCP
 
 MIN_MARKET_CAP = 1_000_000_000  # $1B floor for movers
 
 
-def _safe_first(data: list | None) -> dict:
-    if isinstance(data, list) and data:
-        return data[0]
-    return {}
-
-
-async def _fetch_sectors(client: "FMPClient") -> list[dict]:
+async def _fetch_sectors(client: "AsyncFMPDataClient") -> list[dict]:
     """Fetch sector performance from NYSE + NASDAQ and average by sector.
 
     /stable/sector-performance-snapshot requires `date` and returns
     per-exchange data with `averageChange` (not `changesPercentage`).
     """
-    today_str = date.today().isoformat()
+    today_dt = date.today()
     nyse_data, nasdaq_data = await asyncio.gather(
-        client.get_safe(
-            "/stable/sector-performance-snapshot",
-            params={"date": today_str, "exchange": "NYSE"},
-            cache_ttl=client.TTL_REALTIME,
+        _safe_call(
+            client.market.get_sector_performance,
+            date=today_dt,
+            exchange="NYSE",
+            ttl=TTL_REALTIME,
             default=[],
         ),
-        client.get_safe(
-            "/stable/sector-performance-snapshot",
-            params={"date": today_str, "exchange": "NASDAQ"},
-            cache_ttl=client.TTL_REALTIME,
+        _safe_call(
+            client.market.get_sector_performance,
+            date=today_dt,
+            exchange="NASDAQ",
+            ttl=TTL_REALTIME,
             default=[],
         ),
     )
 
-    nyse_list = nyse_data if isinstance(nyse_data, list) else []
-    nasdaq_list = nasdaq_data if isinstance(nasdaq_data, list) else []
+    nyse_list = _as_list(nyse_data)
+    nasdaq_list = _as_list(nasdaq_data)
 
     # Build lookup by sector and average
     sector_vals: dict[str, list[float]] = {}
     for entry in nyse_list + nasdaq_list:
         sector = entry.get("sector")
         change = entry.get("averageChange")
+        if change is None:
+            change = entry.get("changePercentage")
         if sector and change is not None:
             sector_vals.setdefault(sector, []).append(change)
 
@@ -61,21 +72,21 @@ async def _fetch_sectors(client: "FMPClient") -> list[dict]:
     return sectors
 
 
-async def _fetch_movers_with_mcap(client: "FMPClient") -> tuple[list, list, list]:
+async def _fetch_movers_with_mcap(client: "AsyncFMPDataClient") -> tuple[list, list, list]:
     """Fetch gainers/losers/actives and filter by market cap using batch-quote.
 
     Returns (gainers, losers, actives) lists with marketCap-enriched entries,
     filtered to MIN_MARKET_CAP.
     """
     gainers_data, losers_data, actives_data = await asyncio.gather(
-        client.get_safe("/stable/biggest-gainers", cache_ttl=client.TTL_REALTIME, default=[]),
-        client.get_safe("/stable/biggest-losers", cache_ttl=client.TTL_REALTIME, default=[]),
-        client.get_safe("/stable/most-actives", cache_ttl=client.TTL_REALTIME, default=[]),
+        _safe_call(client.market.get_gainers, ttl=TTL_REALTIME, default=[]),
+        _safe_call(client.market.get_losers, ttl=TTL_REALTIME, default=[]),
+        _safe_call(client.market.get_most_active, ttl=TTL_REALTIME, default=[]),
     )
 
-    gainers_raw = gainers_data if isinstance(gainers_data, list) else []
-    losers_raw = losers_data if isinstance(losers_data, list) else []
-    actives_raw = actives_data if isinstance(actives_data, list) else []
+    gainers_raw = _as_list(gainers_data)
+    losers_raw = _as_list(losers_data)
+    actives_raw = _as_list(actives_data)
 
     # Collect all unique symbols for batch quote
     all_symbols = set()
@@ -87,14 +98,13 @@ async def _fetch_movers_with_mcap(client: "FMPClient") -> tuple[list, list, list
     # Batch-quote to get market caps (max ~150 symbols per call is fine)
     mcap_map: dict[str, float] = {}
     if all_symbols:
-        symbols_str = ",".join(sorted(all_symbols))
-        batch_data = await client.get_safe(
-            "/stable/batch-quote",
-            params={"symbols": symbols_str},
-            cache_ttl=client.TTL_REALTIME,
+        batch_data = await _safe_call(
+            client.batch.get_quotes,
+            symbols=sorted(all_symbols),
+            ttl=TTL_REALTIME,
             default=[],
         )
-        batch_list = batch_data if isinstance(batch_data, list) else []
+        batch_list = _as_list(batch_data)
         for q in batch_list:
             sym = q.get("symbol")
             mc = q.get("marketCap")
@@ -126,7 +136,12 @@ async def _fetch_movers_with_mcap(client: "FMPClient") -> tuple[list, list, list
     )
 
 
-def register(mcp: FastMCP, client: FMPClient) -> None:
+def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
+    def _format_split_value(value) -> str:
+        if isinstance(value, float) and value.is_integer():
+            return str(int(value))
+        return str(value)
+
     @mcp.tool(
         annotations={
             "title": "Treasury Rates",
@@ -143,19 +158,19 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         inversion flag, and DCF-ready inputs (10Y rate + equity risk premium).
         """
         rates_data, erp_data = await asyncio.gather(
-            client.get_safe(
-                "/stable/treasury-rates",
-                cache_ttl=client.TTL_HOURLY,
+            _safe_call(
+                client.economics.get_treasury_rates,
+                ttl=TTL_HOURLY,
                 default=[],
             ),
-            client.get_safe(
-                "/stable/market-risk-premium",
-                cache_ttl=client.TTL_DAILY,
+            _safe_call(
+                client.economics.get_market_risk_premium,
+                ttl=TTL_DAILY,
                 default=[],
             ),
         )
 
-        rates_list = rates_data if isinstance(rates_data, list) else []
+        rates_list = _as_list(rates_data)
         latest = _safe_first(rates_list)
 
         if not latest:
@@ -184,7 +199,7 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             inverted = slope < 0
 
         # DCF inputs from US market risk premium
-        erp_list = erp_data if isinstance(erp_data, list) else []
+        erp_list = _as_list(erp_data)
         us_erp = None
         for entry in erp_list:
             if entry.get("country") == "United States":
@@ -236,17 +251,15 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         today = date.today()
         end_date = today + timedelta(days=days_ahead)
 
-        data = await client.get_safe(
-            "/stable/economic-calendar",
-            params={
-                "from": today.isoformat(),
-                "to": end_date.isoformat(),
-            },
-            cache_ttl=client.TTL_HOURLY,
+        data = await _safe_call(
+            client.economics.get_economic_calendar,
+            start_date=today,
+            end_date=end_date,
+            ttl=TTL_HOURLY,
             default=[],
         )
 
-        events_list = data if isinstance(data, list) else []
+        events_list = _as_list(data)
 
         if not events_list:
             return {"events": [], "count": 0, "period": f"{today.isoformat()} to {end_date.isoformat()}"}
@@ -367,38 +380,32 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
 
         # Fetch IPO calendar, prospectus, and disclosures in parallel
         calendar_data, prospectus_data, disclosure_data = await asyncio.gather(
-            client.get_safe(
-                "/stable/ipos-calendar",
-                params={
-                    "from": today.isoformat(),
-                    "to": end_date.isoformat(),
-                },
-                cache_ttl=client.TTL_HOURLY,
+            _safe_call(
+                client.intelligence.get_ipo_calendar,
+                start_date=today,
+                end_date=end_date,
+                ttl=TTL_HOURLY,
                 default=[],
             ),
-            client.get_safe(
-                "/stable/ipos-prospectus",
-                params={
-                    "from": today.isoformat(),
-                    "to": end_date.isoformat(),
-                },
-                cache_ttl=client.TTL_HOURLY,
+            _safe_call(
+                client.market.get_ipo_prospectus,
+                from_date=today,
+                to_date=end_date,
+                ttl=TTL_HOURLY,
                 default=[],
             ),
-            client.get_safe(
-                "/stable/ipos-disclosure",
-                params={
-                    "from": today.isoformat(),
-                    "to": end_date.isoformat(),
-                },
-                cache_ttl=client.TTL_HOURLY,
+            _safe_call(
+                client.market.get_ipo_disclosure,
+                from_date=today,
+                to_date=end_date,
+                ttl=TTL_HOURLY,
                 default=[],
             ),
         )
 
-        ipo_list = calendar_data if isinstance(calendar_data, list) else []
-        prospectus_list = prospectus_data if isinstance(prospectus_data, list) else []
-        disclosure_list = disclosure_data if isinstance(disclosure_data, list) else []
+        ipo_list = _as_list(calendar_data)
+        prospectus_list = _as_list(prospectus_data)
+        disclosure_list = _as_list(disclosure_data)
 
         if not ipo_list:
             return {
@@ -492,17 +499,15 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         today = date.today()
         end_date = today + timedelta(days=days_ahead)
 
-        data = await client.get_safe(
-            "/stable/dividends-calendar",
-            params={
-                "from": today.isoformat(),
-                "to": end_date.isoformat(),
-            },
-            cache_ttl=client.TTL_HOURLY,
+        data = await _safe_call(
+            client.intelligence.get_dividends_calendar,
+            start_date=today,
+            end_date=end_date,
+            ttl=TTL_HOURLY,
             default=[],
         )
 
-        div_list = data if isinstance(data, list) else []
+        div_list = _as_list(data)
 
         if not div_list:
             return {
@@ -533,10 +538,10 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             "period": f"{today.isoformat()} to {end_date.isoformat()}",
         }
 
-    INDEX_ROUTES = {
-        "sp500": "/stable/sp500-constituent",
-        "nasdaq": "/stable/nasdaq-constituent",
-        "dowjones": "/stable/dowjones-constituent",
+    INDEX_METHODS = {
+        "sp500": client.index.get_sp500_constituents,
+        "nasdaq": client.index.get_nasdaq_constituents,
+        "dowjones": client.index.get_dowjones_constituents,
     }
 
     @mcp.tool(
@@ -557,16 +562,16 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             index: Index name - "sp500", "nasdaq", or "dowjones"
         """
         index = index.lower().strip()
-        if index not in INDEX_ROUTES:
-            return {"error": f"Invalid index '{index}'. Use: {', '.join(INDEX_ROUTES.keys())}"}
+        if index not in INDEX_METHODS:
+            return {"error": f"Invalid index '{index}'. Use: {', '.join(INDEX_METHODS.keys())}"}
 
-        data = await client.get_safe(
-            INDEX_ROUTES[index],
-            cache_ttl=client.TTL_DAILY,
+        data = await _safe_call(
+            INDEX_METHODS[index],
+            ttl=TTL_DAILY,
             default=[],
         )
 
-        constituents_list = data if isinstance(data, list) else []
+        constituents_list = _as_list(data)
 
         if not constituents_list:
             return {"error": f"No constituent data found for '{index}'"}
@@ -626,15 +631,14 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         indices = [idx.upper().strip() for idx in indices]
 
         # Get current quotes
-        symbols_str = ",".join(indices)
-        quote_data = await client.get_safe(
-            "/stable/batch-quote",
-            params={"symbols": symbols_str},
-            cache_ttl=client.TTL_REALTIME,
+        quote_data = await _safe_call(
+            client.batch.get_quotes,
+            symbols=indices,
+            ttl=TTL_REALTIME,
             default=[],
         )
 
-        quotes = quote_data if isinstance(quote_data, list) else []
+        quotes = _as_list(quote_data)
 
         if not quotes:
             return {"error": f"No quote data found for indices: {', '.join(indices)}"}
@@ -647,15 +651,13 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         historical_tasks = []
         for idx in indices:
             historical_tasks.append(
-                client.get_safe(
-                    "/stable/historical-price-eod/full",
-                    params={
-                        "symbol": idx,
-                        "from": one_year_ago.isoformat(),
-                        "to": today.isoformat(),
-                    },
-                    cache_ttl=client.TTL_12H,
-                    default=[],
+                _safe_call(
+                    client.company.get_historical_prices,
+                    symbol=idx,
+                    from_date=one_year_ago,
+                    to_date=today,
+                    ttl=TTL_12H,
+                    default=None,
                 )
             )
 
@@ -668,8 +670,8 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         index_data = []
         for i, idx in enumerate(indices):
             quote = quote_map.get(idx, {})
-            historical = historical_results[i] if i < len(historical_results) else []
-            historical = historical if isinstance(historical, list) else []
+            historical_data = historical_results[i] if i < len(historical_results) else None
+            historical = _as_list(historical_data, list_key="historical")
 
             current_price = quote.get("price")
             day_change = quote.get("changesPercentage")
@@ -682,7 +684,9 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
                     if days is None:
                         # YTD calculation
                         ytd_start = date(today.year, 1, 1)
-                        ytd_history = [h for h in historical if h.get("date", "") >= ytd_start.isoformat()]
+                        ytd_history = [
+                            h for h in historical if (hist_date := _to_date(h.get("date"))) and hist_date >= ytd_start
+                        ]
                         if ytd_history:
                             ytd_start_price = ytd_history[-1].get("close")
                             if ytd_start_price and ytd_start_price > 0:
@@ -728,36 +732,35 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         exchange = exchange.upper().strip()
 
         # Use /stable/exchange-market-hours with exchange param
-        hours_data = await client.get_safe(
-            "/stable/exchange-market-hours",
-            params={"exchange": exchange},
-            cache_ttl=client.TTL_HOURLY,
-            default=[],
+        hours_data = await _safe_call(
+            client.market.get_market_hours,
+            exchange=exchange,
+            ttl=TTL_HOURLY,
+            default=None,
         )
 
-        hours_list = hours_data if isinstance(hours_data, list) else []
-        exchange_hours = _safe_first(hours_list)
+        exchange_hours = _as_dict(hours_data)
 
         # Get upcoming holidays
         today = date.today()
 
-        holidays_data = await client.get_safe(
-            "/stable/holidays-by-exchange",
-            params={"exchange": exchange},
-            cache_ttl=client.TTL_DAILY,
+        holidays_data = await _safe_call(
+            client.market.get_holidays_by_exchange,
+            exchange=exchange,
+            ttl=TTL_DAILY,
             default=[],
         )
 
-        holidays_list = holidays_data if isinstance(holidays_data, list) else []
+        holidays_list = _as_list(holidays_data)
 
         # Filter to future dates and sort ascending
         upcoming_holidays = []
-        today_str = today.isoformat()
+        today_date = today
         for h in holidays_list:
-            h_date = h.get("date") or ""
-            if h_date >= today_str:
+            h_date = _to_date(h.get("date"))
+            if h_date and h_date >= today_date:
                 upcoming_holidays.append({
-                    "date": h_date,
+                    "date": h_date.isoformat(),
                     "name": h.get("name"),
                     "is_closed": h.get("isClosed"),
                 })
@@ -809,40 +812,53 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         Args:
             sector: Optional sector to filter by (e.g. "Technology")
         """
-        today_str = date.today().isoformat()
+        today_dt = date.today()
+        query_date = today_dt
+        nyse_perf_list: list[dict] = []
+        nasdaq_perf_list: list[dict] = []
+        nyse_pe_list: list[dict] = []
+        nasdaq_pe_list: list[dict] = []
 
-        # Fetch industry performance from NYSE + NASDAQ
-        nyse_perf, nasdaq_perf, nyse_pe, nasdaq_pe = await asyncio.gather(
-            client.get_safe(
-                "/stable/industry-performance-snapshot",
-                params={"date": today_str, "exchange": "NYSE"},
-                cache_ttl=client.TTL_REALTIME,
-                default=[],
-            ),
-            client.get_safe(
-                "/stable/industry-performance-snapshot",
-                params={"date": today_str, "exchange": "NASDAQ"},
-                cache_ttl=client.TTL_REALTIME,
-                default=[],
-            ),
-            client.get_safe(
-                "/stable/industry-pe-snapshot",
-                params={"date": today_str, "exchange": "NYSE"},
-                cache_ttl=client.TTL_DAILY,
-                default=[],
-            ),
-            client.get_safe(
-                "/stable/industry-pe-snapshot",
-                params={"date": today_str, "exchange": "NASDAQ"},
-                cache_ttl=client.TTL_DAILY,
-                default=[],
-            ),
-        )
+        # FMP snapshots can be empty on weekends/holidays. Retry a few prior dates.
+        for offset in range(0, 4):
+            query_date = today_dt - timedelta(days=offset)
+            nyse_perf, nasdaq_perf, nyse_pe, nasdaq_pe = await asyncio.gather(
+                _safe_call(
+                    client.market.get_industry_performance_snapshot,
+                    date=query_date,
+                    exchange="NYSE",
+                    ttl=TTL_REALTIME,
+                    default=[],
+                ),
+                _safe_call(
+                    client.market.get_industry_performance_snapshot,
+                    date=query_date,
+                    exchange="NASDAQ",
+                    ttl=TTL_REALTIME,
+                    default=[],
+                ),
+                _safe_call(
+                    client.market.get_industry_pe_snapshot,
+                    date=query_date,
+                    exchange="NYSE",
+                    ttl=TTL_DAILY,
+                    default=[],
+                ),
+                _safe_call(
+                    client.market.get_industry_pe_snapshot,
+                    date=query_date,
+                    exchange="NASDAQ",
+                    ttl=TTL_DAILY,
+                    default=[],
+                ),
+            )
 
-        nyse_perf_list = nyse_perf if isinstance(nyse_perf, list) else []
-        nasdaq_perf_list = nasdaq_perf if isinstance(nasdaq_perf, list) else []
-        nyse_pe_list = nyse_pe if isinstance(nyse_pe, list) else []
-        nasdaq_pe_list = nasdaq_pe if isinstance(nasdaq_pe, list) else []
+            nyse_perf_list = _as_list(nyse_perf)
+            nasdaq_perf_list = _as_list(nasdaq_perf)
+            nyse_pe_list = _as_list(nyse_pe)
+            nasdaq_pe_list = _as_list(nasdaq_pe)
+            if nyse_perf_list or nasdaq_perf_list:
+                break
 
         # Build performance map (average across exchanges)
         perf_map: dict[str, list[float]] = {}
@@ -851,6 +867,8 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         for entry in nyse_perf_list + nasdaq_perf_list:
             industry = entry.get("industry")
             change = entry.get("averageChange")
+            if change is None:
+                change = entry.get("changePercentage")
             industry_sector = entry.get("sector")
             if industry and change is not None:
                 perf_map.setdefault(industry, []).append(change)
@@ -896,7 +914,7 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         industries.sort(key=lambda x: x.get("change_pct") or 0, reverse=True)
 
         result = {
-            "date": today_str,
+            "date": query_date.isoformat(),
             "industries": industries,
             "count": len(industries),
         }
@@ -927,17 +945,15 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         today = date.today()
         end_date = today + timedelta(days=days_ahead)
 
-        data = await client.get_safe(
-            "/stable/stock-splits-calendar",
-            params={
-                "from": today.isoformat(),
-                "to": end_date.isoformat(),
-            },
-            cache_ttl=client.TTL_HOURLY,
+        data = await _safe_call(
+            client.intelligence.get_stock_splits_calendar,
+            start_date=today,
+            end_date=end_date,
+            ttl=TTL_HOURLY,
             default=[],
         )
 
-        splits_list = data if isinstance(data, list) else []
+        splits_list = _as_list(data)
 
         if not splits_list:
             return {
@@ -947,17 +963,17 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             }
 
         # Sort by date ascending
-        splits_list.sort(key=lambda s: s.get("date") or "")
+        splits_list.sort(key=lambda s: _date_only(s.get("date")) or "")
 
         splits = []
         for s in splits_list:
             num = s.get("numerator")
             den = s.get("denominator")
-            label = f"{num}:{den}" if num and den else None
+            label = f"{_format_split_value(num)}:{_format_split_value(den)}" if num is not None and den is not None else None
 
             splits.append({
                 "symbol": s.get("symbol"),
-                "date": s.get("date"),
+                "date": _date_only(s.get("date")),
                 "numerator": num,
                 "denominator": den,
                 "label": label,
@@ -984,39 +1000,50 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         Returns average P/E by sector and industry, showing relative valuation
         across the market. Fetches NYSE + NASDAQ data and averages.
         """
-        today_str = date.today().isoformat()
+        today_dt = date.today()
+        query_date = today_dt
+        sector_nyse = sector_nasdaq = industry_nyse = industry_nasdaq = []
 
-        sector_nyse, sector_nasdaq, industry_nyse, industry_nasdaq = await asyncio.gather(
-            client.get_safe(
-                "/stable/sector-pe-snapshot",
-                params={"date": today_str, "exchange": "NYSE"},
-                cache_ttl=client.TTL_DAILY,
-                default=[],
-            ),
-            client.get_safe(
-                "/stable/sector-pe-snapshot",
-                params={"date": today_str, "exchange": "NASDAQ"},
-                cache_ttl=client.TTL_DAILY,
-                default=[],
-            ),
-            client.get_safe(
-                "/stable/industry-pe-snapshot",
-                params={"date": today_str, "exchange": "NYSE"},
-                cache_ttl=client.TTL_DAILY,
-                default=[],
-            ),
-            client.get_safe(
-                "/stable/industry-pe-snapshot",
-                params={"date": today_str, "exchange": "NASDAQ"},
-                cache_ttl=client.TTL_DAILY,
-                default=[],
-            ),
-        )
+        # Snapshot endpoints can be empty on non-trading days. Retry a few prior dates.
+        for offset in range(0, 4):
+            query_date = today_dt - timedelta(days=offset)
+            sector_nyse, sector_nasdaq, industry_nyse, industry_nasdaq = await asyncio.gather(
+                _safe_call(
+                    client.market.get_sector_pe_snapshot,
+                    date=query_date,
+                    exchange="NYSE",
+                    ttl=TTL_DAILY,
+                    default=[],
+                ),
+                _safe_call(
+                    client.market.get_sector_pe_snapshot,
+                    date=query_date,
+                    exchange="NASDAQ",
+                    ttl=TTL_DAILY,
+                    default=[],
+                ),
+                _safe_call(
+                    client.market.get_industry_pe_snapshot,
+                    date=query_date,
+                    exchange="NYSE",
+                    ttl=TTL_DAILY,
+                    default=[],
+                ),
+                _safe_call(
+                    client.market.get_industry_pe_snapshot,
+                    date=query_date,
+                    exchange="NASDAQ",
+                    ttl=TTL_DAILY,
+                    default=[],
+                ),
+            )
+            if _as_list(sector_nyse) or _as_list(sector_nasdaq) or _as_list(industry_nyse) or _as_list(industry_nasdaq):
+                break
 
         def _avg_pe(nyse_data, nasdaq_data, key_field: str) -> list[dict]:
             """Average PE by name across NYSE and NASDAQ."""
-            nyse_list = nyse_data if isinstance(nyse_data, list) else []
-            nasdaq_list = nasdaq_data if isinstance(nasdaq_data, list) else []
+            nyse_list = _as_list(nyse_data)
+            nasdaq_list = _as_list(nasdaq_data)
             pe_vals: dict[str, list[float]] = {}
             for entry in nyse_list + nasdaq_list:
                 name = entry.get(key_field)
@@ -1036,7 +1063,7 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         if not sectors and not industries:
             return {"error": "No sector/industry valuation data available"}
 
-        result: dict = {"date": today_str}
+        result: dict = {"date": query_date.isoformat()}
 
         if sectors:
             result["sectors"] = sectors

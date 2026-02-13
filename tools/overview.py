@@ -3,21 +3,27 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import date, timedelta
 from typing import TYPE_CHECKING
+
+from fmp_data.company.endpoints import DELISTED_COMPANIES
+from tools._helpers import (
+    TTL_DAILY,
+    TTL_HOURLY,
+    TTL_REALTIME,
+    _as_dict,
+    _as_list,
+    _date_only,
+    _safe_call,
+    _safe_endpoint_call,
+)
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
-    from fmp_client import FMPClient
+    from fmp_data import AsyncFMPDataClient
 
 
-def _safe_first(data: list | None) -> dict:
-    """Return first element of list or empty dict."""
-    if isinstance(data, list) and data:
-        return data[0]
-    return {}
-
-
-def register(mcp: FastMCP, client: FMPClient) -> None:
+def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
     @mcp.tool(
         annotations={
             "title": "Company Overview",
@@ -28,42 +34,16 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         }
     )
     async def company_overview(symbol: str) -> dict:
-        """Get a comprehensive company snapshot including profile, valuation ratios, and current quote.
-
-        Use this FIRST for any stock analysis query. Returns name, sector,
-        market cap, P/E, P/B, dividend yield, ROE, debt/equity, and more.
-
-        Args:
-            symbol: Stock ticker symbol (e.g. "AAPL", "MSFT")
-        """
         symbol = symbol.upper().strip()
-        sym_params = {"symbol": symbol}
-
         profile_data, quote_data, ratios_data = await asyncio.gather(
-            client.get_safe(
-                "/stable/profile",
-                params=sym_params,
-                cache_ttl=client.TTL_DAILY,
-                default=[],
-            ),
-            client.get_safe(
-                "/stable/quote",
-                params=sym_params,
-                cache_ttl=client.TTL_REALTIME,
-                default=[],
-            ),
-            client.get_safe(
-                "/stable/ratios-ttm",
-                params=sym_params,
-                cache_ttl=client.TTL_HOURLY,
-                default=[],
-            ),
+            _safe_call(client.company.get_profile, symbol=symbol, ttl=TTL_DAILY, default=None),
+            _safe_call(client.company.get_quote, symbol=symbol, ttl=TTL_REALTIME, default=None),
+            _safe_call(client.company.get_financial_ratios_ttm, symbol=symbol, ttl=TTL_HOURLY, default=[]),
         )
 
-        profile = _safe_first(profile_data)
-        quote = _safe_first(quote_data)
-        ratios = _safe_first(ratios_data)
-
+        profile = _as_dict(profile_data)
+        quote = _as_dict(quote_data)
+        ratios = _as_dict(ratios_data)
         if not profile and not quote:
             return {"error": f"No data found for symbol '{symbol}'"}
 
@@ -78,22 +58,14 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             "exchange": profile.get("exchange"),
             "country": profile.get("country"),
             "website": profile.get("website"),
-            # Current quote
             "price": quote.get("price"),
             "market_cap": quote.get("marketCap"),
             "volume": quote.get("volume"),
             "change_pct": quote.get("changePercentage"),
-            "day_range": {
-                "low": quote.get("dayLow"),
-                "high": quote.get("dayHigh"),
-            },
-            "year_range": {
-                "low": quote.get("yearLow"),
-                "high": quote.get("yearHigh"),
-            },
+            "day_range": {"low": quote.get("dayLow"), "high": quote.get("dayHigh")},
+            "year_range": {"low": quote.get("yearLow"), "high": quote.get("yearHigh")},
             "sma_50": quote.get("priceAvg50"),
             "sma_200": quote.get("priceAvg200"),
-            # Valuation ratios (TTM)
             "ratios": {
                 "pe_ttm": ratios.get("priceToEarningsRatioTTM"),
                 "pb_ttm": ratios.get("priceToBookRatioTTM"),
@@ -112,7 +84,6 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             },
         }
 
-        # Flag partial data
         errors = []
         if not profile:
             errors.append("profile data unavailable")
@@ -122,7 +93,6 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             errors.append("ratio data unavailable")
         if errors:
             result["_warnings"] = errors
-
         return result
 
     @mcp.tool(
@@ -152,100 +122,79 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         is_actively_trading: bool | None = None,
         limit: int = 20,
     ) -> dict:
-        """Find stocks by name/ticker or screen by criteria.
-
-        For simple name/ticker lookup, just pass query. For filtered screening,
-        use the optional parameters.
-
-        Args:
-            query: Company name or ticker to search for
-            exchange: Filter by exchange (e.g. "NYSE", "NASDAQ")
-            sector: Filter by sector (e.g. "Technology", "Healthcare")
-            market_cap_min: Minimum market cap in dollars
-            market_cap_max: Maximum market cap in dollars
-            price_min: Minimum stock price
-            price_max: Maximum stock price
-            beta_min: Minimum beta (volatility vs market)
-            beta_max: Maximum beta
-            volume_min: Minimum daily volume
-            dividend_yield_min: Minimum dividend yield (as percentage, e.g. 2.5)
-            dividend_yield_max: Maximum dividend yield
-            country: Filter by country code (e.g. "US", "CN")
-            is_etf: Filter to ETFs only (true) or exclude ETFs (false)
-            is_actively_trading: Filter to actively trading stocks only
-            limit: Max results to return (default 20)
-        """
-        use_screener = any([
-            exchange, sector, market_cap_min, market_cap_max,
-            price_min, price_max, beta_min, beta_max, volume_min,
-            dividend_yield_min, dividend_yield_max, country,
-            is_etf is not None, is_actively_trading is not None,
-        ])
+        use_screener = any(
+            [
+                exchange,
+                sector,
+                market_cap_min,
+                market_cap_max,
+                price_min,
+                price_max,
+                beta_min,
+                beta_max,
+                volume_min,
+                dividend_yield_min,
+                dividend_yield_max,
+                country,
+                is_etf is not None,
+                is_actively_trading is not None,
+            ]
+        )
 
         if use_screener:
-            params: dict = {"limit": limit}
-            if exchange:
-                params["exchangeShortName"] = exchange
-            if sector:
-                params["sector"] = sector
-            if market_cap_min:
-                params["marketCapMoreThan"] = market_cap_min
-            if market_cap_max:
-                params["marketCapLowerThan"] = market_cap_max
-            if price_min:
-                params["priceMoreThan"] = price_min
-            if price_max:
-                params["priceLowerThan"] = price_max
-            if beta_min:
-                params["betaMoreThan"] = beta_min
-            if beta_max:
-                params["betaLowerThan"] = beta_max
-            if volume_min:
-                params["volumeMoreThan"] = volume_min
-            if dividend_yield_min:
-                params["dividendMoreThan"] = dividend_yield_min
-            if dividend_yield_max:
-                params["dividendLowerThan"] = dividend_yield_max
-            if country:
-                params["country"] = country
-            if is_etf is not None:
-                params["isEtf"] = str(is_etf).lower()
-            if is_actively_trading is not None:
-                params["isActivelyTrading"] = str(is_actively_trading).lower()
-
-            data = await client.get(
-                "/stable/company-screener",
-                params=params,
-                cache_ttl=client.TTL_HOURLY,
+            data = await _safe_call(
+                client.market.get_company_screener,
+                market_cap_more_than=market_cap_min,
+                market_cap_less_than=market_cap_max,
+                price_more_than=price_min,
+                price_less_than=price_max,
+                beta_more_than=beta_min,
+                beta_less_than=beta_max,
+                volume_more_than=volume_min,
+                dividend_more_than=dividend_yield_min,
+                dividend_less_than=dividend_yield_max,
+                is_etf=is_etf,
+                is_actively_trading=is_actively_trading,
+                sector=sector,
+                country=country,
+                exchange=exchange,
+                limit=limit,
+                ttl=TTL_HOURLY,
+                default=[],
             )
         else:
-            data = await client.get(
-                "/stable/search-name",
-                params={"query": query, "limit": limit},
-                cache_ttl=client.TTL_HOURLY,
+            data = await _safe_call(
+                client.market.search_company,
+                query=query,
+                limit=limit,
+                exchange=exchange,
+                ttl=TTL_HOURLY,
+                default=[],
             )
 
-        if not isinstance(data, list):
+        rows = _as_list(data)
+        if not rows:
             return {"results": [], "count": 0}
 
         results = []
-        for item in data[:limit]:
-            results.append({
-                "symbol": item.get("symbol"),
-                "name": item.get("companyName") or item.get("name"),
-                "exchange": item.get("exchangeShortName") or item.get("exchange"),
-                "sector": item.get("sector"),
-                "industry": item.get("industry"),
-                "market_cap": item.get("marketCap"),
-                "price": item.get("price"),
-                "beta": item.get("beta"),
-                "volume": item.get("volume"),
-                "dividend_yield": item.get("lastAnnualDividend"),
-                "country": item.get("country"),
-                "is_etf": item.get("isEtf"),
-                "is_actively_trading": item.get("isActivelyTrading"),
-            })
-
+        for item in rows[:limit]:
+            results.append(
+                {
+                    "symbol": item.get("symbol"),
+                    "name": item.get("companyName") or item.get("name"),
+                    "exchange": item.get("exchangeShortName") or item.get("exchange"),
+                    "sector": item.get("sector"),
+                    "industry": item.get("industry"),
+                    "market_cap": item.get("marketCap"),
+                    "price": item.get("price"),
+                    "beta": item.get("beta"),
+                    "volume": item.get("volume"),
+                    "dividend_yield": item.get("lastAnnualDividend"),
+                    "country": item.get("country"),
+                    "is_etf": item.get("isEtf"),
+                    "is_actively_trading": item.get("isActivelyTrading"),
+                }
+            )
         return {"results": results, "count": len(results)}
 
     @mcp.tool(
@@ -258,59 +207,34 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         }
     )
     async def company_executives(symbol: str) -> dict:
-        """Get key executives with titles, compensation breakdown, and benchmarking.
-
-        Returns CEO, CFO, and other C-suite executives with detailed compensation
-        data and industry benchmarks.
-
-        Args:
-            symbol: Stock ticker symbol (e.g. "AAPL")
-        """
         symbol = symbol.upper().strip()
-
         exec_data, comp_data, benchmark_data = await asyncio.gather(
-            client.get_safe(
-                "/stable/key-executives",
-                params={"symbol": symbol},
-                cache_ttl=client.TTL_DAILY,
-                default=[],
-            ),
-            client.get_safe(
-                "/stable/executive-compensation",
-                params={"symbol": symbol},
-                cache_ttl=client.TTL_DAILY,
-                default=[],
-            ),
-            client.get_safe(
-                "/stable/executive-compensation-benchmark",
-                params={"symbol": symbol},
-                cache_ttl=client.TTL_DAILY,
+            _safe_call(client.company.get_executives, symbol=symbol, ttl=TTL_DAILY, default=[]),
+            _safe_call(client.company.get_executive_compensation, symbol=symbol, ttl=TTL_DAILY, default=[]),
+            _safe_call(
+                client.company.get_executive_compensation_benchmark,
+                year=date.today().year,
+                ttl=TTL_DAILY,
                 default=[],
             ),
         )
-
-        exec_list = exec_data if isinstance(exec_data, list) else []
-        comp_list = comp_data if isinstance(comp_data, list) else []
-        benchmark_list = benchmark_data if isinstance(benchmark_data, list) else []
-
+        exec_list = _as_list(exec_data)
+        comp_list = _as_list(comp_data)
+        benchmark_list = _as_list(benchmark_data)
         if not exec_list:
             return {"error": f"No executive data found for '{symbol}'"}
 
-        # Build compensation lookup by name
         comp_by_name: dict[str, dict] = {}
         for comp in comp_list:
             name = comp.get("nameOfExecutive")
             if name:
                 comp_by_name[name] = comp
 
-        # Sort by total compensation descending (None/0 goes last)
         exec_list.sort(key=lambda e: e.get("pay") or 0, reverse=True)
-
         executives = []
         for e in exec_list:
             name = e.get("name")
             comp = comp_by_name.get(name, {})
-
             exec_entry = {
                 "name": name,
                 "title": e.get("title"),
@@ -320,8 +244,6 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
                 "title_since": e.get("titleSince"),
                 "gender": e.get("gender"),
             }
-
-            # Add detailed compensation breakdown if available
             if comp:
                 exec_entry["compensation_breakdown"] = {
                     "filing_date": comp.get("filingDate"),
@@ -334,35 +256,29 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
                     "all_other_compensation": comp.get("allOtherCompensation"),
                     "total": comp.get("total"),
                 }
-
             executives.append(exec_entry)
 
-        # Process benchmarks
         benchmarks = []
         for bench in benchmark_list:
-            benchmarks.append({
-                "industry": bench.get("industry"),
-                "year": bench.get("year"),
-                "salary_average": bench.get("averageSalary"),
-                "bonus_average": bench.get("averageBonus"),
-                "stock_award_average": bench.get("averageStockAward"),
-                "incentive_plan_average": bench.get("averageIncentivePlanCompensation"),
-                "total_average": bench.get("averageTotal"),
-                "percentile_25": bench.get("percentile25"),
-                "percentile_50": bench.get("percentile50"),
-                "percentile_75": bench.get("percentile75"),
-            })
+            benchmarks.append(
+                {
+                    "industry": bench.get("industry") or bench.get("industryTitle"),
+                    "year": bench.get("year"),
+                    "salary_average": bench.get("averageSalary") or bench.get("averageCompensation"),
+                    "bonus_average": bench.get("averageBonus") or bench.get("averageCashCompensation"),
+                    "stock_award_average": bench.get("averageStockAward") or bench.get("averageEquityCompensation"),
+                    "incentive_plan_average": bench.get("averageIncentivePlanCompensation")
+                    or bench.get("averageOtherCompensation"),
+                    "total_average": bench.get("averageTotal") or bench.get("averageTotalCompensation"),
+                    "percentile_25": bench.get("percentile25"),
+                    "percentile_50": bench.get("percentile50"),
+                    "percentile_75": bench.get("percentile75"),
+                }
+            )
 
-        result = {
-            "symbol": symbol,
-            "count": len(executives),
-            "executives": executives,
-        }
-
+        result = {"symbol": symbol, "count": len(executives), "executives": executives}
         if benchmarks:
             result["industry_benchmarks"] = benchmarks
-
-        # Flag partial data
         warnings = []
         if not comp_list:
             warnings.append("detailed compensation data unavailable")
@@ -370,7 +286,6 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             warnings.append("industry benchmark data unavailable")
         if warnings:
             result["_warnings"] = warnings
-
         return result
 
     @mcp.tool(
@@ -383,36 +298,14 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         }
     )
     async def employee_history(symbol: str) -> dict:
-        """Get employee count history with growth analysis.
-
-        Returns current employee count, historical series, YoY changes,
-        and 5Y/10Y CAGR.
-
-        Args:
-            symbol: Stock ticker symbol (e.g. "AAPL")
-        """
         symbol = symbol.upper().strip()
-
-        data = await client.get_safe(
-            "/stable/employee-count",
-            params={"symbol": symbol},
-            cache_ttl=client.TTL_DAILY,
-            default=[],
-        )
-
-        history_list = data if isinstance(data, list) else []
-
+        data = await _safe_call(client.company.get_employee_count, symbol=symbol, ttl=TTL_DAILY, default=[])
+        history_list = _as_list(data)
         if not history_list:
             return {"error": f"No employee data found for '{symbol}'"}
 
-        # Sort by period date descending (newest first)
         history_list.sort(key=lambda h: h.get("periodDate") or "", reverse=True)
-
-        current_count = None
-        if history_list:
-            current_count = history_list[0].get("employeeCount")
-
-        # Build historical series with YoY changes
+        current_count = history_list[0].get("employeeCount") if history_list else None
         history = []
         for i, h in enumerate(history_list):
             count = h.get("employeeCount")
@@ -423,22 +316,15 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
                 "source": h.get("source"),
                 "form_type": h.get("formType"),
             }
-
-            # Calculate YoY change if we have data from a year ago
             if i > 0 and count is not None:
-                # Look for entry roughly 1 year back
                 for prev in history_list[i:]:
                     prev_count = prev.get("employeeCount")
                     if prev_count and prev_count != count:
-                        yoy_change = count - prev_count
-                        yoy_pct = round((count / prev_count - 1) * 100, 2) if prev_count else None
-                        entry["yoy_change"] = yoy_change
-                        entry["yoy_change_pct"] = yoy_pct
+                        entry["yoy_change"] = count - prev_count
+                        entry["yoy_change_pct"] = round((count / prev_count - 1) * 100, 2) if prev_count else None
                         break
-
             history.append(entry)
 
-        # Calculate CAGR if we have enough history
         def calc_cagr(years: int) -> float | None:
             if len(history_list) < 2:
                 return None
@@ -450,20 +336,12 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
             if not current_count or not start_count or start_count == 0:
                 return None
             actual_years = len(history_list) - 1
-            if actual_years < years:
-                years = actual_years
+            years = min(years, actual_years)
             if years <= 0:
                 return None
             return round((pow(current_count / start_count, 1 / years) - 1) * 100, 2)
 
-        result = {
-            "symbol": symbol,
-            "current_employee_count": current_count,
-            "count": len(history),
-            "history": history,
-        }
-
-        # Add CAGR metrics if we have enough data
+        result = {"symbol": symbol, "current_employee_count": current_count, "count": len(history), "history": history}
         cagr_5y = calc_cagr(5)
         cagr_10y = calc_cagr(10)
         if cagr_5y is not None or cagr_10y is not None:
@@ -472,7 +350,6 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
                 result["growth_metrics"]["cagr_5y_pct"] = cagr_5y
             if cagr_10y is not None:
                 result["growth_metrics"]["cagr_10y_pct"] = cagr_10y
-
         return result
 
     @mcp.tool(
@@ -488,54 +365,48 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         query: str | None = None,
         limit: int = 20,
     ) -> dict:
-        """Search for delisted companies.
-
-        Returns companies that have been removed from exchange listings,
-        with delisting date and reason.
-
-        Args:
-            query: Company name or ticker to search for (optional)
-            limit: Max results to return (default 20)
-        """
-        params: dict = {}
-        if query:
-            params["query"] = query
-        if limit:
-            params["limit"] = limit
-
-        data = await client.get_safe(
-            "/stable/delisted-companies",
-            params=params if params else None,
-            cache_ttl=client.TTL_DAILY,
+        page = 0
+        data = await _safe_endpoint_call(
+            client,
+            DELISTED_COMPANIES,
+            page=page,
+            limit=max(limit * 5, 100),
+            ttl=TTL_DAILY,
             default=[],
         )
-
-        companies_list = data if isinstance(data, list) else []
-
+        companies_list = _as_list(data)
+        if query:
+            q = query.lower().strip()
+            matches = [
+                c
+                for c in companies_list
+                if q in (c.get("symbol") or "").lower() or q in (c.get("companyName") or "").lower()
+            ]
+            non_matches = [
+                c
+                for c in companies_list
+                if q not in (c.get("symbol") or "").lower() and q not in (c.get("companyName") or "").lower()
+            ]
+            companies_list = matches + non_matches
         if not companies_list:
-            msg = f"No delisted companies found"
+            msg = "No delisted companies found"
             if query:
                 msg += f" matching '{query}'"
             return {"error": msg}
 
-        # Sort by delisted date descending (newest first)
         companies_list.sort(key=lambda c: c.get("delistedDate") or "", reverse=True)
-
         companies = []
         for c in companies_list[:limit]:
-            companies.append({
-                "symbol": c.get("symbol"),
-                "company_name": c.get("companyName"),
-                "exchange": c.get("exchange"),
-                "delisted_date": c.get("delistedDate"),
-                "ipo_date": c.get("ipoDate"),
-            })
-
-        return {
-            "query": query,
-            "count": len(companies),
-            "companies": companies,
-        }
+            companies.append(
+                {
+                    "symbol": c.get("symbol"),
+                    "company_name": c.get("companyName"),
+                    "exchange": c.get("exchange"),
+                    "delisted_date": c.get("delistedDate"),
+                    "ipo_date": c.get("ipoDate"),
+                }
+            )
+        return {"query": query, "count": len(companies), "companies": companies}
 
     @mcp.tool(
         annotations={
@@ -551,73 +422,42 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         form_type: str | None = None,
         limit: int = 20,
     ) -> dict:
-        """Get recent SEC filings for a company.
-
-        Returns filing date, form type, and links. Optionally filter by form type.
-
-        Common form types:
-        - 10-K: Annual report
-        - 10-Q: Quarterly report
-        - 8-K: Current report (material events)
-        - DEF 14A: Proxy statement
-        - S-1: IPO registration
-        - 13F: Institutional holdings report
-        - 4: Insider trading report
-
-        Args:
-            symbol: Stock ticker symbol (e.g. "AAPL")
-            form_type: Optional filing type filter (e.g. "10-K", "10-Q", "8-K")
-            limit: Max filings to return (default 20)
-        """
         symbol = symbol.upper().strip()
         limit = max(1, min(limit, 100))
-
-        # Use symbol-based search with date range (required by /stable/ API)
-        from datetime import date, timedelta
-
         to_date = date.today()
-        from_date = to_date - timedelta(days=365 * 2)  # 2 years of filings
-
-        data = await client.get_safe(
-            "/stable/sec-filings-search/symbol",
-            params={
-                "symbol": symbol,
-                "from": from_date.isoformat(),
-                "to": to_date.isoformat(),
-            },
-            cache_ttl=client.TTL_HOURLY,
+        from_date = to_date - timedelta(days=365 * 2)
+        data = await _safe_call(
+            client.sec.search_by_symbol,
+            symbol=symbol,
+            page=0,
+            limit=100,
+            from_date=from_date,
+            to_date=to_date,
+            ttl=TTL_HOURLY,
             default=[],
         )
-
-        filings_list = data if isinstance(data, list) else []
-
+        filings_list = _as_list(data)
         if not filings_list:
             return {"error": f"No SEC filings found for '{symbol}'"}
-
-        # Client-side form type filter
         if form_type:
             form_type_upper = form_type.upper().strip()
             filings_list = [f for f in filings_list if (f.get("formType") or "").upper() == form_type_upper]
-
-        # Sort by filing date descending
-        filings_list.sort(key=lambda f: f.get("filingDate") or "", reverse=True)
-
+        filings_list.sort(
+            key=lambda f: _date_only(f.get("filingDate") or f.get("filedDate") or f.get("fillingDate")) or "",
+            reverse=True,
+        )
         filings = []
         for f in filings_list[:limit]:
-            filings.append({
-                "filing_date": f.get("filingDate"),
-                "accepted_date": f.get("acceptedDate"),
-                "form_type": f.get("formType"),
-                "url": f.get("finalLink") or f.get("link"),
-                "cik": f.get("cik"),
-            })
-
-        return {
-            "symbol": symbol,
-            "form_type_filter": form_type,
-            "count": len(filings),
-            "filings": filings,
-        }
+            filings.append(
+                {
+                    "filing_date": _date_only(f.get("filingDate") or f.get("filedDate") or f.get("fillingDate")),
+                    "accepted_date": f.get("acceptedDate"),
+                    "form_type": f.get("formType"),
+                    "url": f.get("finalLink") or f.get("link"),
+                    "cik": f.get("cik"),
+                }
+            )
+        return {"symbol": symbol, "form_type_filter": form_type, "count": len(filings), "filings": filings}
 
     @mcp.tool(
         annotations={
@@ -632,63 +472,30 @@ def register(mcp: FastMCP, client: FMPClient) -> None:
         query: str,
         type: str = "name",
     ) -> dict:
-        """Look up stock symbols by name, CIK, or CUSIP.
-
-        Converts between different company identifiers (symbol, CIK, CUSIP).
-
-        Args:
-            query: Search query (company name, CIK, or CUSIP)
-            type: Lookup type - "name", "cik", or "cusip" (default "name")
-        """
         type_lower = type.lower().strip()
-
         if type_lower == "cik":
-            endpoint = "/stable/search-cik"
-            param_key = "cik"
+            data = await _safe_call(client.market.search_by_cik, query=query, ttl=TTL_DAILY, default=[])
         elif type_lower == "cusip":
-            endpoint = "/stable/search-cusip"
-            param_key = "cusip"
+            data = await _safe_call(client.market.search_by_cusip, query=query, ttl=TTL_DAILY, default=[])
         else:
-            endpoint = "/stable/search-name"
-            param_key = "query"
+            data = await _safe_call(client.market.search_company, query=query, ttl=TTL_DAILY, default=[])
+            if not _as_list(data):
+                data = await _safe_call(client.market.search_symbol, query=query, ttl=TTL_DAILY, default=[])
 
-        data = await client.get_safe(
-            endpoint,
-            params={param_key: query},
-            cache_ttl=client.TTL_DAILY,
-            default=[],
-        )
-
-        results_list = data if isinstance(data, list) else []
-
-        # If search-name returned nothing and we're doing a name search,
-        # try search-symbol as fallback
-        if not results_list and type_lower == "name":
-            data = await client.get_safe(
-                "/stable/search-symbol",
-                params={"query": query},
-                cache_ttl=client.TTL_DAILY,
-                default=[],
-            )
-            results_list = data if isinstance(data, list) else []
-
+        results_list = _as_list(data)
         if not results_list:
             return {"error": f"No results found for {type} '{query}'"}
 
         results = []
         for item in results_list:
-            results.append({
-                "symbol": item.get("symbol"),
-                "company_name": item.get("companyName") or item.get("name"),
-                "cik": item.get("cik"),
-                "cusip": item.get("cusip"),
-                "exchange": item.get("exchange") or item.get("exchangeShortName") or item.get("exchangeFullName"),
-                "currency": item.get("currency"),
-            })
-
-        return {
-            "query": query,
-            "lookup_type": type_lower,
-            "count": len(results),
-            "results": results,
-        }
+            results.append(
+                {
+                    "symbol": item.get("symbol"),
+                    "company_name": item.get("companyName") or item.get("name"),
+                    "cik": item.get("cik"),
+                    "cusip": item.get("cusip"),
+                    "exchange": item.get("exchange") or item.get("exchangeShortName") or item.get("exchangeFullName"),
+                    "currency": item.get("currency"),
+                }
+            )
+        return {"query": query, "lookup_type": type_lower, "count": len(results), "results": results}

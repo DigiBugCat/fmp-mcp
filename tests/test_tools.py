@@ -7,10 +7,12 @@ from datetime import date
 import pytest
 import respx
 import httpx
+from pydantic import BaseModel, Field
 
 from fastmcp import FastMCP, Client
-from fmp_client import FMPClient, FMPError
+from fmp_data import AsyncFMPDataClient
 from tests.conftest import (
+    build_test_client,
     AAPL_PROFILE, AAPL_QUOTE, AAPL_RATIOS,
     AAPL_INCOME, AAPL_BALANCE, AAPL_CASHFLOW,
     AAPL_PRICE_TARGET, AAPL_GRADES, AAPL_RATING,
@@ -67,63 +69,60 @@ from tools.news import register as register_news
 from tools.macro import register as register_macro
 from tools.transcripts import register as register_transcripts
 from tools.assets import register as register_assets
+from tools._helpers import _CACHE, _as_dict, _as_list, _dump, _safe_call, _safe_first
 
 BASE = "https://financialmodelingprep.com"
 
 
-# --- FMPClient Tests ---
+# --- Helper Tests ---
 
 
-class TestFMPClient:
+class TestHelpers:
     @pytest.mark.asyncio
-    async def test_get_success(self, mock_api, fmp_client):
-        mock_api.get("/stable/profile").mock(
-            return_value=httpx.Response(200, json=AAPL_PROFILE)
-        )
-        result = await fmp_client.get("/stable/profile", params={"symbol": "AAPL"})
-        assert result[0]["companyName"] == "Apple Inc."
+    async def test_safe_call_returns_default_on_exception(self):
+        async def _boom() -> dict:
+            raise RuntimeError("boom")
 
-    @pytest.mark.asyncio
-    async def test_get_caching(self, mock_api, fmp_client):
-        route = mock_api.get("/stable/profile").mock(
-            return_value=httpx.Response(200, json=AAPL_PROFILE)
-        )
-        await fmp_client.get("/stable/profile", params={"symbol": "AAPL"}, cache_ttl=300)
-        await fmp_client.get("/stable/profile", params={"symbol": "AAPL"}, cache_ttl=300)
-        assert route.call_count == 1
+        result = await _safe_call(_boom, default={"ok": False})
+        assert result == {"ok": False}
 
     @pytest.mark.asyncio
-    async def test_get_error_message(self, mock_api, fmp_client):
-        mock_api.get("/stable/profile").mock(
-            return_value=httpx.Response(200, json={"Error Message": "Invalid API KEY."})
-        )
-        with pytest.raises(FMPError, match="Invalid API KEY"):
-            await fmp_client.get("/stable/profile", params={"symbol": "AAPL"})
+    async def test_safe_call_ttl_cache_hit(self):
+        _CACHE.clear()
+        call_count = 0
 
-    @pytest.mark.asyncio
-    async def test_get_http_error(self, mock_api, fmp_client):
-        mock_api.get("/stable/profile").mock(
-            return_value=httpx.Response(429, text="Rate limited")
-        )
-        with pytest.raises(FMPError, match="429"):
-            await fmp_client.get("/stable/profile")
+        async def _fn(symbol: str) -> dict:
+            nonlocal call_count
+            call_count += 1
+            return {"symbol": symbol}
 
-    @pytest.mark.asyncio
-    async def test_get_safe_returns_default(self, mock_api, fmp_client):
-        mock_api.get("/stable/profile").mock(
-            return_value=httpx.Response(404, text="Not found")
-        )
-        result = await fmp_client.get_safe("/stable/profile", default=[])
-        assert result == []
+        first = await _safe_call(_fn, "AAPL", ttl=60, default={})
+        second = await _safe_call(_fn, "AAPL", ttl=60, default={})
+        assert first == {"symbol": "AAPL"}
+        assert second == {"symbol": "AAPL"}
+        assert call_count == 1
+
+    def test_dump_uses_aliases(self):
+        class AliasModel(BaseModel):
+            company_name: str = Field(alias="companyName")
+
+        dumped = _dump(AliasModel(companyName="Apple Inc."))
+        assert dumped["companyName"] == "Apple Inc."
+        assert "company_name" not in dumped
+
+    def test_normalization_helpers(self):
+        assert _as_dict([{"a": 1}]) == {"a": 1}
+        assert _as_list({"items": [{"a": 1}]}, list_key="items") == [{"a": 1}]
+        assert _safe_first([{"x": 2}]) == {"x": 2}
 
 
 # --- Tool Integration Tests (via FastMCP Client) ---
 
 
-def _make_server(register_fn) -> tuple[FastMCP, FMPClient]:
+def _make_server(register_fn) -> tuple[FastMCP, AsyncFMPDataClient]:
     """Create a FastMCP server with registered tools."""
     mcp = FastMCP("Test")
-    client = FMPClient(api_key="test_key")
+    client = build_test_client("test_key")
     register_fn(mcp, client)
     return mcp, client
 
@@ -147,7 +146,7 @@ class TestCompanyOverview:
         assert data["ratios"]["pe_ttm"] == 34.27
         assert data["sma_50"] == 268.66
         assert "_warnings" not in data
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -163,7 +162,7 @@ class TestCompanyOverview:
         data = result.data
         assert data["name"] == "Apple Inc."
         assert data["_warnings"] == ["ratio data unavailable"]
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -178,7 +177,7 @@ class TestCompanyOverview:
 
         data = result.data
         assert "error" in data
-        await fmp.close()
+        await fmp.aclose()
 
 
 class TestStockSearch:
@@ -194,7 +193,7 @@ class TestStockSearch:
         data = result.data
         assert data["count"] == 2
         assert data["results"][0]["symbol"] == "APC.F"
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -212,7 +211,7 @@ class TestStockSearch:
         data = result.data
         assert data["count"] == 2
         assert data["results"][0]["symbol"] == "NVDA"
-        await fmp.close()
+        await fmp.aclose()
 
 
 class TestFinancialStatements:
@@ -234,7 +233,7 @@ class TestFinancialStatements:
         assert data["periods"][0]["free_cash_flow"] == 98767000000
         assert "growth_3y_cagr" in data
         assert data["growth_3y_cagr"]["revenue_cagr_3y"] is not None
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -251,7 +250,7 @@ class TestFinancialStatements:
         p = data["periods"][0]
         assert p["gross_margin"] is not None
         assert p["gross_margin"] > 40
-        await fmp.close()
+        await fmp.aclose()
 
 
 class TestAnalystConsensus:
@@ -274,7 +273,7 @@ class TestAnalystConsensus:
         assert data["analyst_grades"]["strong_buy"] == 1
         assert data["fmp_rating"]["rating"] == "B"
         assert data["fmp_rating"]["overall_score"] == 3
-        await fmp.close()
+        await fmp.aclose()
 
 
 class TestPriceHistory:
@@ -293,7 +292,7 @@ class TestPriceHistory:
         assert data["year_high"] == 288.62
         assert data["sma_50"] == 268.66
         assert len(data["recent_closes"]) <= 30
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -304,7 +303,7 @@ class TestPriceHistory:
 
         data = result.data
         assert "error" in data
-        await fmp.close()
+        await fmp.aclose()
 
 
 class TestEarningsInfo:
@@ -329,7 +328,7 @@ class TestEarningsInfo:
         assert data["forward_estimates"][0]["num_analysts_eps"] is not None
         assert len(data["recent_quarters"]) == 4
         assert data["recent_quarters"][0]["eps_diluted"] == 2.40
-        await fmp.close()
+        await fmp.aclose()
 
 
 # --- New Tool Tests (Tier 1: Unblock Broken Agents) ---
@@ -354,7 +353,7 @@ class TestInsiderActivity:
         assert data["float_context"]["float_shares"] == 14700000000
         assert len(data["notable_trades"]) > 0
         assert "_warnings" not in data
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -371,7 +370,7 @@ class TestInsiderActivity:
         assert data["symbol"] == "AAPL"
         assert "insider statistics unavailable" in data["_warnings"]
         assert "float data unavailable" in data["_warnings"]
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -386,7 +385,7 @@ class TestInsiderActivity:
 
         data = result.data
         assert "error" in data
-        await fmp.close()
+        await fmp.aclose()
 
 
 class TestInstitutionalOwnership:
@@ -408,7 +407,7 @@ class TestInstitutionalOwnership:
         assert data["position_changes"]["investors_holding"] == 3557
         assert data["ownership_summary"]["institutional_pct_of_float"] is not None
         assert "_warnings" not in data
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -423,7 +422,7 @@ class TestInstitutionalOwnership:
 
         data = result.data
         assert "error" in data
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -468,7 +467,7 @@ class TestInstitutionalOwnership:
         data = result.data
         assert data["reporting_period"] == f"Q{prev_quarter} {prev_year}"
         assert len(data["top_holders"]) > 0
-        await fmp.close()
+        await fmp.aclose()
 
 
 class TestMarketNews:
@@ -488,7 +487,7 @@ class TestMarketNews:
         assert data["articles"][0]["title"] == "Apple Reports Record Q1 Earnings"
         assert data["articles"][0]["source"] == "Bloomberg"
         assert data["articles"][0]["date"] is not None
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -503,7 +502,7 @@ class TestMarketNews:
         assert data["category"] == "stock"
         assert data["symbol"] is None
         assert data["count"] == 3
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -518,7 +517,7 @@ class TestMarketNews:
         assert data["category"] == "press_releases"
         assert data["symbol"] == "AAPL"
         assert data["count"] == 2
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -534,7 +533,7 @@ class TestMarketNews:
         # Symbol should be None since general doesn't support it
         assert data["symbol"] is None
         assert data["count"] == 3
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -546,7 +545,7 @@ class TestMarketNews:
         data = result.data
         assert "error" in data
         assert "Invalid category" in data["error"]
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -560,7 +559,7 @@ class TestMarketNews:
         data = result.data
         assert "error" in data
         assert "ZZZZ" in data["error"]
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -574,7 +573,7 @@ class TestMarketNews:
         data = result.data
         assert data["page"] == 1
         assert data["count"] == 3
-        await fmp.close()
+        await fmp.aclose()
 
 
 class TestTreasuryRates:
@@ -598,7 +597,7 @@ class TestTreasuryRates:
         assert data["dcf_inputs"]["equity_risk_premium"] == 4.60
         assert data["dcf_inputs"]["implied_cost_of_equity"] == 8.65
         assert "_warnings" not in data
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -614,7 +613,7 @@ class TestTreasuryRates:
         assert data["yields"]["10y"] == 4.05
         assert data["dcf_inputs"]["equity_risk_premium"] is None
         assert "equity risk premium unavailable" in data["_warnings"]
-        await fmp.close()
+        await fmp.aclose()
 
 
 class TestEconomicCalendar:
@@ -641,7 +640,7 @@ class TestEconomicCalendar:
         assert any("Retail Sales" in n for n in event_names)
         # Business Inventories should be filtered out (not high-impact keyword)
         assert not any("Business Inventories" in n for n in event_names)
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -655,7 +654,7 @@ class TestEconomicCalendar:
         data = result.data
         assert data["count"] == 0
         assert data["events"] == []
-        await fmp.close()
+        await fmp.aclose()
 
 
 class TestMarketOverview:
@@ -683,7 +682,7 @@ class TestMarketOverview:
         assert len(data["top_losers"]) == 2
         assert len(data["most_active"]) == 2
         assert "_warnings" not in data
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -702,7 +701,7 @@ class TestMarketOverview:
         data = result.data
         assert len(data["sectors"]) == 4
         assert "gainers data unavailable" in data["_warnings"]
-        await fmp.close()
+        await fmp.aclose()
 
 
 # --- New Tool Tests (Tier 2: Research Power-Ups) ---
@@ -730,7 +729,7 @@ class TestEarningsTranscript:
         # Mock transcript is small enough to fit in default max_chars
         assert data["truncated"] is False
         assert "next_offset" not in data
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -747,7 +746,7 @@ class TestEarningsTranscript:
         assert data["year"] == 2025
         assert data["total_chars"] > 0
         assert isinstance(data["truncated"], bool)
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -763,7 +762,7 @@ class TestEarningsTranscript:
         assert data["symbol"] == "AAPL"
         assert data["year"] == 2025
         assert data["quarter"] == 4
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -779,7 +778,7 @@ class TestEarningsTranscript:
         assert data["symbol"] == "AAPL"
         assert data["year"] == 2025
         assert data["quarter"] == 4
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -791,7 +790,7 @@ class TestEarningsTranscript:
         data = result.data
         assert "error" in data
         assert "Invalid quarter" in data["error"]
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -808,7 +807,7 @@ class TestEarningsTranscript:
         assert data["latest_expected"] is True
         assert data["latest_expected_met"] is True
         assert data["latest_completed_earnings_date"] == "2026-01-29"
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -829,7 +828,7 @@ class TestEarningsTranscript:
         assert data["latest_expected_met"] is False
         assert data["latest_completed_earnings_date"] == "2026-01-29"
         assert any("newer than available transcript" in w for w in data.get("_warnings", []))
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -842,7 +841,7 @@ class TestEarningsTranscript:
 
         data = result.data
         assert "error" in data
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -883,7 +882,7 @@ class TestEarningsTranscript:
         assert data2["content"] != first_chunk
         # Total chars should be consistent
         assert data2["total_chars"] == data["total_chars"]
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -910,7 +909,7 @@ class TestEarningsTranscript:
 
         # Reassembled content should match the original
         assert all_content == AAPL_TRANSCRIPT[0]["content"]
-        await fmp.close()
+        await fmp.aclose()
 
 
 class TestRevenueSegments:
@@ -940,7 +939,7 @@ class TestRevenueSegments:
         # YoY growth should be calculated
         assert products[0].get("yoy_growth_pct") is not None
         assert "_warnings" not in data
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -956,7 +955,7 @@ class TestRevenueSegments:
         assert "product_segments" in data
         assert "geographic_segments" not in data
         assert "geographic segmentation unavailable" in data["_warnings"]
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -970,7 +969,7 @@ class TestRevenueSegments:
 
         data = result.data
         assert "error" in data
-        await fmp.close()
+        await fmp.aclose()
 
 
 class TestPeerComparison:
@@ -1012,7 +1011,7 @@ class TestPeerComparison:
         assert pe_comp["premium_discount_pct"] is not None
         assert pe_comp["rank"] is not None
         assert len(data["peer_details"]) == 3
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -1025,7 +1024,7 @@ class TestPeerComparison:
 
         data = result.data
         assert "error" in data
-        await fmp.close()
+        await fmp.aclose()
 
 
 class TestDividendsInfo:
@@ -1052,7 +1051,7 @@ class TestDividendsInfo:
         assert len(data["stock_splits"]) == 2
         assert data["stock_splits"][0]["label"] == "4:1"
         assert "_warnings" not in data
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -1067,7 +1066,7 @@ class TestDividendsInfo:
 
         data = result.data
         assert "error" in data
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -1085,7 +1084,7 @@ class TestDividendsInfo:
         assert len(data["recent_dividends"]) > 0
         assert "stock split data unavailable" in data["_warnings"]
         assert "quote data unavailable" in data["_warnings"]
-        await fmp.close()
+        await fmp.aclose()
 
 
 class TestShortInterest:
@@ -1114,7 +1113,7 @@ class TestShortInterest:
         assert data["float_context"]["short_pct_of_float"] > 0
         assert data["float_context"]["short_pct_of_outstanding"] is not None
         assert "_warnings" not in data
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -1135,7 +1134,7 @@ class TestShortInterest:
         assert data["float_context"]["float_shares"] == 14700000000
         assert data["float_context"]["short_pct_of_float"] is None
         assert "FINRA short interest unavailable" in data["_warnings"]
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -1155,7 +1154,7 @@ class TestShortInterest:
         assert data["short_interest"]["shares_short"] == 116854414
         assert "float_context" not in data
         assert "float data unavailable" in data["_warnings"]
-        await fmp.close()
+        await fmp.aclose()
 
     @staticmethod
     def _finra_side_effect(request: httpx.Request) -> httpx.Response:
@@ -1195,7 +1194,7 @@ class TestEarningsCalendar:
         symbols = [e["symbol"] for e in data["earnings"]]
         assert symbols == ["AAPL", "MSFT", "GOOGL", "TSLA"]
         assert data["earnings"][0]["market_cap"] == 3500000000000
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -1213,7 +1212,7 @@ class TestEarningsCalendar:
         assert data["count"] == 4
         # No market_cap field since we skipped batch-quote
         assert "market_cap" not in data["earnings"][0]
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -1231,7 +1230,7 @@ class TestEarningsCalendar:
         assert data["symbol"] == "AAPL"
         assert data["earnings"][0]["symbol"] == "AAPL"
         assert data["earnings"][0]["eps_estimate"] == 2.35
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -1246,7 +1245,7 @@ class TestEarningsCalendar:
 
         data = result.data
         assert "error" in data
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -1262,7 +1261,7 @@ class TestEarningsCalendar:
         data = result.data
         assert "error" in data
         assert "ZZZZ" in data["error"]
-        await fmp.close()
+        await fmp.aclose()
 
 
 class TestETFLookup:
@@ -1286,7 +1285,7 @@ class TestETFLookup:
         assert data["holdings"][0]["weight_pct"] == 12.5
         assert data["top_10_concentration_pct"] is not None
         assert data["top_10_concentration_pct"] > 50
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -1306,7 +1305,7 @@ class TestETFLookup:
         # Should be sorted by weight descending
         assert data["etf_holders"][0]["etf_symbol"] == "XLK"
         assert data["etf_holders"][0]["weight_pct"] == 22.3
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -1325,7 +1324,7 @@ class TestETFLookup:
         data = result.data
         assert data["mode"] == "holdings"
         assert data["count"] == 10
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -1344,7 +1343,7 @@ class TestETFLookup:
         data = result.data
         assert data["mode"] == "exposure"
         assert data["count"] == 5
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -1362,7 +1361,7 @@ class TestETFLookup:
 
         data = result.data
         assert "error" in data
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -1373,7 +1372,7 @@ class TestETFLookup:
 
         data = result.data
         assert "error" in data
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -1389,7 +1388,7 @@ class TestETFLookup:
         data = result.data
         assert data["count"] == 3
         assert len(data["holdings"]) == 3
-        await fmp.close()
+        await fmp.aclose()
 
 
 class TestEstimateRevisions:
@@ -1431,7 +1430,7 @@ class TestEstimateRevisions:
         assert track["avg_eps_surprise_pct"] is not None
         assert len(track["last_8_quarters"]) > 0
         assert "_warnings" not in data
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -1455,7 +1454,7 @@ class TestEstimateRevisions:
         assert len(data["forward_estimates"]) == 3
         assert "analyst grades unavailable" in data["_warnings"]
         assert "earnings history unavailable" in data["_warnings"]
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -1476,7 +1475,7 @@ class TestEstimateRevisions:
 
         data = result.data
         assert "error" in data
-        await fmp.close()
+        await fmp.aclose()
 
 
 # --- New Tool Tests (12 New Tools) ---
@@ -1489,7 +1488,7 @@ class TestCompanyExecutives:
         respx.get(f"{BASE}/stable/key-executives").mock(
             return_value=httpx.Response(200, json=AAPL_EXECUTIVES)
         )
-        respx.get(f"{BASE}/stable/executive-compensation").mock(
+        respx.get(f"{BASE}/stable/governance-executive-compensation").mock(
             return_value=httpx.Response(200, json=AAPL_EXECUTIVE_COMPENSATION)
         )
         respx.get(f"{BASE}/stable/executive-compensation-benchmark").mock(
@@ -1512,7 +1511,7 @@ class TestCompanyExecutives:
         assert data["executives"][0]["compensation_breakdown"]["total"] == 16425933
         # Check benchmarks
         assert "industry_benchmarks" in data
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -1520,7 +1519,7 @@ class TestCompanyExecutives:
         respx.get(f"{BASE}/stable/key-executives").mock(
             return_value=httpx.Response(200, json=[])
         )
-        respx.get(f"{BASE}/stable/executive-compensation").mock(
+        respx.get(f"{BASE}/stable/governance-executive-compensation").mock(
             return_value=httpx.Response(200, json=[])
         )
         respx.get(f"{BASE}/stable/executive-compensation-benchmark").mock(
@@ -1533,7 +1532,7 @@ class TestCompanyExecutives:
 
         data = result.data
         assert "error" in data
-        await fmp.close()
+        await fmp.aclose()
 
 
 class TestSecFilings:
@@ -1554,7 +1553,7 @@ class TestSecFilings:
         # Sorted by date descending
         assert data["filings"][0]["form_type"] == "10-Q"
         assert data["filings"][0]["filing_date"] == "2026-01-30"
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -1570,7 +1569,7 @@ class TestSecFilings:
         data = result.data
         assert data["count"] == 2
         assert all(f["form_type"] == "8-K" for f in data["filings"])
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -1585,7 +1584,7 @@ class TestSecFilings:
 
         data = result.data
         assert "error" in data
-        await fmp.close()
+        await fmp.aclose()
 
 
 class TestTechnicalIndicators:
@@ -1606,7 +1605,7 @@ class TestTechnicalIndicators:
         assert data["current_value"] == 58.32
         assert data["data_points"] == 3
         assert data["values"][0]["rsi"] == 58.32
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -1618,7 +1617,7 @@ class TestTechnicalIndicators:
         data = result.data
         assert "error" in data
         assert "Invalid indicator" in data["error"]
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -1633,7 +1632,7 @@ class TestTechnicalIndicators:
 
         data = result.data
         assert "error" in data
-        await fmp.close()
+        await fmp.aclose()
 
 
 class TestFinancialHealth:
@@ -1658,7 +1657,7 @@ class TestFinancialHealth:
         assert data["owner_earnings"]["owner_earnings"] == 95432000000
         assert data["owner_earnings"]["maintenance_capex"] == -8500000000
         assert "_warnings" not in data
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -1678,7 +1677,7 @@ class TestFinancialHealth:
         assert data["scores"]["altman_z_score"] == 8.21
         assert "owner_earnings" not in data
         assert "owner earnings unavailable" in data["_warnings"]
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -1696,7 +1695,7 @@ class TestFinancialHealth:
 
         data = result.data
         assert "error" in data
-        await fmp.close()
+        await fmp.aclose()
 
 
 class TestIPOCalendar:
@@ -1723,7 +1722,7 @@ class TestIPOCalendar:
         assert data["ipos"][0]["symbol"] == "FRESH"
         assert data["ipos"][1]["company"] == "NewCo Technologies"
         assert data["ipos"][1]["price_range"] == "18.00 - 22.00"
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -1745,7 +1744,7 @@ class TestIPOCalendar:
         data = result.data
         assert data["count"] == 0
         assert data["ipos"] == []
-        await fmp.close()
+        await fmp.aclose()
 
 
 class TestDividendsCalendar:
@@ -1766,7 +1765,7 @@ class TestDividendsCalendar:
         assert data["dividends"][0]["symbol"] == "AAPL"
         assert data["dividends"][0]["dividend"] == 0.26
         assert data["dividends"][0]["yield_pct"] == 0.38
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -1782,7 +1781,7 @@ class TestDividendsCalendar:
         data = result.data
         assert data["count"] == 0
         assert data["dividends"] == []
-        await fmp.close()
+        await fmp.aclose()
 
 
 class TestIndexConstituents:
@@ -1805,7 +1804,7 @@ class TestIndexConstituents:
         assert data["constituents"][0]["sector"] == "Information Technology"
         assert "Information Technology" in data["sector_breakdown"]
         assert "Consumer Discretionary" in data["sector_breakdown"]
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -1817,7 +1816,7 @@ class TestIndexConstituents:
         data = result.data
         assert "error" in data
         assert "Invalid index" in data["error"]
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -1832,7 +1831,7 @@ class TestIndexConstituents:
 
         data = result.data
         assert "error" in data
-        await fmp.close()
+        await fmp.aclose()
 
 
 class TestSectorValuation:
@@ -1857,7 +1856,7 @@ class TestSectorValuation:
         assert len(data["top_10_cheapest"]) > 0
         assert len(data["top_10_most_expensive"]) > 0
         assert "_warnings" not in data
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -1874,7 +1873,7 @@ class TestSectorValuation:
         data = result.data
         assert len(data["sectors"]) == 3
         assert "industry PE data unavailable" in data["_warnings"]
-        await fmp.close()
+        await fmp.aclose()
 
 
 class TestMNAActivity:
@@ -1895,7 +1894,7 @@ class TestMNAActivity:
         # Sorted by date descending
         assert data["deals"][0]["symbol"] == "TGT"
         assert data["deals"][0]["targeted_company"] == "SmallRetail Inc"
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -1912,7 +1911,7 @@ class TestMNAActivity:
         assert data["symbol"] == "AAPL"
         assert data["count"] == 1
         assert data["deals"][0]["targeted_company"] == "AI Labs Corp"
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -1927,7 +1926,7 @@ class TestMNAActivity:
 
         data = result.data
         assert "error" in data
-        await fmp.close()
+        await fmp.aclose()
 
 
 class TestCommodityQuotes:
@@ -1948,7 +1947,7 @@ class TestCommodityQuotes:
         assert data["price"] == 2045.30
         assert data["change"] == 12.50
         assert data["name"] == "Gold"
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -1967,7 +1966,7 @@ class TestCommodityQuotes:
         assert data["count"] == 3
         # Sorted by absolute change descending
         assert data["quotes"][0]["symbol"] == "GCUSD"  # |12.50| > |1.23| > |0.45|
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -1982,7 +1981,7 @@ class TestCommodityQuotes:
 
         data = result.data
         assert "error" in data
-        await fmp.close()
+        await fmp.aclose()
 
 
 class TestCryptoQuotes:
@@ -2002,7 +2001,7 @@ class TestCryptoQuotes:
         assert data["mode"] == "single"
         assert data["price"] == 97500.00
         assert data["name"] == "Bitcoin"
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -2020,7 +2019,7 @@ class TestCryptoQuotes:
         assert data["count"] == 3
         # Sorted by absolute change descending
         assert data["quotes"][0]["symbol"] == "BTCUSD"  # |1250| > |45| > |8.5|
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -2035,7 +2034,7 @@ class TestCryptoQuotes:
 
         data = result.data
         assert "error" in data
-        await fmp.close()
+        await fmp.aclose()
 
 
 class TestForexQuotes:
@@ -2055,7 +2054,7 @@ class TestForexQuotes:
         assert data["mode"] == "single"
         assert data["price"] == 1.0842
         assert data["name"] == "EUR/USD"
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -2073,7 +2072,7 @@ class TestForexQuotes:
         assert data["count"] == 3
         # Sorted by absolute change descending
         assert data["quotes"][0]["symbol"] == "USDJPY"  # |0.35| > |0.0045| > |0.0023|
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -2088,7 +2087,7 @@ class TestForexQuotes:
 
         data = result.data
         assert "error" in data
-        await fmp.close()
+        await fmp.aclose()
 
 
 class TestValuationHistory:
@@ -2121,7 +2120,7 @@ class TestValuationHistory:
         assert "min" in data["percentiles"]["pe"]
         assert "max" in data["percentiles"]["pe"]
         assert "current_percentile" in data["percentiles"]["pe"]
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
@@ -2139,14 +2138,14 @@ class TestValuationHistory:
 
         data = result.data
         assert "error" in data
-        await fmp.close()
+        await fmp.aclose()
 
 
 class TestRatioHistory:
     @pytest.mark.asyncio
     @respx.mock
     async def test_full_ratio_history(self):
-        respx.get(f"{BASE}/stable/financial-ratios").mock(
+        respx.get(f"{BASE}/stable/ratios").mock(
             return_value=httpx.Response(200, json=AAPL_FINANCIAL_RATIOS_HISTORICAL)
         )
         respx.get(f"{BASE}/stable/key-metrics").mock(
@@ -2169,12 +2168,12 @@ class TestRatioHistory:
         assert "profitability" in data["trends"]
         assert "roe" in data["trends"]["profitability"]
         assert data["trends"]["profitability"]["roe"] in ["improving", "deteriorating", "stable", None]
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
     async def test_partial_data(self):
-        respx.get(f"{BASE}/stable/financial-ratios").mock(
+        respx.get(f"{BASE}/stable/ratios").mock(
             return_value=httpx.Response(200, json=AAPL_FINANCIAL_RATIOS_HISTORICAL)
         )
         respx.get(f"{BASE}/stable/key-metrics").mock(
@@ -2189,12 +2188,12 @@ class TestRatioHistory:
         assert data["symbol"] == "AAPL"
         assert len(data["time_series"]) == 5
         assert "key metrics unavailable" in data["_warnings"]
-        await fmp.close()
+        await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
     async def test_no_data(self):
-        respx.get(f"{BASE}/stable/financial-ratios").mock(
+        respx.get(f"{BASE}/stable/ratios").mock(
             return_value=httpx.Response(200, json=[])
         )
         respx.get(f"{BASE}/stable/key-metrics").mock(
@@ -2207,4 +2206,4 @@ class TestRatioHistory:
 
         data = result.data
         assert "error" in data
-        await fmp.close()
+        await fmp.aclose()
