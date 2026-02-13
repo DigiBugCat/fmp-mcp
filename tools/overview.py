@@ -14,6 +14,7 @@ from tools._helpers import (
     _as_dict,
     _as_list,
     _date_only,
+    _latest_price,
     _safe_call,
     _safe_endpoint_call,
 )
@@ -36,9 +37,9 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
     async def company_overview(symbol: str, detail: bool = False) -> dict:
         """Get company profile, price data, and financial ratios.
 
-        Default mode returns quote-level data only (1 API call).
-        Use detail=True for full profile with sector, industry, description,
-        and valuation ratios (3 API calls).
+        Default mode returns quote + most up-to-date price (including
+        pre-market/after-hours when available). Use detail=True for full
+        profile with sector, industry, description, and valuation ratios.
 
         Args:
             symbol: Stock ticker symbol (e.g. "AAPL")
@@ -47,31 +48,50 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
         symbol = symbol.upper().strip()
 
         if not detail:
-            # Lean mode: quote only (1 API call)
-            quote_data = await _safe_call(
-                client.company.get_quote, symbol=symbol, ttl=TTL_REALTIME, default=None
+            # Lean mode: quote + extended hours for freshest price
+            quote_data, premarket_data, afterhours_data = await asyncio.gather(
+                _safe_call(client.company.get_quote, symbol=symbol, ttl=TTL_REALTIME, default=None),
+                _safe_call(client.market.get_pre_post_market, ttl=TTL_REALTIME, default=[]),
+                _safe_call(client.company.get_aftermarket_trade, symbol=symbol, ttl=TTL_REALTIME, default=None),
             )
             quote = _as_dict(quote_data)
             if not quote:
                 return {"error": f"No data found for symbol '{symbol}'"}
-            return {
+
+            # Filter premarket to this symbol
+            pre_candidates = [
+                item for item in _as_list(premarket_data)
+                if (item.get("symbol") or "").upper() == symbol
+                and (item.get("session") or "").lower() == "pre"
+            ]
+
+            latest = _latest_price(quote, pre_candidates, afterhours_data)
+
+            result = {
                 "symbol": symbol,
                 "name": quote.get("name"),
-                "price": quote.get("price"),
+                "price": latest["price"],
+                "price_source": latest["source"],
                 "market_cap": quote.get("marketCap"),
                 "volume": quote.get("volume"),
-                "change_pct": quote.get("changePercentage"),
+                "change_pct": latest.get("change_pct"),
                 "day_range": {"low": quote.get("dayLow"), "high": quote.get("dayHigh")},
                 "year_range": {"low": quote.get("yearLow"), "high": quote.get("yearHigh")},
                 "sma_50": quote.get("priceAvg50"),
                 "sma_200": quote.get("priceAvg200"),
             }
+            # Include regular close when extended hours is the source
+            if latest["source"] != "quote":
+                result["regular_close"] = quote.get("price")
+            return result
 
-        # Detail mode: full profile + quote + ratios (3 API calls)
-        profile_data, quote_data, ratios_data = await asyncio.gather(
+        # Detail mode: full profile + quote + ratios + extended hours
+        profile_data, quote_data, ratios_data, premarket_data, afterhours_data = await asyncio.gather(
             _safe_call(client.company.get_profile, symbol=symbol, ttl=TTL_DAILY, default=None),
             _safe_call(client.company.get_quote, symbol=symbol, ttl=TTL_REALTIME, default=None),
             _safe_call(client.company.get_financial_ratios_ttm, symbol=symbol, ttl=TTL_HOURLY, default=[]),
+            _safe_call(client.market.get_pre_post_market, ttl=TTL_REALTIME, default=[]),
+            _safe_call(client.company.get_aftermarket_trade, symbol=symbol, ttl=TTL_REALTIME, default=None),
         )
 
         profile = _as_dict(profile_data)
@@ -79,6 +99,15 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
         ratios = _as_dict(ratios_data)
         if not profile and not quote:
             return {"error": f"No data found for symbol '{symbol}'"}
+
+        # Filter premarket to this symbol
+        pre_candidates = [
+            item for item in _as_list(premarket_data)
+            if (item.get("symbol") or "").upper() == symbol
+            and (item.get("session") or "").lower() == "pre"
+        ]
+
+        latest = _latest_price(quote, pre_candidates, afterhours_data)
 
         result = {
             "symbol": symbol,
@@ -91,10 +120,11 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
             "exchange": profile.get("exchange"),
             "country": profile.get("country"),
             "website": profile.get("website"),
-            "price": quote.get("price"),
+            "price": latest["price"],
+            "price_source": latest["source"],
             "market_cap": quote.get("marketCap"),
             "volume": quote.get("volume"),
-            "change_pct": quote.get("changePercentage"),
+            "change_pct": latest.get("change_pct"),
             "day_range": {"low": quote.get("dayLow"), "high": quote.get("dayHigh")},
             "year_range": {"low": quote.get("yearLow"), "high": quote.get("yearHigh")},
             "sma_50": quote.get("priceAvg50"),
@@ -116,6 +146,8 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
                 "price_to_fcf_ttm": ratios.get("priceToFreeCashFlowRatioTTM"),
             },
         }
+        if latest["source"] != "quote":
+            result["regular_close"] = quote.get("price")
 
         errors = []
         if not profile:

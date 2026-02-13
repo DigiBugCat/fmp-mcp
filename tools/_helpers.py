@@ -159,3 +159,67 @@ def _as_dict(obj: Any) -> dict:
 def _safe_first(obj: Any) -> dict:
     """Return first dict from obj if present, otherwise empty dict."""
     return _as_dict(obj)
+
+
+def _ts_to_epoch(ts: Any) -> float:
+    """Normalise a timestamp to epoch seconds.
+
+    Handles: ``int``/``float`` epoch-seconds, ``int``/``float``
+    epoch-milliseconds (heuristic: > 1e12), ``datetime`` objects, and
+    ``None`` (returns 0).
+    """
+    if ts is None:
+        return 0.0
+    if isinstance(ts, datetime):
+        return ts.timestamp()
+    val = float(ts)
+    # Values > 1 trillion are almost certainly milliseconds
+    if val > 1e12:
+        return val / 1000
+    return val
+
+
+def _latest_price(
+    quote: dict,
+    premarket_list: list,
+    afterhours: dict | None,
+) -> dict:
+    """Pick the most up-to-date price from quote + extended-hours data.
+
+    Returns ``{"price": float, "source": str, "change_pct": float|None}``
+    where source is "quote", "premarket", or "afterhours".
+    """
+    regular_price = quote.get("price")
+    regular_ts = _ts_to_epoch(quote.get("timestamp"))
+
+    best_price = regular_price
+    best_ts = regular_ts
+    best_source = "quote"
+    best_change_pct = quote.get("changePercentage")
+
+    # Premarket (already filtered to matching symbol by caller)
+    pre = _as_dict(premarket_list) if premarket_list else {}
+    if pre.get("price") and pre.get("timestamp"):
+        pre_ts = _ts_to_epoch(pre["timestamp"])
+        if pre_ts > best_ts:
+            best_price = pre["price"]
+            best_ts = pre_ts
+            best_source = "premarket"
+            if regular_price and regular_price > 0:
+                best_change_pct = round((pre["price"] / regular_price - 1) * 100, 2)
+
+    # After-hours
+    post = _as_dict(afterhours) if afterhours else {}
+    if post.get("price") and post.get("timestamp"):
+        post_ts = _ts_to_epoch(post["timestamp"])
+        if post_ts > best_ts:
+            best_price = post["price"]
+            best_ts = post_ts
+            best_source = "afterhours"
+            if regular_price and regular_price > 0:
+                best_change_pct = round((post["price"] / regular_price - 1) * 100, 2)
+
+    result: dict = {"price": best_price, "source": best_source}
+    if best_change_pct is not None:
+        result["change_pct"] = best_change_pct
+    return result

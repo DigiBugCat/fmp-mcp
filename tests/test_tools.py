@@ -132,8 +132,10 @@ class TestCompanyOverview:
     @pytest.mark.asyncio
     @respx.mock
     async def test_lean_overview(self):
-        """Default mode: quote-only, no profile or ratios."""
+        """Default mode: quote + extended hours for freshest price."""
         respx.get(f"{BASE}/stable/quote").mock(return_value=httpx.Response(200, json=AAPL_QUOTE))
+        respx.get(f"{BASE}/stable/pre-post-market").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/aftermarket-trade").mock(return_value=httpx.Response(200, json=[]))
 
         mcp, fmp = _make_server(register_overview)
         async with Client(mcp) as c:
@@ -142,19 +144,45 @@ class TestCompanyOverview:
         data = result.data
         assert data["symbol"] == "AAPL"
         assert data["price"] == 273.68
+        assert data["price_source"] == "quote"
         assert data["sma_50"] == 268.66
         assert "ratios" not in data
         assert "sector" not in data
         assert "description" not in data
+        assert "regular_close" not in data  # not present when source is quote
+        await fmp.aclose()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_lean_overview_afterhours_price(self):
+        """Default mode picks afterhours price when it's fresher than quote."""
+        # Quote with timestamp 1000 (epoch seconds)
+        quote = [{**AAPL_QUOTE[0], "timestamp": 1000}]
+        respx.get(f"{BASE}/stable/quote").mock(return_value=httpx.Response(200, json=quote))
+        respx.get(f"{BASE}/stable/pre-post-market").mock(return_value=httpx.Response(200, json=[]))
+        # Afterhours with timestamp 2_000_000 ms (= 2000s, fresher)
+        afterhours = [{"symbol": "AAPL", "price": 280.00, "tradeSize": 5, "timestamp": 2_000_000}]
+        respx.get(f"{BASE}/stable/aftermarket-trade").mock(return_value=httpx.Response(200, json=afterhours))
+
+        mcp, fmp = _make_server(register_overview)
+        async with Client(mcp) as c:
+            result = await c.call_tool("company_overview", {"symbol": "AAPL"})
+
+        data = result.data
+        assert data["price"] == 280.00
+        assert data["price_source"] == "afterhours"
+        assert data["regular_close"] == 273.68
         await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
     async def test_detail_overview(self):
-        """detail=True: full profile + quote + ratios."""
+        """detail=True: full profile + quote + ratios + extended hours."""
         respx.get(f"{BASE}/stable/profile").mock(return_value=httpx.Response(200, json=AAPL_PROFILE))
         respx.get(f"{BASE}/stable/quote").mock(return_value=httpx.Response(200, json=AAPL_QUOTE))
         respx.get(f"{BASE}/stable/ratios-ttm").mock(return_value=httpx.Response(200, json=AAPL_RATIOS))
+        respx.get(f"{BASE}/stable/pre-post-market").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/aftermarket-trade").mock(return_value=httpx.Response(200, json=[]))
 
         mcp, fmp = _make_server(register_overview)
         async with Client(mcp) as c:
@@ -164,6 +192,7 @@ class TestCompanyOverview:
         assert data["symbol"] == "AAPL"
         assert data["name"] == "Apple Inc."
         assert data["price"] == 273.68
+        assert data["price_source"] == "quote"
         assert data["ratios"]["pe_ttm"] == 34.27
         assert data["sma_50"] == 268.66
         assert data["sector"] == "Technology"
@@ -177,6 +206,8 @@ class TestCompanyOverview:
         respx.get(f"{BASE}/stable/profile").mock(return_value=httpx.Response(200, json=AAPL_PROFILE))
         respx.get(f"{BASE}/stable/quote").mock(return_value=httpx.Response(200, json=AAPL_QUOTE))
         respx.get(f"{BASE}/stable/ratios-ttm").mock(return_value=httpx.Response(500, text="error"))
+        respx.get(f"{BASE}/stable/pre-post-market").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/aftermarket-trade").mock(return_value=httpx.Response(200, json=[]))
 
         mcp, fmp = _make_server(register_overview)
         async with Client(mcp) as c:
@@ -191,6 +222,8 @@ class TestCompanyOverview:
     @respx.mock
     async def test_unknown_symbol(self):
         respx.get(f"{BASE}/stable/quote").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/pre-post-market").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/aftermarket-trade").mock(return_value=httpx.Response(200, json=[]))
 
         mcp, fmp = _make_server(register_overview)
         async with Client(mcp) as c:
