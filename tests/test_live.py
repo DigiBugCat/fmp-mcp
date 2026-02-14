@@ -206,6 +206,9 @@ CANONICAL_CASES = [
     _case("short_interest", {"symbol": "AAPL"}, ("symbol",)),
     _case("fund_holdings", {"cik": "0001166559"}, ("cik", "reporting_period", "portfolio_summary", "top_holdings", "performance", "industry_allocation")),
     _case("ownership_structure", {"symbol": "AAPL"}, ("symbol", "reporting_period", "shares_breakdown", "ownership_percentages", "institutional_details", "short_interest_details")),
+    _case("fund_disclosure", {"symbol": "SPY"}, ("mode", "symbol", "period", "holdings_count", "holdings")),
+    _case("fund_disclosure", {"symbol": "AAPL", "mode": "holders"}, ("mode", "symbol", "count", "holders"), marker_set="live_full"),
+    _case("fund_disclosure", {"mode": "search", "name": "Vanguard"}, ("mode", "query", "count", "funds"), marker_set="live_full"),
     # news
     _case("market_news", {"category": "stock", "symbol": "AAPL", "limit": 10}, ("category", "count", "articles")),
     _case("mna_activity", {"limit": 10}, ("count", "deals")),
@@ -221,6 +224,7 @@ CANONICAL_CASES = [
     _case("industry_performance", {}, ("date", "industries", "count")),
     _case("splits_calendar", {"days_ahead": 30}, ("splits", "count", "period")),
     _case("sector_valuation", {}, ("date",)),
+    _case("crowdfunding_offerings", {}, ("mode", "count", "offerings")),
     # transcripts
     _case("earnings_transcript", {"symbol": "AAPL"}, ("symbol", "year", "quarter", "content", "length_chars", "total_chars", "offset", "truncated")),
     # assets
@@ -246,7 +250,7 @@ CANONICAL_CASES = [
     ),
 ]
 
-assert len(CANONICAL_CASES) == 54
+assert len(CANONICAL_CASES) == 58
 
 
 @pytest_asyncio.fixture

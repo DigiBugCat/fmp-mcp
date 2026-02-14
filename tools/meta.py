@@ -79,6 +79,7 @@ DOCUMENTED_FAMILIES_BY_CATEGORY: dict[str, list[str]] = {
     "ETF & Funds": [
         "etf",
         "mutual-fund",
+        "funds-disclosure",
     ],
     "Macro & Market": [
         "treasury-rates",
@@ -119,7 +120,7 @@ DOCUMENTED_FAMILIES_BY_CATEGORY: dict[str, list[str]] = {
         "commitment-of-traders",
     ],
     "Fundraisers": [
-        "fundraisers",
+        "crowdfunding-offerings",
     ],
     "Bulk Datasets": [
         "bulk",

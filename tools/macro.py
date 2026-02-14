@@ -1,10 +1,12 @@
-"""Macro-economic data tools: treasury rates, economic calendar, market overview, IPOs, dividends calendar, indices, sector valuation."""
+"""Macro-economic data tools: treasury rates, economic calendar, market overview, IPOs, dividends calendar, indices, sector valuation, crowdfunding."""
 
 from __future__ import annotations
 
 import asyncio
 from datetime import date, timedelta
 from typing import TYPE_CHECKING
+
+from fmp_data.models import APIVersion, Endpoint, EndpointParam, ParamLocation, ParamType
 
 from tools._helpers import (
     TTL_12H,
@@ -15,6 +17,7 @@ from tools._helpers import (
     _as_list,
     _date_only,
     _safe_call,
+    _safe_endpoint_call,
     _safe_first,
     _to_date,
 )
@@ -22,6 +25,43 @@ from tools._helpers import (
 if TYPE_CHECKING:
     from fmp_data import AsyncFMPDataClient
     from fastmcp import FastMCP
+
+# Custom endpoints not yet in fmp-data SDK
+CROWDFUNDING_LATEST = Endpoint(
+    name="crowdfunding_latest",
+    path="crowdfunding-offerings-latest",
+    version=APIVersion.STABLE,
+    description="Get latest crowdfunding campaigns",
+    mandatory_params=[],
+    optional_params=[
+        EndpointParam(
+            name="page",
+            location=ParamLocation.QUERY,
+            param_type=ParamType.INTEGER,
+            required=False,
+            description="Page number",
+        ),
+    ],
+    response_model=dict,
+)
+
+CROWDFUNDING_SEARCH = Endpoint(
+    name="crowdfunding_search",
+    path="crowdfunding-offerings-search",
+    version=APIVersion.STABLE,
+    description="Search crowdfunding campaigns by name",
+    mandatory_params=[
+        EndpointParam(
+            name="name",
+            location=ParamLocation.QUERY,
+            param_type=ParamType.STRING,
+            required=True,
+            description="Company or campaign name",
+        ),
+    ],
+    optional_params=[],
+    response_model=dict,
+)
 
 MIN_MARKET_CAP = 1_000_000_000  # $1B floor for movers
 
@@ -353,6 +393,92 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
             _warnings.append("most active data unavailable")
         if _warnings:
             result["_warnings"] = _warnings
+
+        return result
+
+    SECTOR_ETFS: dict[str, str] = {
+        "SPY": "S&P 500",
+        "XLK": "Technology",
+        "XLV": "Health Care",
+        "XLF": "Financials",
+        "XLY": "Consumer Discretionary",
+        "XLC": "Communication Services",
+        "XLI": "Industrials",
+        "XLE": "Energy",
+        "XLU": "Utilities",
+        "XLRE": "Real Estate",
+        "XLB": "Materials",
+        "XLP": "Consumer Staples",
+    }
+
+    @mcp.tool(
+        annotations={
+            "title": "Sector Performance",
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True,
+        }
+    )
+    async def sector_performance() -> dict:
+        """Get sector performance via SPDR Select Sector ETFs.
+
+        Batch-quotes the 11 SPDR sector ETFs plus SPY as the benchmark.
+        Returns real prices, dollar change, and % change for each sector,
+        sorted by performance (leaders first).
+        """
+        symbols = list(SECTOR_ETFS.keys())
+
+        quote_data = await _safe_call(
+            client.batch.get_quotes,
+            symbols=symbols,
+            ttl=TTL_REALTIME,
+            default=[],
+        )
+
+        quotes = _as_list(quote_data)
+
+        if not quotes:
+            return {"error": "No sector ETF quote data available"}
+
+        quote_map = {q.get("symbol"): q for q in quotes}
+
+        benchmark = None
+        sectors = []
+
+        for sym, name in SECTOR_ETFS.items():
+            q = quote_map.get(sym)
+            if not q:
+                continue
+
+            entry = {
+                "symbol": sym,
+                "name": name,
+                "price": q.get("price"),
+                "change": q.get("change"),
+                "change_pct": q.get("changesPercentage"),
+            }
+
+            if sym == "SPY":
+                benchmark = entry
+            else:
+                sectors.append(entry)
+
+        # Sort sectors by change_pct descending
+        sectors.sort(key=lambda x: x.get("change_pct") or 0, reverse=True)
+
+        # Top 2 leaders / bottom 2 laggards
+        leaders = [s["name"] for s in sectors[:2] if (s.get("change_pct") or 0) > 0]
+        laggards = [s["name"] for s in sectors[-2:] if (s.get("change_pct") or 0) < 0]
+
+        result: dict = {}
+        if benchmark:
+            result["benchmark"] = benchmark
+        result["sectors"] = sectors
+        if leaders:
+            result["leaders"] = leaders
+        if laggards:
+            result["laggards"] = laggards
 
         return result
 
@@ -1080,5 +1206,77 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
             _warnings.append("industry PE data unavailable")
         if _warnings:
             result["_warnings"] = _warnings
+
+        return result
+
+    @mcp.tool(
+        annotations={
+            "title": "Crowdfunding Offerings",
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True,
+        }
+    )
+    async def crowdfunding_offerings(
+        query: str | None = None,
+        limit: int = 20,
+    ) -> dict:
+        """Browse or search SEC-registered crowdfunding campaigns (Reg CF / Reg A).
+
+        Discover early-stage companies raising capital from retail investors.
+        Returns issuer name, offering amount, securities offered, and filing details.
+
+        Args:
+            query: Search by company/platform name (omit to browse latest)
+            limit: Max results to return (default 20, max 100)
+        """
+        limit = max(1, min(limit, 100))
+
+        if query:
+            data = await _safe_endpoint_call(
+                client,
+                CROWDFUNDING_SEARCH,
+                name=query.strip(),
+                ttl=TTL_HOURLY,
+                default=[],
+            )
+        else:
+            data = await _safe_endpoint_call(
+                client,
+                CROWDFUNDING_LATEST,
+                page=0,
+                ttl=TTL_HOURLY,
+                default=[],
+            )
+
+        offerings_list = _as_list(data)
+
+        if not offerings_list:
+            msg = f"No crowdfunding offerings found for '{query}'" if query else "No crowdfunding offerings available"
+            return {"error": msg}
+
+        offerings = []
+        for o in offerings_list[:limit]:
+            offerings.append({
+                "company_name": o.get("companyName") or o.get("entityName") or o.get("name"),
+                "cik": o.get("cik"),
+                "offering_amount": o.get("offeringAmount") or o.get("totalOfferingAmount"),
+                "securities_offered": o.get("securitiesOffered") or o.get("typeOfSecuritiesOffered"),
+                "offering_date": _date_only(o.get("offeringDate") or o.get("dateOfFirstSale") or o.get("date")),
+                "closing_date": _date_only(o.get("closingDate")),
+                "amount_sold": o.get("totalAmountSold"),
+                "investors_count": o.get("investorsCount") or o.get("numberOfInvestors"),
+                "intermediary": o.get("intermediaryCompanyName") or o.get("intermediary"),
+                "state": o.get("stateOrCountry") or o.get("state"),
+            })
+
+        result: dict = {
+            "mode": "search" if query else "latest",
+            "count": len(offerings),
+            "offerings": offerings,
+        }
+        if query:
+            result["query"] = query
 
         return result

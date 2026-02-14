@@ -853,3 +853,200 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient, polygon_client: PolygonCl
             result["_warnings"] = _warnings
 
         return result
+
+    @mcp.tool(
+        annotations={
+            "title": "Fund Disclosure",
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True,
+        }
+    )
+    async def fund_disclosure(
+        symbol: str = "",
+        mode: str = "holdings",
+        name: str | None = None,
+        year: int | None = None,
+        quarter: int | None = None,
+        limit: int = 50,
+    ) -> dict:
+        """Get SEC-filed fund disclosure data (NPORT-P holdings, fund search, holder lookup).
+
+        Multi-mode tool for closed-end funds, mutual funds, and ETFs:
+        - "holdings": Get a fund's SEC-disclosed portfolio (e.g. DXYZ → SpaceX shares).
+          Auto-resolves to latest available quarter if year/quarter omitted.
+        - "search": Find funds by name (e.g. "Destiny Tech", "SpaceX", "private credit").
+          Returns matching fund entities with CIK, symbol, series/class info.
+        - "holders": Show which funds hold a specific stock (reverse lookup).
+          Returns fund names, share counts, changes, weight %.
+
+        Args:
+            symbol: Fund or stock ticker (required for holdings/holders, optional for search)
+            mode: "holdings", "search", or "holders"
+            name: Fund name for search mode (e.g. "Destiny Tech")
+            year: Disclosure year (auto-resolved if omitted in holdings mode)
+            quarter: Disclosure quarter 1-4 (auto-resolved if omitted)
+            limit: Max results to return (default 50)
+        """
+        limit = max(1, min(limit, 200))
+        mode = mode.lower().strip()
+
+        if mode == "search":
+            search_term = name or symbol
+            if not search_term:
+                return {"error": "Provide 'name' or 'symbol' for search mode"}
+
+            data = await _safe_call(
+                client.investment.search_fund_disclosure_holders,
+                name=search_term,
+                ttl=TTL_HOURLY,
+                default=[],
+            )
+            results = _as_list(data)
+
+            if not results:
+                return {"error": f"No funds found matching '{search_term}'"}
+
+            funds = []
+            for f in results[:limit]:
+                funds.append({
+                    "symbol": f.get("symbol"),
+                    "cik": f.get("cik"),
+                    "entity_name": f.get("entityName"),
+                    "series_name": f.get("seriesName"),
+                    "class_name": f.get("className"),
+                    "org_type": f.get("entityOrgType"),
+                    "series_id": f.get("seriesId"),
+                    "class_id": f.get("classId"),
+                    "state": f.get("state"),
+                    "city": f.get("city"),
+                })
+
+            return {
+                "mode": "search",
+                "query": search_term,
+                "count": len(funds),
+                "funds": funds,
+            }
+
+        if mode == "holders":
+            if not symbol:
+                return {"error": "Provide 'symbol' for holders mode"}
+            symbol = symbol.upper().strip()
+
+            data = await _safe_call(
+                client.investment.get_fund_disclosure_holders_latest,
+                symbol=symbol,
+                ttl=TTL_HOURLY,
+                default=[],
+            )
+            holders_list = _as_list(data)
+
+            if not holders_list:
+                return {"error": f"No fund holders found for '{symbol}'"}
+
+            holders = []
+            for h in holders_list[:limit]:
+                holders.append({
+                    "holder": h.get("holder"),
+                    "cik": h.get("cik"),
+                    "shares": h.get("shares"),
+                    "change": h.get("change"),
+                    "weight_pct": h.get("weightPercent"),
+                    "date_reported": _date_only(h.get("dateReported")),
+                })
+
+            return {
+                "mode": "holders",
+                "symbol": symbol,
+                "count": len(holders),
+                "holders": holders,
+            }
+
+        # Default: holdings mode
+        if not symbol:
+            return {"error": "Provide 'symbol' for holdings mode"}
+        symbol = symbol.upper().strip()
+
+        # Auto-resolve latest disclosure period if year/quarter omitted
+        if year is None or quarter is None:
+            dates_data = await _safe_call(
+                client.investment.get_fund_disclosure_dates,
+                symbol=symbol,
+                ttl=TTL_HOURLY,
+                default=[],
+            )
+            dates_list = _as_list(dates_data)
+
+            if dates_list:
+                # Dates come as PortfolioDate objects with date/year/quarter fields
+                # Sort by date descending to get latest
+                def _sort_key(d: dict) -> str:
+                    dt = d.get("date") or d.get("portfolioDate") or ""
+                    return str(dt)
+
+                dates_list.sort(key=_sort_key, reverse=True)
+                latest = dates_list[0]
+
+                if year is None:
+                    year = latest.get("year")
+                    if year is None:
+                        # Derive from date
+                        dt = _to_date(latest.get("date") or latest.get("portfolioDate"))
+                        if dt:
+                            year = dt.year
+                if quarter is None:
+                    quarter = latest.get("quarter")
+                    if quarter is None:
+                        dt = _to_date(latest.get("date") or latest.get("portfolioDate"))
+                        if dt:
+                            quarter = (dt.month - 1) // 3 + 1
+
+        # Final fallback to latest completed quarter
+        if year is None or quarter is None:
+            year, quarter = _latest_quarter()
+
+        data = await _safe_call(
+            client.investment.get_fund_disclosure,
+            symbol=symbol,
+            year=year,
+            quarter=quarter,
+            ttl=TTL_HOURLY,
+            default=[],
+        )
+        holdings_list = _as_list(data)
+
+        if not holdings_list:
+            return {"error": f"No disclosure holdings found for '{symbol}' in Q{quarter} {year}"}
+
+        # Sort by portfolio weight descending
+        holdings_list.sort(key=lambda x: x.get("pctVal") or 0, reverse=True)
+
+        total_value = sum(h.get("valUsd") or 0 for h in holdings_list)
+
+        holdings = []
+        for h in holdings_list[:limit]:
+            holdings.append({
+                "name": h.get("name") or h.get("title"),
+                "symbol": h.get("symbol"),
+                "cusip": h.get("cusip"),
+                "isin": h.get("isin"),
+                "shares": h.get("balance"),
+                "value_usd": h.get("valUsd"),
+                "portfolio_pct": h.get("pctVal"),
+                "asset_category": h.get("assetCat"),
+                "issuer_category": h.get("issuerCat"),
+                "country": h.get("invCountry"),
+                "fair_value_level": h.get("fairValLevel"),
+            })
+
+        return {
+            "mode": "holdings",
+            "symbol": symbol,
+            "period": f"Q{quarter} {year}",
+            "total_value_usd": total_value,
+            "holdings_count": len(holdings_list),
+            "showing": len(holdings),
+            "holdings": holdings,
+        }
