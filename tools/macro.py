@@ -63,6 +63,60 @@ CROWDFUNDING_SEARCH = Endpoint(
     response_model=dict,
 )
 
+FUNDRAISING_LATEST = Endpoint(
+    name="fundraising_latest",
+    path="fundraising-latest",
+    version=APIVersion.STABLE,
+    description="Get latest Form D exempt offering filings",
+    mandatory_params=[],
+    optional_params=[
+        EndpointParam(
+            name="page",
+            location=ParamLocation.QUERY,
+            param_type=ParamType.INTEGER,
+            required=False,
+            description="Page number",
+        ),
+    ],
+    response_model=dict,
+)
+
+FUNDRAISING_SEARCH = Endpoint(
+    name="fundraising_search",
+    path="fundraising-search",
+    version=APIVersion.STABLE,
+    description="Search Form D filings by company/fund name",
+    mandatory_params=[
+        EndpointParam(
+            name="name",
+            location=ParamLocation.QUERY,
+            param_type=ParamType.STRING,
+            required=True,
+            description="Company or fund name",
+        ),
+    ],
+    optional_params=[],
+    response_model=dict,
+)
+
+FUNDRAISING_BY_CIK = Endpoint(
+    name="fundraising_by_cik",
+    path="fundraising",
+    version=APIVersion.STABLE,
+    description="Get Form D filing history for a company by CIK",
+    mandatory_params=[
+        EndpointParam(
+            name="cik",
+            location=ParamLocation.QUERY,
+            param_type=ParamType.STRING,
+            required=True,
+            description="SEC Central Index Key (CIK)",
+        ),
+    ],
+    optional_params=[],
+    response_model=dict,
+)
+
 MIN_MARKET_CAP = 1_000_000_000  # $1B floor for movers
 
 
@@ -1280,3 +1334,155 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
             result["query"] = query
 
         return result
+
+    @mcp.tool(
+        annotations={
+            "title": "Fundraising (Form D)",
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True,
+        }
+    )
+    async def fundraising(
+        query: str | None = None,
+        cik: str | None = None,
+        limit: int = 25,
+    ) -> dict:
+        """Search SEC Form D exempt offerings — private fundraising rounds, SPVs, and feeder funds.
+
+        This is the key tool for discovering private company capital raises (SpaceX,
+        Anthropic, xAI, Stripe, etc.) and the feeder funds/SPVs that give investors
+        exposure to them.
+
+        Modes (auto-detected):
+        - Search by name: finds companies/funds matching a query (e.g. "SpaceX", "Anthropic", "xAI")
+        - Lookup by CIK: gets full Form D filing history with offering amounts, investors, etc.
+        - Browse latest: shows most recent Form D filings
+
+        Args:
+            query: Company or fund name to search (e.g. "SpaceX", "Anthropic", "xAI")
+            cik: SEC CIK number for full filing history (e.g. "0001181412" for SpaceX)
+            limit: Max results (default 25, max 100)
+        """
+        limit = max(1, min(limit, 100))
+
+        if cik:
+            cik = cik.strip()
+            data = await _safe_endpoint_call(
+                client,
+                FUNDRAISING_BY_CIK,
+                cik=cik,
+                ttl=TTL_HOURLY,
+                default=[],
+            )
+            filings_list = _as_list(data)
+
+            if not filings_list:
+                return {"error": f"No Form D filings found for CIK '{cik}'"}
+
+            # Sort by date descending
+            filings_list.sort(key=lambda x: x.get("date") or "", reverse=True)
+
+            company_name = filings_list[0].get("companyName") or filings_list[0].get("entityName")
+
+            filings = []
+            for f in filings_list[:limit]:
+                filings.append({
+                    "date": _date_only(f.get("date")),
+                    "form_type": f.get("formType"),
+                    "description": f.get("formSignification"),
+                    "offering_amount": f.get("totalOfferingAmount"),
+                    "amount_sold": f.get("totalAmountSold"),
+                    "amount_remaining": f.get("totalAmountRemaining"),
+                    "investors": f.get("totalNumberAlreadyInvested"),
+                    "min_investment": f.get("minimumInvestmentAccepted"),
+                    "entity_type": f.get("entityType"),
+                    "industry": f.get("industryGroupType"),
+                    "exemptions": f.get("federalExemptionsExclusions"),
+                    "equity_offered": f.get("securitiesOfferedAreOfEquityType"),
+                    "accredited_only": not f.get("hasNonAccreditedInvestors", True),
+                    "state": f.get("issuerStateOrCountry"),
+                })
+
+            return {
+                "mode": "filings",
+                "cik": cik,
+                "company_name": company_name,
+                "filing_count": len(filings_list),
+                "showing": len(filings),
+                "filings": filings,
+            }
+
+        if query:
+            data = await _safe_endpoint_call(
+                client,
+                FUNDRAISING_SEARCH,
+                name=query.strip(),
+                ttl=TTL_HOURLY,
+                default=[],
+            )
+            results_list = _as_list(data)
+
+            if not results_list:
+                return {"error": f"No Form D filings found for '{query}'"}
+
+            # Deduplicate by CIK (search returns one row per filing date)
+            seen_ciks: dict[str, dict] = {}
+            for r in results_list:
+                cik_val = r.get("cik", "")
+                name_val = r.get("name", "")
+                date_val = r.get("date", "")
+                if cik_val not in seen_ciks:
+                    seen_ciks[cik_val] = {
+                        "cik": cik_val,
+                        "name": name_val,
+                        "latest_filing": date_val,
+                        "filing_count": 1,
+                    }
+                else:
+                    seen_ciks[cik_val]["filing_count"] += 1
+
+            entities = sorted(seen_ciks.values(), key=lambda x: x.get("latest_filing", ""), reverse=True)
+
+            return {
+                "mode": "search",
+                "query": query,
+                "count": len(entities),
+                "entities": entities[:limit],
+                "hint": "Use the CIK with fundraising(cik='...') to get full filing details",
+            }
+
+        # Browse latest
+        data = await _safe_endpoint_call(
+            client,
+            FUNDRAISING_LATEST,
+            page=0,
+            ttl=TTL_HOURLY,
+            default=[],
+        )
+        filings_list = _as_list(data)
+
+        if not filings_list:
+            return {"error": "No recent Form D filings available"}
+
+        filings = []
+        for f in filings_list[:limit]:
+            filings.append({
+                "company_name": f.get("companyName") or f.get("entityName"),
+                "cik": f.get("cik"),
+                "date": _date_only(f.get("date")),
+                "form_type": f.get("formType"),
+                "offering_amount": f.get("totalOfferingAmount"),
+                "amount_sold": f.get("totalAmountSold"),
+                "investors": f.get("totalNumberAlreadyInvested"),
+                "industry": f.get("industryGroupType"),
+                "entity_type": f.get("entityType"),
+                "state": f.get("issuerStateOrCountry"),
+            })
+
+        return {
+            "mode": "latest",
+            "count": len(filings),
+            "filings": filings,
+        }

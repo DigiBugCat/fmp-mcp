@@ -225,6 +225,9 @@ CANONICAL_CASES = [
     _case("splits_calendar", {"days_ahead": 30}, ("splits", "count", "period")),
     _case("sector_valuation", {}, ("date",)),
     _case("crowdfunding_offerings", {}, ("mode", "count", "offerings")),
+    _case("fundraising", {"query": "SpaceX"}, ("mode", "query", "count", "entities")),
+    _case("fundraising", {"cik": "0001181412"}, ("mode", "cik", "company_name", "filing_count", "filings")),
+    _case("fundraising", {}, ("mode", "count", "filings")),
     # transcripts
     _case("earnings_transcript", {"symbol": "AAPL"}, ("symbol", "year", "quarter", "content", "length_chars", "total_chars", "offset", "truncated")),
     # assets
@@ -250,7 +253,7 @@ CANONICAL_CASES = [
     ),
 ]
 
-assert len(CANONICAL_CASES) == 58
+assert len(CANONICAL_CASES) == 61
 
 
 @pytest_asyncio.fixture

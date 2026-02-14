@@ -121,6 +121,7 @@ DOCUMENTED_FAMILIES_BY_CATEGORY: dict[str, list[str]] = {
     ],
     "Fundraisers": [
         "crowdfunding-offerings",
+        "fundraising",
     ],
     "Bulk Datasets": [
         "bulk",

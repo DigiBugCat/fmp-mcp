@@ -15,6 +15,7 @@ IMPLEMENTED_FAMILIES: set[str] = {
     "cash-flow-statement",
     "company-screener",
     "crowdfunding-offerings",
+    "fundraising",
     "delisted-companies",
     "dividends",
     "dividends-calendar",
