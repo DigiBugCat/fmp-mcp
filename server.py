@@ -28,7 +28,10 @@ mcp = FastMCP(
         "Financial data API. Start with workflow tools (stock_brief, market_context, "
         "earnings_setup, earnings_preview, fair_value_estimate, earnings_postmortem, "
         "ownership_deep_dive, industry_analysis) for common questions. "
-        "Use atomic tools for targeted queries. All tools are self-documenting."
+        "Use atomic tools for targeted queries. All tools are self-documenting. "
+        "For 'which funds hold [private company]?' questions (SpaceX, Anthropic, xAI, etc.), "
+        "use sec_filings_search with forms='NPORT-P' — this is the only tool that can do "
+        "reverse lookups on private company holdings via SEC EDGAR."
     ),
     lifespan=lifespan,
 )

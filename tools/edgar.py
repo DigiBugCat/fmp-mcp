@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from datetime import date, timedelta
 from typing import TYPE_CHECKING
@@ -13,7 +14,7 @@ if TYPE_CHECKING:
     from fmp_data import AsyncFMPDataClient
 
 EDGAR_EFTS_URL = "https://efts.sec.gov/LATEST/search-index"
-EDGAR_USER_AGENT = "PantainosFMP/1.0 (research@pantainos.com)"
+EDGAR_USER_AGENT = os.environ.get("EDGAR_USER_AGENT", "")
 EDGAR_ARCHIVES_BASE = "https://www.sec.gov/Archives/edgar/data"
 
 
@@ -83,7 +84,7 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
 
     @mcp.tool(
         annotations={
-            "title": "SEC Filings Search",
+            "title": "SEC EDGAR Filing Search (NPORT-P fund holdings reverse lookup)",
             "readOnlyHint": True,
             "destructiveHint": False,
             "idempotentHint": True,
@@ -98,26 +99,36 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
         entity: str | None = None,
         limit: int = 50,
     ) -> dict:
-        """Search SEC EDGAR filings by full-text content.
+        """Search SEC EDGAR filings by full-text content. Best for NPORT-P reverse lookups.
 
-        Searches the text of all SEC filings (10-K, 8-K, NPORT-P, Form D, S-1, etc.)
-        using SEC's EFTS full-text search. Especially powerful for reverse lookups:
-        - "which funds hold SpaceX?" → forms="NPORT-P"
-        - "who mentions Anthropic in SEC filings?" → no form filter
-        - "Form D filings mentioning AI" → forms="D"
+        PRIMARY USE CASE — NPORT-P reverse lookup (forms="NPORT-P"):
+        Find which publicly-traded funds hold a private or public company.
+        This is the only way to answer "who holds X?" for private companies
+        like SpaceX, Anthropic, xAI, Stripe, etc. NPORT-P filings contain
+        structured holdings data, so matches are high-signal (actual positions).
+        Examples:
+        - "which funds hold SpaceX?" → query="SpaceX", forms="NPORT-P"
+        - "who has Anthropic exposure?" → query="Anthropic", forms="NPORT-P"
 
-        NPORT-P results are high-signal (structured holdings data). Other form types
-        (10-K, 8-K, S-1) are noisier — mentions could be holdings, customers,
-        competitors, or passing references.
+        SECONDARY USE CASES:
+        - Cross-filing research: query="SpaceX" (no form filter) searches all
+          10-K, 8-K, S-1, Form D, etc. These are noisier — a mention could be
+          a holding, customer, competitor, or passing reference.
+        - Form D private offerings: query="AI", forms="D"
 
         Args:
             query: Search term (e.g. "SpaceX", "Anthropic"). Exact phrase match.
-            forms: Comma-separated form types to filter (e.g. "NPORT-P", "10-K,8-K"). Default: all forms.
+            forms: Comma-separated form types. Use "NPORT-P" for fund holdings
+                reverse lookup (recommended default). Other options: "10-K",
+                "8-K", "D", "S-1", or omit for all forms.
             start_date: Filter filings from this date (YYYY-MM-DD). Default: ~2 years back.
             end_date: Filter filings to this date (YYYY-MM-DD). Default: today.
             entity: Filter by filer entity name (e.g. "Fidelity").
             limit: Max results to return (1-100, default 50).
         """
+        if not EDGAR_USER_AGENT:
+            return {"error": "EDGAR_USER_AGENT env var is required (e.g. 'YourApp/1.0 (you@example.com)')"}
+
         query = query.strip()
         if not query:
             return {"error": "query is required"}
