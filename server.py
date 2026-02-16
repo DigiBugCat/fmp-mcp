@@ -10,7 +10,7 @@ from fmp_data import AsyncFMPDataClient
 from fmp_data.config import ClientConfig, RateLimitConfig
 
 from polygon_client import PolygonClient
-from tools import assets, economy, financials, macro, market, meta, news, options, overview, ownership, transcripts, valuation, workflows
+from tools import assets, economy, edgar, financials, macro, market, meta, news, options, overview, ownership, transcripts, valuation, workflows
 
 
 @asynccontextmanager
@@ -81,6 +81,7 @@ macro.register(mcp, client)
 transcripts.register(mcp, client)
 assets.register(mcp, client)
 workflows.register(mcp, client)
+edgar.register(mcp, client)
 meta.register(mcp, client)
 
 # Polygon-only tools (registered only when Polygon key is available)

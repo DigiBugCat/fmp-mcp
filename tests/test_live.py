@@ -19,7 +19,7 @@ import pytest_asyncio
 
 from fastmcp import Client, FastMCP
 from tests.conftest import build_test_client
-from tools import assets, financials, macro, market, meta, news, overview, ownership, transcripts, valuation, workflows
+from tools import assets, edgar, financials, macro, market, meta, news, overview, ownership, transcripts, valuation, workflows
 
 
 Validator = Callable[[dict[str, Any]], None]
@@ -251,9 +251,13 @@ CANONICAL_CASES = [
             {"industry": "Technology", "limit": 10},
         ),
     ),
+    # edgar (SEC EDGAR full-text search)
+    _case("sec_filings_search", {"query": "SpaceX", "forms": "NPORT-P"}, ("query", "total_hits", "filings", "showing")),
+    _case("sec_filings_search", {"query": "Anthropic", "forms": "NPORT-P"}, ("query", "total_hits", "filings", "showing")),
+    _case("sec_filings_search", {"query": "SpaceX", "limit": 10}, ("query", "total_hits", "filings", "form_breakdown")),
 ]
 
-assert len(CANONICAL_CASES) == 61
+assert len(CANONICAL_CASES) == 64
 
 
 @pytest_asyncio.fixture
@@ -272,6 +276,7 @@ async def live_server() -> FastMCP:
     transcripts.register(mcp, client)
     assets.register(mcp, client)
     workflows.register(mcp, client)
+    edgar.register(mcp, client)
     meta.register(mcp, client)
 
     try:
