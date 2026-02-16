@@ -97,6 +97,7 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
         start_date: str | None = None,
         end_date: str | None = None,
         entity: str | None = None,
+        traded_only: bool = False,
         limit: int = 50,
     ) -> dict:
         """Search SEC EDGAR filings by full-text content. Best for NPORT-P reverse lookups.
@@ -109,6 +110,11 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
         Examples:
         - "which funds hold SpaceX?" → query="SpaceX", forms="NPORT-P"
         - "who has Anthropic exposure?" → query="Anthropic", forms="NPORT-P"
+        - Publicly-traded funds only: add traded_only=True to filter to
+          closed-end funds with tickers (DXYZ, ECAT, BSTZ, BST, etc.) that
+          investors can actually buy on the stock market. Without this flag,
+          results include mutual fund trusts (Fidelity, Vanguard) that are
+          not directly tradeable as stocks.
 
         SECONDARY USE CASES:
         - Cross-filing research: query="SpaceX" (no form filter) searches all
@@ -124,6 +130,9 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
             start_date: Filter filings from this date (YYYY-MM-DD). Default: ~2 years back.
             end_date: Filter filings to this date (YYYY-MM-DD). Default: today.
             entity: Filter by filer entity name (e.g. "Fidelity").
+            traded_only: If True, only return entities/filings with a stock ticker
+                (publicly-traded closed-end funds like DXYZ, BSTZ). Filters out
+                mutual fund trusts without tickers. Default: False.
             limit: Max results to return (1-100, default 50).
         """
         if not EDGAR_USER_AGENT:
@@ -201,6 +210,11 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
                 filing["url"] = _build_filing_url(cik, accession)
             filings.append(filing)
 
+        # Filter to publicly-traded entities only (those with tickers)
+        if traded_only:
+            entity_breakdown = [e for e in entity_breakdown if e.get("ticker")]
+            filings = [f for f in filings if f.get("ticker")]
+
         result: dict = {
             "query": query,
             "total_hits": total_hits,
@@ -209,6 +223,8 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
             result["forms_filter"] = forms
         if entity:
             result["entity_filter"] = entity
+        if traded_only:
+            result["traded_only"] = True
         if form_breakdown:
             result["form_breakdown"] = form_breakdown
         if entity_breakdown:
