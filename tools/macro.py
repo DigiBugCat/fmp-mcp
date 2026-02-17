@@ -667,15 +667,31 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
             "openWorldHint": True,
         }
     )
-    async def dividends_calendar(days_ahead: int = 14) -> dict:
+    async def dividends_calendar(
+        symbol: str | None = None,
+        days_ahead: int = 14,
+        min_market_cap: float = 1_000_000_000,
+        min_yield: float = 0.0,
+        limit: int = 50,
+    ) -> dict:
         """Get upcoming ex-dividend dates across all stocks.
 
         Returns symbols going ex-dividend within the specified window.
+        When no symbol is given, filters to large-cap stocks (default $1B+)
+        to keep results manageable. Results sorted by market cap descending.
 
         Args:
+            symbol: Optional stock ticker to filter results (e.g. "AAPL")
             days_ahead: Number of days to look ahead (default 14, max 90)
+            min_market_cap: Minimum market cap filter in USD when browsing
+                (default 1B). Ignored when symbol is specified.
+                Set to 0 to include all companies.
+            min_yield: Minimum dividend yield % filter (default 0, no filter)
+            limit: Max results in browsing mode (default 50, max 200).
+                Ignored when symbol is specified.
         """
         days_ahead = min(max(days_ahead, 1), 90)
+        limit = max(1, min(limit, 200))
         today = date.today()
         end_date = today + timedelta(days=days_ahead)
 
@@ -696,25 +712,101 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
                 "period": f"{today.isoformat()} to {end_date.isoformat()}",
             }
 
-        # Sort by date ascending
-        div_list.sort(key=lambda x: x.get("date") or "")
+        # Single-symbol lookup: return all entries for that symbol
+        if symbol:
+            symbol = symbol.upper().strip()
+            div_list = [d for d in div_list if (d.get("symbol") or "").upper() == symbol]
+            if not div_list:
+                return {"error": f"No ex-dividend dates for '{symbol}' in the next {days_ahead} days"}
+            div_list.sort(key=lambda x: x.get("date") or "")
+            dividends = []
+            for d in div_list:
+                dividends.append({
+                    "symbol": d.get("symbol"),
+                    "ex_date": d.get("date"),
+                    "dividend": d.get("dividend"),
+                    "adj_dividend": d.get("adjDividend"),
+                    "record_date": d.get("recordDate"),
+                    "payment_date": d.get("paymentDate"),
+                    "yield_pct": d.get("yield"),
+                    "frequency": d.get("frequency"),
+                })
+            return {
+                "dividends": dividends,
+                "count": len(dividends),
+                "symbol": symbol,
+                "period": f"{today.isoformat()} to {end_date.isoformat()}",
+            }
 
-        dividends = []
+        # Browse mode: deduplicate by symbol (keep soonest ex-date)
+        div_list.sort(key=lambda x: x.get("date") or "")
+        seen: set[str] = set()
+        unique = []
         for d in div_list:
-            dividends.append({
-                "symbol": d.get("symbol"),
+            sym = (d.get("symbol") or "").upper()
+            if sym and sym not in seen:
+                seen.add(sym)
+                unique.append(d)
+
+        # Apply min_yield filter early
+        if min_yield > 0:
+            unique = [d for d in unique if (d.get("yield") or 0) >= min_yield]
+
+        # Batch-quote for market caps (chunk in groups of 200)
+        mcap_map: dict[str, float] = {}
+        if min_market_cap > 0 and unique:
+            symbols = sorted({(d.get("symbol") or "").upper() for d in unique})
+            chunk_size = 200
+            chunks = [symbols[i:i + chunk_size] for i in range(0, len(symbols), chunk_size)]
+            batch_results = await asyncio.gather(*(
+                _safe_call(
+                    client.batch.get_quotes,
+                    symbols=chunk,
+                    ttl=TTL_HOURLY,
+                    default=[],
+                )
+                for chunk in chunks
+            ))
+            for batch in batch_results:
+                for q in _as_list(batch):
+                    sym = q.get("symbol")
+                    mc = q.get("marketCap")
+                    if sym and mc:
+                        mcap_map[sym] = mc
+
+        # Build output with filters
+        dividends = []
+        for d in unique:
+            sym = (d.get("symbol") or "").upper()
+            mc = mcap_map.get(sym)
+            if min_market_cap > 0 and (mc is None or mc < min_market_cap):
+                continue
+            entry: dict = {
+                "symbol": sym,
                 "ex_date": d.get("date"),
                 "dividend": d.get("dividend"),
                 "adj_dividend": d.get("adjDividend"),
-                "record_date": d.get("recordDate"),
-                "payment_date": d.get("paymentDate"),
                 "yield_pct": d.get("yield"),
                 "frequency": d.get("frequency"),
-            })
+            }
+            if mc is not None:
+                entry["market_cap"] = mc
+            dividends.append(entry)
+
+        if not dividends:
+            return {"error": f"No dividends ≥${min_market_cap/1e9:.0f}B market cap in the next {days_ahead} days"}
+
+        # Sort by market cap descending
+        dividends.sort(key=lambda x: -(x.get("market_cap") or 0))
+
+        total_matching = len(dividends)
+        dividends = dividends[:limit]
 
         return {
             "dividends": dividends,
             "count": len(dividends),
+            "total_matching": total_matching,
+            "min_market_cap": min_market_cap,
             "period": f"{today.isoformat()} to {end_date.isoformat()}",
         }
 

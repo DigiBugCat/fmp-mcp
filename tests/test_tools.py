@@ -1983,9 +1983,17 @@ class TestIPOCalendar:
 class TestDividendsCalendar:
     @pytest.mark.asyncio
     @respx.mock
-    async def test_with_data(self):
+    async def test_browse_with_market_cap(self):
+        """Browse mode filters by market cap and sorts by mcap descending."""
         respx.get(f"{BASE}/stable/dividends-calendar").mock(
             return_value=httpx.Response(200, json=DIVIDENDS_CALENDAR)
+        )
+        respx.get(f"{BASE}/stable/batch-quote").mock(
+            return_value=httpx.Response(200, json=[
+                {"symbol": "AAPL", "marketCap": 3_000_000_000_000},
+                {"symbol": "MSFT", "marketCap": 2_800_000_000_000},
+                {"symbol": "JNJ", "marketCap": 400_000_000_000},
+            ])
         )
 
         mcp, fmp = _make_server(register_macro)
@@ -1994,10 +2002,65 @@ class TestDividendsCalendar:
 
         data = result.data
         assert data["count"] == 3
-        # Sorted by date ascending
+        assert data["total_matching"] == 3
+        # Sorted by market cap descending
         assert data["dividends"][0]["symbol"] == "AAPL"
+        assert data["dividends"][0]["market_cap"] == 3_000_000_000_000
+        assert data["dividends"][1]["symbol"] == "MSFT"
+        await fmp.aclose()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_browse_no_market_cap_filter(self):
+        """Browse mode with min_market_cap=0 skips batch-quote."""
+        respx.get(f"{BASE}/stable/dividends-calendar").mock(
+            return_value=httpx.Response(200, json=DIVIDENDS_CALENDAR)
+        )
+
+        mcp, fmp = _make_server(register_macro)
+        async with Client(mcp) as c:
+            result = await c.call_tool("dividends_calendar", {"min_market_cap": 0})
+
+        data = result.data
+        assert data["count"] == 3
         assert data["dividends"][0]["dividend"] == 0.26
         assert data["dividends"][0]["yield_pct"] == 0.38
+        await fmp.aclose()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_single_symbol(self):
+        """Single-symbol mode returns full details without market cap filtering."""
+        respx.get(f"{BASE}/stable/dividends-calendar").mock(
+            return_value=httpx.Response(200, json=DIVIDENDS_CALENDAR)
+        )
+
+        mcp, fmp = _make_server(register_macro)
+        async with Client(mcp) as c:
+            result = await c.call_tool("dividends_calendar", {"symbol": "JNJ"})
+
+        data = result.data
+        assert data["count"] == 1
+        assert data["symbol"] == "JNJ"
+        assert data["dividends"][0]["dividend"] == 1.24
+        assert data["dividends"][0]["record_date"] == "2026-02-19"
+        await fmp.aclose()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_min_yield_filter(self):
+        """min_yield filter excludes low-yield dividends."""
+        respx.get(f"{BASE}/stable/dividends-calendar").mock(
+            return_value=httpx.Response(200, json=DIVIDENDS_CALENDAR)
+        )
+
+        mcp, fmp = _make_server(register_macro)
+        async with Client(mcp) as c:
+            result = await c.call_tool("dividends_calendar", {"min_yield": 3.0, "min_market_cap": 0})
+
+        data = result.data
+        assert data["count"] == 1
+        assert data["dividends"][0]["symbol"] == "JNJ"
         await fmp.aclose()
 
     @pytest.mark.asyncio
