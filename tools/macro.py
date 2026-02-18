@@ -6,6 +6,7 @@ import asyncio
 from datetime import date, timedelta
 from typing import TYPE_CHECKING
 
+import toon
 from fmp_data.models import APIVersion, Endpoint, EndpointParam, ParamLocation, ParamType
 
 from tools._helpers import (
@@ -673,11 +674,12 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
         min_market_cap: float = 1_000_000_000,
         min_yield: float = 0.0,
         limit: int = 50,
+        country: str | None = "US",
     ) -> dict:
         """Get upcoming ex-dividend dates across all stocks.
 
         Returns symbols going ex-dividend within the specified window.
-        When no symbol is given, filters to large-cap stocks (default $1B+)
+        When no symbol is given, filters to US large-cap stocks (default $1B+)
         to keep results manageable. Results sorted by market cap descending.
 
         Args:
@@ -689,6 +691,8 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
             min_yield: Minimum dividend yield % filter (default 0, no filter)
             limit: Max results in browsing mode (default 50, max 200).
                 Ignored when symbol is specified.
+            country: Country filter - "US" (default) filters to domestic tickers.
+                Set to None or "" for global results.
         """
         days_ahead = min(max(days_ahead, 1), 90)
         limit = max(1, min(limit, 200))
@@ -748,6 +752,11 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
                 seen.add(sym)
                 unique.append(d)
 
+        # Country filter: "US" excludes international tickers (those with exchange suffixes like .DE, .L)
+        country_upper = country.upper().strip() if isinstance(country, str) and country.strip() else None
+        if country_upper == "US":
+            unique = [d for d in unique if "." not in (d.get("symbol") or "")]
+
         # Apply min_yield filter early
         if min_yield > 0:
             unique = [d for d in unique if (d.get("yield") or 0) >= min_yield]
@@ -781,32 +790,34 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
             mc = mcap_map.get(sym)
             if min_market_cap > 0 and (mc is None or mc < min_market_cap):
                 continue
-            entry: dict = {
-                "symbol": sym,
-                "ex_date": d.get("date"),
-                "dividend": d.get("dividend"),
-                "adj_dividend": d.get("adjDividend"),
-                "yield_pct": d.get("yield"),
-                "frequency": d.get("frequency"),
-            }
-            if mc is not None:
-                entry["market_cap"] = mc
-            dividends.append(entry)
+            dividends.append({
+                "s": sym,
+                "ex": d.get("date"),
+                "div": d.get("dividend"),
+                "yld": round(d["yield"], 2) if d.get("yield") else None,
+                "mc": mc,
+            })
 
         if not dividends:
-            return {"error": f"No dividends ≥${min_market_cap/1e9:.0f}B market cap in the next {days_ahead} days"}
+            filter_parts = [f"≥${min_market_cap/1e9:.0f}B market cap"]
+            if country_upper:
+                filter_parts.append(f"country={country_upper}")
+            if min_yield > 0:
+                filter_parts.append(f"yield≥{min_yield}%")
+            return {"error": f"No dividends matching {', '.join(filter_parts)} in the next {days_ahead} days"}
 
         # Sort by market cap descending
-        dividends.sort(key=lambda x: -(x.get("market_cap") or 0))
+        dividends.sort(key=lambda x: -(x.get("mc") or 0))
 
         total_matching = len(dividends)
         dividends = dividends[:limit]
 
         return {
-            "dividends": dividends,
+            "dividends": toon.encode(dividends),
             "count": len(dividends),
             "total_matching": total_matching,
             "min_market_cap": min_market_cap,
+            "country": country_upper,
             "period": f"{today.isoformat()} to {end_date.isoformat()}",
         }
 

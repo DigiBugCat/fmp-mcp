@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 import respx
@@ -459,6 +459,9 @@ class TestEarningsInfo:
         assert data["forward_estimates"][0]["num_analysts_eps"] is not None
         assert len(data["recent_quarters"]) == 4
         assert data["recent_quarters"][0]["eps_diluted"] == 2.40
+        assert data["deprecated"] is True
+        assert data["redirect_to"] == "earnings_setup"
+        assert any("Deprecated tool" in w for w in data.get("_warnings", []))
         await fmp.aclose()
 
 
@@ -633,6 +636,7 @@ class TestMarketNews:
         assert data["category"] == "stock"
         assert data["symbol"] is None
         assert data["count"] == 3
+        assert any("Did you mean to pass symbol" in w for w in data.get("_warnings", []))
         await fmp.aclose()
 
     @pytest.mark.asyncio
@@ -1347,6 +1351,41 @@ class TestEarningsCalendar:
 
     @pytest.mark.asyncio
     @respx.mock
+    async def test_symbols_post_filter(self):
+        respx.get(f"{BASE}/stable/earnings-calendar").mock(
+            return_value=httpx.Response(200, json=EARNINGS_CALENDAR)
+        )
+
+        mcp, fmp = _make_server(register_market)
+        async with Client(mcp) as c:
+            result = await c.call_tool("earnings_calendar", {"symbols": ["AAPL", "TSLA"], "min_market_cap": 0})
+
+        data = result.data
+        assert data["count"] == 2
+        assert [e["symbol"] for e in data["earnings"]] == ["AAPL", "TSLA"]
+        await fmp.aclose()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_extended_days_ahead(self):
+        respx.get(f"{BASE}/stable/earnings-calendar").mock(
+            return_value=httpx.Response(200, json=EARNINGS_CALENDAR)
+        )
+        respx.get(f"{BASE}/stable/batch-quote").mock(
+            return_value=httpx.Response(200, json=EARNINGS_BATCH_QUOTE)
+        )
+
+        mcp, fmp = _make_server(register_market)
+        async with Client(mcp) as c:
+            result = await c.call_tool("earnings_calendar", {"days_ahead": 90})
+
+        data = result.data
+        assert data["count"] > 0
+        assert data["to_date"] > data["from_date"]
+        await fmp.aclose()
+
+    @pytest.mark.asyncio
+    @respx.mock
     async def test_filtered_by_symbol(self):
         respx.get(f"{BASE}/stable/earnings-calendar").mock(
             return_value=httpx.Response(200, json=EARNINGS_CALENDAR)
@@ -1984,7 +2023,7 @@ class TestDividendsCalendar:
     @pytest.mark.asyncio
     @respx.mock
     async def test_browse_with_market_cap(self):
-        """Browse mode filters by market cap and sorts by mcap descending."""
+        """Browse mode filters by market cap, sorts by mcap descending, TOON-encodes."""
         respx.get(f"{BASE}/stable/dividends-calendar").mock(
             return_value=httpx.Response(200, json=DIVIDENDS_CALENDAR)
         )
@@ -2003,16 +2042,17 @@ class TestDividendsCalendar:
         data = result.data
         assert data["count"] == 3
         assert data["total_matching"] == 3
-        # Sorted by market cap descending
-        assert data["dividends"][0]["symbol"] == "AAPL"
-        assert data["dividends"][0]["market_cap"] == 3_000_000_000_000
-        assert data["dividends"][1]["symbol"] == "MSFT"
+        assert data["country"] == "US"
+        # dividends is TOON-encoded string
+        assert isinstance(data["dividends"], str)
+        # Sorted by market cap descending: AAPL first
+        assert data["dividends"].index("AAPL") < data["dividends"].index("MSFT")
         await fmp.aclose()
 
     @pytest.mark.asyncio
     @respx.mock
     async def test_browse_no_market_cap_filter(self):
-        """Browse mode with min_market_cap=0 skips batch-quote."""
+        """Browse mode with min_market_cap=0 skips batch-quote, TOON-encodes."""
         respx.get(f"{BASE}/stable/dividends-calendar").mock(
             return_value=httpx.Response(200, json=DIVIDENDS_CALENDAR)
         )
@@ -2023,8 +2063,9 @@ class TestDividendsCalendar:
 
         data = result.data
         assert data["count"] == 3
-        assert data["dividends"][0]["dividend"] == 0.26
-        assert data["dividends"][0]["yield_pct"] == 0.38
+        assert isinstance(data["dividends"], str)
+        assert "AAPL" in data["dividends"]
+        assert "0.26" in data["dividends"]
         await fmp.aclose()
 
     @pytest.mark.asyncio
@@ -2060,7 +2101,50 @@ class TestDividendsCalendar:
 
         data = result.data
         assert data["count"] == 1
-        assert data["dividends"][0]["symbol"] == "JNJ"
+        assert isinstance(data["dividends"], str)
+        assert "JNJ" in data["dividends"]
+        await fmp.aclose()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_country_filter_global(self):
+        """country=None returns all tickers including international."""
+        intl_calendar = DIVIDENDS_CALENDAR + [
+            {"symbol": "SAP.DE", "date": "2026-02-16", "dividend": 2.20, "adjDividend": 2.20,
+             "recordDate": "2026-02-19", "paymentDate": "2026-02-28", "yield": 1.0, "frequency": "annual"},
+        ]
+        respx.get(f"{BASE}/stable/dividends-calendar").mock(
+            return_value=httpx.Response(200, json=intl_calendar)
+        )
+
+        mcp, fmp = _make_server(register_macro)
+        async with Client(mcp) as c:
+            result = await c.call_tool("dividends_calendar", {"min_market_cap": 0, "country": ""})
+
+        data = result.data
+        assert data["count"] == 4
+        assert "SAP.DE" in data["dividends"]
+        await fmp.aclose()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_country_filter_us(self):
+        """Default country=US excludes international tickers."""
+        intl_calendar = DIVIDENDS_CALENDAR + [
+            {"symbol": "SAP.DE", "date": "2026-02-16", "dividend": 2.20, "adjDividend": 2.20,
+             "recordDate": "2026-02-19", "paymentDate": "2026-02-28", "yield": 1.0, "frequency": "annual"},
+        ]
+        respx.get(f"{BASE}/stable/dividends-calendar").mock(
+            return_value=httpx.Response(200, json=intl_calendar)
+        )
+
+        mcp, fmp = _make_server(register_macro)
+        async with Client(mcp) as c:
+            result = await c.call_tool("dividends_calendar", {"min_market_cap": 0})
+
+        data = result.data
+        assert data["count"] == 3
+        assert "SAP.DE" not in data["dividends"]
         await fmp.aclose()
 
     @pytest.mark.asyncio
@@ -2243,6 +2327,24 @@ class TestCommodityQuotes:
         assert data["price"] == 2045.30
         assert data["change"] == 12.50
         assert data["name"] == "Gold"
+        await fmp.aclose()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_single_quote_stale_warning(self):
+        stale_ts = int((datetime.now(timezone.utc) - timedelta(minutes=20)).timestamp())
+        stale_quote = [{**GOLD_QUOTE[0], "timestamp": stale_ts}]
+        respx.get(f"{BASE}/stable/quote").mock(
+            return_value=httpx.Response(200, json=stale_quote)
+        )
+
+        mcp, fmp = _make_server(register_assets)
+        async with Client(mcp) as c:
+            result = await c.call_tool("commodity_quotes", {"symbol": "GCUSD"})
+
+        data = result.data
+        assert data["quote_age_minutes"] >= 15
+        assert any("stale" in w.lower() for w in data.get("_warnings", []))
         await fmp.aclose()
 
     @pytest.mark.asyncio
