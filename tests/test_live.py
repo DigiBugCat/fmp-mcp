@@ -179,7 +179,6 @@ CANONICAL_CASES = [
     _case("estimate_revisions", {"symbol": "AAPL"}, ("symbol", "forward_estimates", "recent_analyst_actions", "earnings_track_record")),
     # market
     _case("price_history", {"symbol": "AAPL", "period": "1y"}, ("symbol", "current_price", "data_points")),
-    _case("earnings_info", {"symbol": "AAPL"}, ("symbol", "forward_estimates", "recent_quarters")),
     _case("dividends_info", {"symbol": "AAPL"}, ("symbol", "recent_dividends", "stock_splits")),
     _case(
         "earnings_calendar",
@@ -238,7 +237,7 @@ CANONICAL_CASES = [
     _case("stock_brief", {"symbol": "AAPL"}, ("symbol", "company_name", "price", "momentum", "valuation", "analyst", "insider", "news", "quick_take")),
     _case("market_context", {}, ("date", "rates", "rotation", "breadth", "movers", "calendar", "environment")),
     _case("earnings_setup", {"symbol": "AAPL"}, ("symbol", "company_name", "consensus", "surprise_history", "analyst_momentum", "setup_summary")),
-    _case("earnings_preview", {"ticker": "AAPL"}, ("ticker", "setup_signal", "composite_score", "price_context", "consensus", "beat_history", "signals")),
+    _case("earnings_preview", {"symbol": "AAPL"}, ("symbol", "setup_signal", "composite_score", "price_context", "consensus", "beat_history", "signals")),
     _case("fair_value_estimate", {"symbol": "AAPL"}, ("symbol", "current_price", "fundamentals", "growth", "multiples", "fair_value", "quality", "summary")),
     _case("earnings_postmortem", {"symbol": "AAPL"}, ("symbol", "earnings_date", "results", "yoy", "qoq", "guidance", "analyst_reaction", "market_reaction", "summary")),
     _case("ownership_deep_dive", {"symbol": "AAPL"}, ("symbol", "ownership_structure", "insider_activity", "institutional_ownership", "short_interest", "ownership_analysis")),

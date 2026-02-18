@@ -2,11 +2,72 @@
 
 from __future__ import annotations
 
+from datetime import date, datetime
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
     from polygon_client import PolygonClient
+
+
+def _parse_iso_date(raw: str | None, field_name: str) -> tuple[date | None, str | None]:
+    if raw is None:
+        return None, None
+    try:
+        return datetime.strptime(raw, "%Y-%m-%d").date(), None
+    except ValueError:
+        return None, f"Invalid {field_name} '{raw}'. Expected YYYY-MM-DD."
+
+
+def _option_mark(bid: float | None, ask: float | None, last_price: float | None) -> float | None:
+    if bid is not None and ask is not None and bid > 0 and ask > 0:
+        return round((bid + ask) / 2, 4)
+    if bid is not None and bid > 0:
+        return bid
+    if ask is not None and ask > 0:
+        return ask
+    if last_price is not None and last_price > 0:
+        return last_price
+    return None
+
+
+def _build_put_selling_metrics(
+    *,
+    underlying_price: float | None,
+    strike: float | None,
+    premium: float | None,
+    expiration: str,
+    today_dt: date,
+) -> dict | None:
+    if underlying_price is None or underlying_price <= 0:
+        return None
+    if strike is None or strike <= 0:
+        return None
+    if premium is None or premium <= 0:
+        return None
+
+    exp_dt, _err = _parse_iso_date(expiration, "expiration")
+    if exp_dt is None:
+        return None
+
+    days_to_expiry = (exp_dt - today_dt).days
+    if days_to_expiry <= 0:
+        return None
+
+    breakeven = round(strike - premium, 4)
+    cushion_pct = round((underlying_price - breakeven) / underlying_price * 100, 2)
+    premium_dollars = round(premium * 100, 2)
+    dollars_per_day = round(premium_dollars / days_to_expiry, 2)
+    annualized_return_pct = round((premium / strike) * (365 / days_to_expiry) * 100, 2)
+
+    return {
+        "premium_dollars": premium_dollars,
+        "dollars_per_day": dollars_per_day,
+        "days_to_expiry": days_to_expiry,
+        "breakeven": breakeven,
+        "cushion_pct": cushion_pct,
+        "annualized_return_pct": annualized_return_pct,
+    }
 
 
 def register(mcp: FastMCP, polygon_client: PolygonClient) -> None:
@@ -22,10 +83,12 @@ def register(mcp: FastMCP, polygon_client: PolygonClient) -> None:
     async def options_chain(
         symbol: str,
         expiration_date: str | None = None,
+        expiry_from: str | None = None,
+        expiry_to: str | None = None,
         contract_type: str | None = None,
         strike_gte: float | None = None,
         strike_lte: float | None = None,
-        limit: int = 50,
+        limit: int = 100,
     ) -> dict:
         """Get options chain with Greeks, IV, open interest, and bid/ask.
 
@@ -36,16 +99,35 @@ def register(mcp: FastMCP, polygon_client: PolygonClient) -> None:
         Args:
             symbol: Stock ticker symbol (e.g. "AAPL")
             expiration_date: Filter to specific expiration (YYYY-MM-DD)
+            expiry_from: Start expiration date for multi-expiry range mode (YYYY-MM-DD)
+            expiry_to: End expiration date for multi-expiry range mode (YYYY-MM-DD)
             contract_type: Filter by "call" or "put"
             strike_gte: Minimum strike price
             strike_lte: Maximum strike price
-            limit: Max contracts to return (default 50, max 250)
+            limit: Max contracts to return (default 100, max 250)
         """
         symbol = symbol.upper().strip()
         limit = max(1, min(limit, 250))
 
+        if expiration_date and (expiry_from or expiry_to):
+            return {
+                "error": "Use either expiration_date (single expiry) or expiry_from/expiry_to (range mode), not both."
+            }
+
+        expiration_dt, expiration_err = _parse_iso_date(expiration_date, "expiration_date")
+        if expiration_err:
+            return {"error": expiration_err}
+        expiry_from_dt, expiry_from_err = _parse_iso_date(expiry_from, "expiry_from")
+        if expiry_from_err:
+            return {"error": expiry_from_err}
+        expiry_to_dt, expiry_to_err = _parse_iso_date(expiry_to, "expiry_to")
+        if expiry_to_err:
+            return {"error": expiry_to_err}
+        if expiry_from_dt and expiry_to_dt and expiry_from_dt > expiry_to_dt:
+            return {"error": "expiry_from must be <= expiry_to."}
+
         params: dict = {"limit": limit}
-        if expiration_date:
+        if expiration_dt:
             params["expiration_date"] = expiration_date
         if contract_type:
             ct = contract_type.lower().strip()
@@ -67,11 +149,66 @@ def register(mcp: FastMCP, polygon_client: PolygonClient) -> None:
             return {"error": f"No options data found for '{symbol}'"}
 
         results = data.get("results", [])
+        if expiry_from_dt or expiry_to_dt:
+            filtered_results = []
+            for contract in results:
+                exp_raw = (contract.get("details") or {}).get("expiration_date")
+                exp_dt, _ = _parse_iso_date(exp_raw, "expiration")
+                if exp_dt is None:
+                    continue
+                if expiry_from_dt and exp_dt < expiry_from_dt:
+                    continue
+                if expiry_to_dt and exp_dt > expiry_to_dt:
+                    continue
+                filtered_results.append(contract)
+            results = filtered_results
+
         if not results:
             return {"error": f"No options contracts found for '{symbol}' with given filters"}
 
+        zero_bid_ask_count = 0
+        for contract in results:
+            last_quote = contract.get("last_quote", {})
+            bid = last_quote.get("bid") or 0
+            ask = last_quote.get("ask") or 0
+            if bid == 0 and ask == 0:
+                zero_bid_ask_count += 1
+
+        warnings: list[str] = []
+        stale_quote_ratio = zero_bid_ask_count / len(results)
+        if stale_quote_ratio >= 0.8:
+            warnings.append(
+                "Data appears delayed/EOD-only: over 80% of contracts show $0 bid/ask."
+            )
+
+        underlying_price = None
+        top_underlying = data.get("underlying_asset")
+        if isinstance(top_underlying, dict):
+            underlying_price = top_underlying.get("price")
+        if underlying_price is None:
+            for contract in results:
+                per_contract_underlying = contract.get("underlying_asset")
+                if isinstance(per_contract_underlying, dict) and per_contract_underlying.get("price") is not None:
+                    underlying_price = per_contract_underlying.get("price")
+                    break
+        if underlying_price is None:
+            strike_with_oi = [
+                (
+                    (contract.get("open_interest") or 0),
+                    (contract.get("details") or {}).get("strike_price"),
+                )
+                for contract in results
+                if isinstance((contract.get("details") or {}).get("strike_price"), (int, float))
+            ]
+            if strike_with_oi:
+                # Fallback heuristic: most active strike tends to cluster around spot.
+                underlying_price = max(strike_with_oi, key=lambda row: row[0])[1]
+        if underlying_price is None:
+            warnings.append("Unable to resolve underlying price; some computed fields are unavailable.")
+
         # Group by expiration
         by_expiration: dict[str, list[dict]] = {}
+        today_dt = date.today()
         for contract in results:
             details = contract.get("details", {})
             greeks = contract.get("greeks", {})
@@ -99,6 +236,19 @@ def register(mcp: FastMCP, polygon_client: PolygonClient) -> None:
                 "bid_size": last_quote.get("bid_size"),
                 "ask_size": last_quote.get("ask_size"),
             }
+            mark = _option_mark(entry.get("bid"), entry.get("ask"), entry.get("last_price"))
+            if mark is not None:
+                entry["mark"] = mark
+            if entry.get("type") == "put":
+                put_metrics = _build_put_selling_metrics(
+                    underlying_price=underlying_price,
+                    strike=entry.get("strike"),
+                    premium=mark,
+                    expiration=exp,
+                    today_dt=today_dt,
+                )
+                if put_metrics is not None:
+                    entry["put_selling"] = put_metrics
 
             by_expiration.setdefault(exp, []).append(entry)
 
@@ -112,6 +262,7 @@ def register(mcp: FastMCP, polygon_client: PolygonClient) -> None:
         total_puts = 0
         total_call_oi = 0
         total_put_oi = 0
+        first_expiry_atm_implied_move_pct = None
 
         for exp in sorted(by_expiration.keys()):
             contracts = by_expiration[exp]
@@ -127,6 +278,53 @@ def register(mcp: FastMCP, polygon_client: PolygonClient) -> None:
             total_call_oi += call_oi
             total_put_oi += put_oi
 
+            atm_straddle = {
+                "strike": None,
+                "premium": None,
+                "implied_move_pct": None,
+            }
+            if underlying_price is not None and calls and puts:
+                calls_by_strike = {
+                    c.get("strike"): c
+                    for c in calls
+                    if isinstance(c.get("strike"), (int, float))
+                }
+                puts_by_strike = {
+                    p.get("strike"): p
+                    for p in puts
+                    if isinstance(p.get("strike"), (int, float))
+                }
+                common_strikes = sorted(set(calls_by_strike) & set(puts_by_strike))
+                if common_strikes:
+                    atm_strike = min(common_strikes, key=lambda strike: abs(strike - underlying_price))
+                    call_contract = calls_by_strike[atm_strike]
+                    put_contract = puts_by_strike[atm_strike]
+                    call_mark = call_contract.get("mark")
+                    put_mark = put_contract.get("mark")
+                    if call_mark is not None and put_mark is not None:
+                        premium = round(call_mark + put_mark, 4)
+                        implied_move_pct = round(premium / underlying_price * 100, 2) if underlying_price > 0 else None
+                        atm_straddle = {
+                            "strike": atm_strike,
+                            "premium": premium,
+                            "implied_move_pct": implied_move_pct,
+                        }
+                        if first_expiry_atm_implied_move_pct is None:
+                            first_expiry_atm_implied_move_pct = implied_move_pct
+
+            best_put_sale = None
+            put_candidates = [p for p in puts if isinstance(p.get("put_selling"), dict)]
+            if put_candidates:
+                best_put = max(
+                    put_candidates,
+                    key=lambda p: (p.get("put_selling") or {}).get("annualized_return_pct") or 0,
+                )
+                best_put_sale = {
+                    "strike": best_put.get("strike"),
+                    "mark": best_put.get("mark"),
+                    **(best_put.get("put_selling") or {}),
+                }
+
             expirations.append({
                 "expiration": exp,
                 "contract_count": len(contracts),
@@ -135,12 +333,14 @@ def register(mcp: FastMCP, polygon_client: PolygonClient) -> None:
                 "call_open_interest": call_oi,
                 "put_open_interest": put_oi,
                 "put_call_oi_ratio": pc_ratio,
+                "atm_straddle": atm_straddle,
+                "best_put_sale": best_put_sale,
                 "contracts": contracts,
             })
 
         overall_pc_ratio = round(total_put_oi / total_call_oi, 2) if total_call_oi > 0 else None
 
-        return {
+        result = {
             "symbol": symbol,
             "total_contracts": sum(len(e["contracts"]) for e in expirations),
             "summary": {
@@ -149,7 +349,12 @@ def register(mcp: FastMCP, polygon_client: PolygonClient) -> None:
                 "total_call_oi": total_call_oi,
                 "total_put_oi": total_put_oi,
                 "overall_put_call_ratio": overall_pc_ratio,
+                "underlying_price": underlying_price,
+                "atm_implied_move_pct": first_expiry_atm_implied_move_pct,
             },
             "expirations": expirations,
             "source": "polygon.io",
         }
+        if warnings:
+            result["_warnings"] = warnings
+        return result

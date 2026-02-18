@@ -243,116 +243,6 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient, polygon_client: PolygonCl
 
     @mcp.tool(
         annotations={
-            "title": "Earnings Info",
-            "readOnlyHint": True,
-            "destructiveHint": False,
-            "idempotentHint": True,
-            "openWorldHint": True,
-        }
-    )
-    async def earnings_info(symbol: str) -> dict:
-        """Get analyst earnings estimates and income statement history for a stock.
-
-        Returns upcoming quarterly estimates (EPS and revenue) from analyst
-        consensus, plus recent annual income data for trend context.
-
-        Args:
-            symbol: Stock ticker symbol (e.g. "AAPL")
-        """
-        symbol = symbol.upper().strip()
-
-        # Use analyst-estimates for per-symbol forward-looking estimates
-        # and income-statement for historical actuals
-        estimates_data, income_data = await asyncio.gather(
-            _safe_call(
-                client.company.get_analyst_estimates,
-                symbol=symbol,
-                period="quarter",
-                limit=8,
-                ttl=TTL_6H,
-                default=[],
-            ),
-            _safe_call(
-                client.fundamental.get_income_statement,
-                symbol=symbol,
-                period="quarter",
-                limit=8,
-                ttl=TTL_HOURLY,
-                default=[],
-            ),
-        )
-
-        estimates_list = _as_list(estimates_data)
-        income_list = _as_list(income_data)
-
-        if not estimates_list and not income_list:
-            return {"error": f"No earnings data found for '{symbol}'"}
-
-        # Build forward estimates (sorted by date ascending = nearest first)
-        estimates_list.sort(key=lambda e: e.get("date", ""))
-
-        forward_estimates = []
-        for entry in estimates_list:
-            eps_avg = entry.get("epsAvg")
-            if eps_avg is None:
-                eps_avg = entry.get("estimatedEpsAvg")
-            eps_high = entry.get("epsHigh")
-            if eps_high is None:
-                eps_high = entry.get("estimatedEpsHigh")
-            eps_low = entry.get("epsLow")
-            if eps_low is None:
-                eps_low = entry.get("estimatedEpsLow")
-            revenue_avg = entry.get("revenueAvg")
-            if revenue_avg is None:
-                revenue_avg = entry.get("estimatedRevenueAvg")
-            revenue_high = entry.get("revenueHigh")
-            if revenue_high is None:
-                revenue_high = entry.get("estimatedRevenueHigh")
-            revenue_low = entry.get("revenueLow")
-            if revenue_low is None:
-                revenue_low = entry.get("estimatedRevenueLow")
-            forward_estimates.append({
-                "date": entry.get("date"),
-                "eps_avg": eps_avg,
-                "eps_high": eps_high,
-                "eps_low": eps_low,
-                "revenue_avg": revenue_avg,
-                "revenue_high": revenue_high,
-                "revenue_low": revenue_low,
-                "num_analysts_eps": entry.get("numAnalystsEps") or entry.get("numberAnalystsEstimatedEps"),
-                "num_analysts_revenue": entry.get("numAnalystsRevenue") or entry.get("numberAnalystEstimatedRevenue"),
-            })
-
-        # Build recent quarterly actuals from income statements
-        recent_quarters = []
-        for entry in income_list:
-            recent_quarters.append({
-                "date": entry.get("date"),
-                "period": entry.get("period"),
-                "revenue": entry.get("revenue"),
-                "net_income": entry.get("netIncome"),
-                "eps": entry.get("eps"),
-                "eps_diluted": entry.get("epsDiluted"),
-            })
-
-        result = {
-            "symbol": symbol,
-            "forward_estimates": forward_estimates,
-            "recent_quarters": recent_quarters,
-        }
-
-        errors = []
-        if not estimates_list:
-            errors.append("analyst estimates unavailable")
-        if not income_list:
-            errors.append("quarterly income data unavailable")
-        if errors:
-            result["_warnings"] = errors
-
-        return result
-
-    @mcp.tool(
-        annotations={
             "title": "Dividends Info",
             "readOnlyHint": True,
             "destructiveHint": False,
@@ -556,9 +446,12 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient, polygon_client: PolygonCl
     )
     async def earnings_calendar(
         symbol: str | None = None,
+        symbols: list[str] | None = None,
         days_ahead: int = 7,
         min_market_cap: float = 2_000_000_000,
         limit: int = 50,
+        country: str | None = "US",
+        exchange: str | None = None,
     ) -> dict:
         """Get upcoming earnings report dates and estimates.
 
@@ -570,17 +463,29 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient, polygon_client: PolygonCl
 
         Args:
             symbol: Optional stock ticker to filter results (e.g. "AAPL")
-            days_ahead: Number of days to look ahead (default 7, max 30)
+            symbols: Optional list of stock tickers for post-filtering in browsing mode
+            days_ahead: Number of days to look ahead (default 7, max 365)
             min_market_cap: Minimum market cap filter in USD when browsing
                 all earnings (default 2B). Ignored when symbol is specified.
                 Set to 0 to include all companies.
             limit: Max results in browsing mode (default 50, max 100).
                 Ignored when symbol is specified.
+            country: Optional country filter in browsing mode (default "US")
+            exchange: Optional exchange filter in browsing mode (e.g. "NASDAQ")
         """
-        days_ahead = max(1, min(days_ahead, 30))
+        days_ahead = max(1, min(days_ahead, 365))
         limit = max(1, min(limit, 100))
         today = date.today()
         to_date = today + timedelta(days=days_ahead)
+        warnings: list[str] = []
+
+        symbols_filter = sorted({
+            s.upper().strip()
+            for s in (symbols or [])
+            if isinstance(s, str) and s.strip()
+        })
+        country_filter = country.upper().strip() if isinstance(country, str) and country.strip() else None
+        exchange_filter = exchange.upper().strip() if isinstance(exchange, str) and exchange.strip() else None
 
         data = await _safe_call(
             client.intelligence.get_earnings_calendar,
@@ -611,18 +516,83 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient, polygon_client: PolygonCl
             }
             oi_map = await _fetch_options_oi([symbol])
             if symbol in oi_map:
-                entry["options_oi"] = oi_map[symbol]["total_oi"]
-            return {
+                oi_payload = oi_map[symbol]
+                entry["options_oi"] = oi_payload["total_oi"]
+                entry["options"] = {
+                    "total_oi": oi_payload["total_oi"],
+                    "open_interest": oi_payload["total_oi"],
+                    "call_oi": oi_payload["call_oi"],
+                    "put_oi": oi_payload["put_oi"],
+                    "call_open_interest": oi_payload["call_oi"],
+                    "put_open_interest": oi_payload["put_oi"],
+                    "put_call_ratio": oi_payload["put_call_ratio"],
+                }
+            result = {
                 "from_date": today.isoformat(),
                 "to_date": to_date.isoformat(),
                 "symbol": symbol,
                 "count": 1,
                 "earnings": [entry],
             }
+            if symbols_filter:
+                result["_warnings"] = ["'symbols' is ignored when single 'symbol' is provided."]
+            return result
 
         # Browsing mode: filter to liquid large-caps
         if not entries:
             return {"error": f"No earnings scheduled in the next {days_ahead} days"}
+
+        if symbols_filter:
+            symbol_set = set(symbols_filter)
+            entries = [e for e in entries if (e.get("symbol") or "").upper() in symbol_set]
+            if not entries:
+                return {
+                    "error": f"No earnings found for requested symbols in the next {days_ahead} days",
+                    "symbols": symbols_filter,
+                }
+
+        if country_filter:
+            country_fields = (
+                "country",
+                "countryCode",
+            )
+            has_country_data = any(any(e.get(field) for field in country_fields) for e in entries)
+            if has_country_data:
+                entries = [
+                    e
+                    for e in entries
+                    if ((e.get("country") or e.get("countryCode") or "").upper() == country_filter)
+                ]
+            else:
+                warnings.append("country filter could not be applied because source data omitted country fields")
+
+        if exchange_filter:
+            exchange_fields = (
+                "exchange",
+                "exchangeCode",
+                "exchangeShortName",
+            )
+            has_exchange_data = any(any(e.get(field) for field in exchange_fields) for e in entries)
+            if has_exchange_data:
+                entries = [
+                    e
+                    for e in entries
+                    if (
+                        (e.get("exchange") or e.get("exchangeCode") or e.get("exchangeShortName") or "").upper()
+                        == exchange_filter
+                    )
+                ]
+            else:
+                warnings.append("exchange filter could not be applied because source data omitted exchange fields")
+
+        if not entries:
+            filter_parts = []
+            if country_filter:
+                filter_parts.append(f"country={country_filter}")
+            if exchange_filter:
+                filter_parts.append(f"exchange={exchange_filter}")
+            filter_text = ", ".join(filter_parts) if filter_parts else "the requested filters"
+            return {"error": f"No earnings matched {filter_text} in the next {days_ahead} days"}
 
         # Pre-filter: skip entries with tiny/missing revenue estimates
         # to reduce the batch-quote call size ($50M rev ≈ mid-cap floor)
@@ -681,6 +651,10 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient, polygon_client: PolygonCl
                 "eps_estimate": e.get("epsEstimated"),
                 "revenue_estimate": e.get("revenueEstimated"),
             }
+            if e.get("country"):
+                entry["country"] = e.get("country")
+            if e.get("exchange") or e.get("exchangeShortName"):
+                entry["exchange"] = e.get("exchange") or e.get("exchangeShortName")
             if mc is not None:
                 entry["market_cap"] = mc
             earnings.append(entry)
@@ -700,16 +674,32 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient, polygon_client: PolygonCl
         for entry in earnings:
             sym = entry["symbol"]
             if sym in oi_map:
-                entry["options_oi"] = oi_map[sym]["total_oi"]
+                oi_payload = oi_map[sym]
+                entry["options_oi"] = oi_payload["total_oi"]
+                entry["options"] = {
+                    "total_oi": oi_payload["total_oi"],
+                    "open_interest": oi_payload["total_oi"],
+                    "call_oi": oi_payload["call_oi"],
+                    "put_oi": oi_payload["put_oi"],
+                    "call_open_interest": oi_payload["call_oi"],
+                    "put_open_interest": oi_payload["put_oi"],
+                    "put_call_ratio": oi_payload["put_call_ratio"],
+                }
 
-        return {
+        result = {
             "from_date": today.isoformat(),
             "to_date": to_date.isoformat(),
             "min_market_cap": min_market_cap,
+            "country": country_filter,
+            "exchange": exchange_filter,
+            "symbols": symbols_filter or None,
             "count": len(earnings),
             "total_matching": total_matching,
             "earnings": earnings,
         }
+        if warnings:
+            result["_warnings"] = warnings
+        return result
 
     @mcp.tool(
         annotations={

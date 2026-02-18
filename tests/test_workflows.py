@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import date, timedelta
+
 import pytest
 import respx
 import httpx
@@ -127,6 +129,40 @@ class TestStockBrief:
 
         data = result.data
         assert "error" in data
+        await fmp.aclose()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_filters_cross_symbol_news(self):
+        mixed_news = [
+            *AAPL_NEWS,
+            {
+                "symbol": "MSFT",
+                "title": "Microsoft unrelated headline",
+                "publishedDate": "2026-02-09T12:00:00.000Z",
+                "site": "Example",
+                "url": "https://example.com/msft",
+                "text": "MSFT article",
+            },
+        ]
+        respx.get(f"{BASE}/stable/profile").mock(return_value=httpx.Response(200, json=AAPL_PROFILE))
+        respx.get(f"{BASE}/stable/quote").mock(return_value=httpx.Response(200, json=AAPL_QUOTE))
+        respx.get(f"{BASE}/stable/ratios-ttm").mock(return_value=httpx.Response(200, json=AAPL_RATIOS))
+        respx.get(f"{BASE}/stable/historical-price-eod/full").mock(return_value=httpx.Response(200, json=AAPL_HISTORICAL))
+        respx.get(f"{BASE}/stable/grades-consensus").mock(return_value=httpx.Response(200, json=AAPL_GRADES))
+        respx.get(f"{BASE}/stable/price-target-consensus").mock(return_value=httpx.Response(200, json=AAPL_PRICE_TARGET))
+        respx.get(f"{BASE}/stable/insider-trading/search").mock(return_value=httpx.Response(200, json=AAPL_INSIDER_TRADES))
+        respx.get(f"{BASE}/stable/news/stock").mock(return_value=httpx.Response(200, json=mixed_news))
+        respx.get(f"{BASE}/stable/pre-post-market").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/aftermarket-trade").mock(return_value=httpx.Response(200, json=[]))
+
+        mcp, fmp = _make_server()
+        async with Client(mcp) as c:
+            result = await c.call_tool("stock_brief", {"symbol": "AAPL"})
+
+        data = result.data
+        assert all((item.get("title") or "").find("Microsoft") == -1 for item in data["news"])
+        assert any("cross-symbol news item" in w for w in data.get("_warnings", []))
         await fmp.aclose()
 
 
@@ -328,7 +364,7 @@ class TestEarningsPreview:
 
         mcp, fmp = _make_server()
         async with Client(mcp) as c:
-            result = await c.call_tool("earnings_preview", {"ticker": "AAPL", "days_ahead": 400})
+            result = await c.call_tool("earnings_preview", {"symbol": "AAPL", "days_ahead": 400})
 
         data = result.data
         assert data["ticker"] == "AAPL"
@@ -340,6 +376,33 @@ class TestEarningsPreview:
         assert isinstance(data["key_questions"], list)
         assert isinstance(data["bull_triggers"], list)
         assert isinstance(data["bear_triggers"], list)
+        await fmp.aclose()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_earnings_preview_accepts_symbol_param(self):
+        respx.get(f"{BASE}/stable/profile").mock(return_value=httpx.Response(200, json=AAPL_PROFILE))
+        respx.get(f"{BASE}/stable/quote").mock(return_value=httpx.Response(200, json=AAPL_QUOTE))
+        respx.get(f"{BASE}/stable/earnings").mock(return_value=httpx.Response(200, json=AAPL_EARNINGS))
+        respx.get(f"{BASE}/stable/grades").mock(return_value=httpx.Response(200, json=AAPL_GRADES_DETAIL))
+        respx.get(f"{BASE}/stable/historical-price-eod/full").mock(return_value=httpx.Response(200, json=AAPL_HISTORICAL))
+        respx.get(f"{BASE}/stable/insider-trading/search").mock(return_value=httpx.Response(200, json=AAPL_INSIDER_TRADES))
+        respx.get(f"{BASE}/stable/insider-trading/statistics").mock(return_value=httpx.Response(200, json=AAPL_INSIDER_STATS))
+        respx.get(f"{BASE}/stable/shares-float").mock(return_value=httpx.Response(200, json=AAPL_SHARES_FLOAT))
+        respx.get(f"{BASE}/stable/ratios-ttm").mock(return_value=httpx.Response(200, json=AAPL_RATIOS))
+        respx.get(f"{BASE}/stable/grades-consensus").mock(return_value=httpx.Response(200, json=AAPL_GRADES))
+        respx.get(f"{BASE}/stable/price-target-consensus").mock(return_value=httpx.Response(200, json=AAPL_PRICE_TARGET))
+        respx.get(f"{BASE}/stable/news/stock").mock(return_value=httpx.Response(200, json=AAPL_NEWS))
+        respx.get(f"{BASE}/stable/pre-post-market").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE}/stable/aftermarket-trade").mock(return_value=httpx.Response(200, json=[]))
+
+        mcp, fmp = _make_server()
+        async with Client(mcp) as c:
+            result = await c.call_tool("earnings_preview", {"symbol": "AAPL", "days_ahead": 400})
+
+        data = result.data
+        assert data["symbol"] == "AAPL"
+        assert data["ticker"] == "AAPL"  # backward compatibility
         await fmp.aclose()
 
     @pytest.mark.asyncio
@@ -362,7 +425,7 @@ class TestEarningsPreview:
 
         mcp, fmp = _make_server()
         async with Client(mcp) as c:
-            result = await c.call_tool("earnings_preview", {"ticker": "AAPL", "days_ahead": 1})
+            result = await c.call_tool("earnings_preview", {"symbol": "AAPL", "days_ahead": 1})
 
         data = result.data
         assert data["ticker"] == "AAPL"
@@ -390,7 +453,7 @@ class TestEarningsPreview:
 
         mcp, fmp = _make_server()
         async with Client(mcp) as c:
-            result = await c.call_tool("earnings_preview", {"ticker": "ZZZZ"})
+            result = await c.call_tool("earnings_preview", {"symbol": "ZZZZ"})
 
         data = result.data
         assert "error" in data
@@ -416,7 +479,7 @@ class TestEarningsPreview:
 
         mcp, fmp = _make_server()
         async with Client(mcp) as c:
-            result = await c.call_tool("earnings_preview", {"ticker": "AAPL"})
+            result = await c.call_tool("earnings_preview", {"symbol": "AAPL"})
 
         data = result.data
         assert "error" not in data
@@ -450,13 +513,13 @@ class TestEarningsPreview:
             monkeypatch.setattr("tools.workflows._score_price_setup", lambda *_: 0.0)
             monkeypatch.setattr("tools.workflows._score_analyst", lambda *_: 0.0)
             monkeypatch.setattr("tools.workflows._score_insider", lambda *_: 0.0)
-            bull = await c.call_tool("earnings_preview", {"ticker": "AAPL"})
+            bull = await c.call_tool("earnings_preview", {"symbol": "AAPL"})
 
             monkeypatch.setattr("tools.workflows._score_beat_rate", lambda *_: -1.0)
-            bear = await c.call_tool("earnings_preview", {"ticker": "AAPL"})
+            bear = await c.call_tool("earnings_preview", {"symbol": "AAPL"})
 
             monkeypatch.setattr("tools.workflows._score_beat_rate", lambda *_: 0.2)
-            neutral = await c.call_tool("earnings_preview", {"ticker": "AAPL"})
+            neutral = await c.call_tool("earnings_preview", {"symbol": "AAPL"})
 
         assert bull.data["setup_signal"] == "BULLISH"
         assert bear.data["setup_signal"] == "BEARISH"
@@ -687,6 +750,38 @@ class TestEarningsPostmortem:
         data = result.data
         assert data["earnings_date"] == "2025-02-06"
         assert data["guidance"]["has_transcript"] is True
+        await fmp.aclose()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_recent_report_triggers_lag_guard(self):
+        recent_date = date.today().isoformat()
+        recent_earnings = [
+            {
+                "date": recent_date,
+                "symbol": "AAPL",
+                "epsActual": 2.0,
+                "epsEstimated": 1.8,
+                "revenueActual": 100000000000,
+                "revenueEstimated": 98000000000,
+                "fiscalDateEnding": (date.today() - timedelta(days=30)).isoformat(),
+            }
+        ]
+        respx.get(f"{BASE}/stable/earnings").mock(return_value=httpx.Response(200, json=recent_earnings))
+        respx.get(f"{BASE}/stable/income-statement").mock(return_value=httpx.Response(200, json=AAPL_QUARTERLY_INCOME))
+        respx.get(f"{BASE}/stable/grades").mock(return_value=httpx.Response(200, json=AAPL_GRADES_DETAIL))
+        respx.get(f"{BASE}/stable/price-target-consensus").mock(return_value=httpx.Response(200, json=AAPL_PRICE_TARGET))
+        respx.get(f"{BASE}/stable/historical-price-eod/full").mock(return_value=httpx.Response(200, json=AAPL_HISTORICAL))
+        respx.get(f"{BASE}/stable/quote").mock(return_value=httpx.Response(200, json=AAPL_QUOTE))
+        respx.get(f"{BASE}/stable/earning-call-transcript-dates").mock(return_value=httpx.Response(200, json=[]))
+
+        mcp, fmp = _make_server()
+        async with Client(mcp) as c:
+            result = await c.call_tool("earnings_postmortem", {"symbol": "AAPL"})
+
+        data = result.data
+        assert "error" in data
+        assert "lag" in data["error"].lower() or "reported" in data["error"].lower()
         await fmp.aclose()
 
 

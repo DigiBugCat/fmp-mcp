@@ -437,34 +437,6 @@ class TestPriceHistory:
         await fmp.aclose()
 
 
-class TestEarningsInfo:
-    @pytest.mark.asyncio
-    @respx.mock
-    async def test_earnings_info(self):
-        respx.get(f"{BASE}/stable/analyst-estimates").mock(
-            return_value=httpx.Response(200, json=AAPL_ANALYST_ESTIMATES)
-        )
-        respx.get(f"{BASE}/stable/income-statement").mock(
-            return_value=httpx.Response(200, json=AAPL_QUARTERLY_INCOME)
-        )
-
-        mcp, fmp = _make_server(register_market)
-        async with Client(mcp) as c:
-            result = await c.call_tool("earnings_info", {"symbol": "AAPL"})
-
-        data = result.data
-        assert data["symbol"] == "AAPL"
-        assert len(data["forward_estimates"]) == 3
-        assert data["forward_estimates"][0]["eps_avg"] is not None
-        assert data["forward_estimates"][0]["num_analysts_eps"] is not None
-        assert len(data["recent_quarters"]) == 4
-        assert data["recent_quarters"][0]["eps_diluted"] == 2.40
-        assert data["deprecated"] is True
-        assert data["redirect_to"] == "earnings_setup"
-        assert any("Deprecated tool" in w for w in data.get("_warnings", []))
-        await fmp.aclose()
-
-
 # --- New Tool Tests (Tier 1: Unblock Broken Agents) ---
 
 

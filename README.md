@@ -26,7 +26,6 @@ High-level tools that orchestrate multiple API calls into single research-ready 
 | `company_overview` | Company profile, quote, key metrics, and analyst ratings |
 | `financial_statements` | Income statement, balance sheet, cash flow (annual/quarterly) |
 | `analyst_consensus` | Analyst grades, price targets, and forward estimates |
-| `earnings_info` | Historical and upcoming earnings with beat/miss tracking |
 | `price_history` | Historical daily prices with technical context |
 | `stock_search` | Search for stocks by name or ticker |
 | `insider_activity` | Insider trading activity and transaction statistics |
@@ -119,7 +118,7 @@ tools/
   overview.py      # company_overview, stock_search
   financials.py    # financial_statements, revenue_segments
   valuation.py     # analyst_consensus, peer_comparison, estimate_revisions
-  market.py        # price_history, earnings_info, dividends_info, earnings_calendar, etf_lookup
+  market.py        # price_history, dividends_info, earnings_calendar, etf_lookup
   ownership.py     # insider_activity, institutional_ownership
   news.py          # stock_news
   macro.py         # treasury_rates, economic_calendar, market_overview

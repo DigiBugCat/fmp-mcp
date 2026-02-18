@@ -64,6 +64,20 @@ def _median(values: list[float]) -> float | None:
     return round(statistics.median(clean), 4)
 
 
+def _pre_revenue_flag(ratios: dict) -> dict:
+    """Return pre-revenue/pre-profit flag when multiples are extreme."""
+    pe = ratios.get("priceToEarningsRatioTTM")
+    ps = ratios.get("priceToSalesRatioTTM")
+    reasons = []
+    if isinstance(pe, (int, float)) and (pe > 500 or pe < 0):
+        reasons.append("pre-profit" if pe < 0 else "extreme P/E")
+    if isinstance(ps, (int, float)) and ps > 500:
+        reasons.append("pre-revenue")
+    if reasons:
+        return {"pre_revenue_flag": ", ".join(reasons) + " — valuation multiples not meaningful"}
+    return {}
+
+
 def _calc_performance(current: float, history: list[dict], days: int) -> float | None:
     if not current or len(history) < days:
         return None
@@ -316,7 +330,7 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
             _safe_call(client.intelligence.get_grades_consensus, symbol=symbol, ttl=TTL_6H, default=None),
             _safe_call(client.company.get_price_target_consensus, symbol=symbol, ttl=TTL_6H, default=None),
             _safe_call(client.institutional.search_insider_trading, symbol=symbol, limit=50, ttl=TTL_HOURLY, default=[]),
-            _safe_call(client.intelligence.get_stock_symbol_news, symbol=symbol, limit=5, ttl=TTL_REALTIME, default=[]),
+            _safe_call(client.intelligence.get_stock_symbol_news, symbol=symbol, limit=15, ttl=TTL_REALTIME, default=[]),
             _safe_call(client.market.get_pre_post_market, ttl=TTL_REALTIME, default=[]),
             _safe_call(client.company.get_aftermarket_trade, symbol=symbol, ttl=TTL_REALTIME, default=None),
         )
@@ -328,7 +342,15 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
         targets = _as_dict(targets_data)
         historical = _as_list(history_data, list_key="historical")
         insider_list = _as_list(insider_data)
-        news_list = _as_list(news_data)
+        news_list_raw = _as_list(news_data)
+        news_cross_symbol_count = 0
+        news_list = []
+        for item in news_list_raw:
+            item_symbol = (item.get("symbol") or "").upper().strip()
+            if item_symbol and item_symbol != symbol:
+                news_cross_symbol_count += 1
+                continue
+            news_list.append(item)
         premarket_list = [
             item for item in _as_list(premarket_data)
             if (item.get("symbol") or "").upper() == symbol and (item.get("session") or "").lower() == "pre"
@@ -448,6 +470,7 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
                 "ev_ebitda": ratios.get("enterpriseValueMultipleTTM"),
                 "peg": ratios.get("priceToEarningsGrowthRatioTTM"),
                 "dividend_yield": ratios.get("dividendYieldTTM"),
+                **_pre_revenue_flag(ratios),
             },
             "analyst": {
                 "consensus": grades.get("consensus"),
@@ -483,6 +506,10 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
             _warnings.append("analyst grades unavailable")
         if not targets:
             _warnings.append("price targets unavailable")
+        if news_cross_symbol_count:
+            _warnings.append(
+                f"filtered out {news_cross_symbol_count} cross-symbol news item(s); news feed may be mixed/unfiltered"
+            )
         if _warnings:
             result["_warnings"] = _warnings
 
@@ -547,10 +574,19 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
         leader_names = {s["sector"] for s in leaders}
         laggard_names = {s["sector"] for s in laggards}
 
-        if leader_names & growth_sectors and laggard_names & defensive_sectors:
+        growth_leading = len(leader_names & growth_sectors)
+        defensive_leading = len(leader_names & defensive_sectors)
+        growth_lagging = len(laggard_names & growth_sectors)
+        defensive_lagging = len(laggard_names & defensive_sectors)
+
+        if growth_leading > defensive_leading and defensive_lagging >= 1:
             rotation_signal = "risk_on"
-        elif leader_names & defensive_sectors and laggard_names & growth_sectors:
+        elif defensive_leading > growth_leading and growth_lagging >= 1:
             rotation_signal = "risk_off"
+        elif defensive_leading >= 2:
+            rotation_signal = "risk_off"
+        elif growth_leading >= 2:
+            rotation_signal = "risk_on"
         else:
             rotation_signal = "mixed"
 
@@ -934,23 +970,27 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
     @mcp.tool(
         annotations={"title": "Earnings Preview", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True}
     )
-    async def earnings_preview(ticker: str, days_ahead: int = 30) -> dict:
+    async def earnings_preview(
+        symbol: str,
+        days_ahead: int = 30,
+    ) -> dict:
         """Pre-earnings setup report with scoring and thesis alignment.
 
         Combines earnings_setup + stock_brief data, scores beat rate / price setup /
         analyst momentum / insider signals, and maps to thesis triggers.
 
         Args:
-            ticker: Stock ticker symbol (e.g. "ESTC", "NVDA")
+            symbol: Stock ticker symbol (e.g. "ESTC", "NVDA")
             days_ahead: Horizon for in-window earnings checks
         """
-        ticker = ticker.upper().strip()
+        symbol = symbol.upper().strip()
+
         if days_ahead < 1:
             return {"error": f"Invalid days_ahead '{days_ahead}'. Must be >= 1."}
 
         setup, brief = await asyncio.gather(
-            earnings_setup.fn(symbol=ticker),
-            stock_brief.fn(symbol=ticker),
+            earnings_setup.fn(symbol=symbol),
+            stock_brief.fn(symbol=symbol),
         )
 
         setup_error = setup.get("error") if isinstance(setup, dict) else None
@@ -958,7 +998,7 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
 
         if setup_error and brief_error:
             return {
-                "error": f"No usable data for '{ticker}'",
+                "error": f"No usable data for '{symbol}'",
                 "details": {"earnings_setup": setup_error, "stock_brief": brief_error},
             }
 
@@ -1025,13 +1065,14 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
         else:
             setup_signal = "NEUTRAL"
 
-        thesis_alignment = _match_theses(ticker)
-        key_questions = _default_key_questions(ticker, thesis_alignment)
-        bull_triggers = _default_bull_triggers(ticker, thesis_alignment, setup_data)
-        bear_triggers = _default_bear_triggers(ticker, thesis_alignment, setup_data)
+        thesis_alignment = _match_theses(symbol)
+        key_questions = _default_key_questions(symbol, thesis_alignment)
+        bull_triggers = _default_bull_triggers(symbol, thesis_alignment, setup_data)
+        bear_triggers = _default_bear_triggers(symbol, thesis_alignment, setup_data)
 
         result = {
-            "ticker": ticker,
+            "symbol": symbol,
+            "ticker": symbol,  # backward-compatible key
             "company_name": brief_data.get("company_name") or setup_data.get("company_name"),
             "earnings_date": earnings_date,
             "days_until": days_until,
@@ -1436,6 +1477,20 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
             return {"error": f"No completed earnings found for '{symbol}'"}
 
         earnings_date = _date_only(target_report.get("date")) or ""
+        earnings_dt = _to_date(earnings_date)
+        if earnings_dt is not None:
+            days_since_report = (today_date - earnings_dt).days
+            if days_since_report < 3:
+                return {
+                    "error": (
+                        f"Earnings for '{symbol}' were reported {days_since_report} day(s) ago; "
+                        "FMP postmortem fields can lag for very recent prints."
+                    ),
+                    "symbol": symbol,
+                    "earnings_date": earnings_date,
+                    "redirect_to": "Use real-time/news-first checks (e.g., Perplexity or market_news(symbol=...)) and retry after 48-72 hours.",
+                }
+
         actual_eps = target_report.get("epsActual")
         est_eps = target_report.get("epsEstimated")
         actual_rev = target_report.get("revenueActual")
