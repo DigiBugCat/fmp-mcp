@@ -36,7 +36,7 @@ BASE_POLYGON = "https://api.polygon.io"
 def _make_options_server() -> tuple[FastMCP, PolygonClient]:
     mcp = FastMCP("Test")
     pc = PolygonClient(api_key="test_polygon_key")
-    register_options(mcp, pc)
+    register_options(mcp, polygon_client=pc)
     return mcp, pc
 
 
@@ -174,6 +174,84 @@ class TestOptionsChain:
         assert exp_0220["call_open_interest"] == 23000
         assert exp_0220["put_open_interest"] == 12000
         assert exp_0220["put_call_oi_ratio"] == round(12000 / 23000, 2)
+        await pc.close()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_expiry_range_filter(self):
+        respx.get(f"{BASE_POLYGON}/v3/snapshot/options/AAPL").mock(
+            return_value=httpx.Response(200, json=POLYGON_OPTIONS_SNAPSHOT)
+        )
+
+        mcp, pc = _make_options_server()
+        async with Client(mcp) as c:
+            result = await c.call_tool(
+                "options_chain",
+                {"symbol": "AAPL", "expiry_from": "2026-02-21", "expiry_to": "2026-02-27"},
+            )
+
+        data = result.data
+        assert data["total_contracts"] == 1
+        assert len(data["expirations"]) == 1
+        assert data["expirations"][0]["expiration"] == "2026-02-27"
+        await pc.close()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_put_selling_metrics_present(self):
+        respx.get(f"{BASE_POLYGON}/v3/snapshot/options/AAPL").mock(
+            return_value=httpx.Response(200, json=POLYGON_OPTIONS_SNAPSHOT)
+        )
+
+        mcp, pc = _make_options_server()
+        async with Client(mcp) as c:
+            result = await c.call_tool("options_chain", {"symbol": "AAPL"})
+
+        data = result.data
+        puts = [
+            c
+            for exp in data["expirations"]
+            for c in exp["contracts"]
+            if c.get("type") == "put"
+        ]
+        assert puts
+        assert "put_selling" in puts[0]
+        assert puts[0]["put_selling"]["breakeven"] is not None
+        assert data["summary"]["atm_implied_move_pct"] is not None
+        await pc.close()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_stale_data_warning(self):
+        stale_snapshot = {
+            "status": "OK",
+            "results": [
+                {
+                    "details": {
+                        "ticker": f"O:AAPL260220C00{i:05d}",
+                        "strike_price": 250 + i,
+                        "contract_type": "call" if i % 2 == 0 else "put",
+                        "expiration_date": "2026-02-20",
+                    },
+                    "greeks": {},
+                    "implied_volatility": 0.3,
+                    "open_interest": 1000 + i,
+                    "day": {"volume": 0, "close": 1.0},
+                    "last_quote": {"bid": 0, "ask": 0, "bid_size": 0, "ask_size": 0},
+                }
+                for i in range(10)
+            ],
+        }
+        respx.get(f"{BASE_POLYGON}/v3/snapshot/options/AAPL").mock(
+            return_value=httpx.Response(200, json=stale_snapshot)
+        )
+
+        mcp, pc = _make_options_server()
+        async with Client(mcp) as c:
+            result = await c.call_tool("options_chain", {"symbol": "AAPL"})
+
+        data = result.data
+        assert any("delayed" in w.lower() or "eod" in w.lower() for w in data.get("_warnings", []))
         await pc.close()
 
 

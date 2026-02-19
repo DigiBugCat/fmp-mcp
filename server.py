@@ -10,6 +10,7 @@ from fmp_data import AsyncFMPDataClient
 from fmp_data.config import ClientConfig, RateLimitConfig
 
 from polygon_client import PolygonClient
+from schwab_client import SchwabClient
 from tools import assets, economy, edgar, financials, macro, market, meta, news, options, overview, ownership, transcripts, valuation, workflows
 
 
@@ -20,6 +21,8 @@ async def lifespan(server):
     await client.aclose()
     if polygon_client is not None:
         await polygon_client.close()
+    if schwab_client is not None:
+        await schwab_client.close()
 
 
 mcp = FastMCP(
@@ -73,8 +76,18 @@ polygon_client: PolygonClient | None = None
 if polygon_api_key:
     polygon_client = PolygonClient(api_key=polygon_api_key)
 
+# Initialize optional Schwab client
+schwab_backend_url = os.environ.get("SCHWAB_BACKEND_URL", "")
+schwab_client: SchwabClient | None = None
+if schwab_backend_url:
+    schwab_client = SchwabClient(
+        base_url=schwab_backend_url,
+        cf_access_client_id=os.environ.get("CF_ACCESS_CLIENT_ID", ""),
+        cf_access_client_secret=os.environ.get("CF_ACCESS_CLIENT_SECRET", ""),
+    )
+
 # Register tool modules
-overview.register(mcp, client)
+overview.register(mcp, client, schwab_client=schwab_client)
 financials.register(mcp, client)
 valuation.register(mcp, client)
 market.register(mcp, client, polygon_client=polygon_client)
@@ -87,7 +100,8 @@ workflows.register(mcp, client)
 edgar.register(mcp, client)
 meta.register(mcp, client)
 
-# Polygon-only tools (registered only when Polygon key is available)
+# Options & economy tools (Schwab primary, Polygon fallback)
+if schwab_client is not None or polygon_client is not None:
+    options.register(mcp, polygon_client=polygon_client, schwab_client=schwab_client)
 if polygon_client is not None:
-    options.register(mcp, polygon_client)
     economy.register(mcp, polygon_client)

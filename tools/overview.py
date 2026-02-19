@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import date, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from fmp_data.company.endpoints import DELISTED_COMPANIES
 from tools._helpers import (
@@ -22,9 +22,42 @@ from tools._helpers import (
 if TYPE_CHECKING:
     from fastmcp import FastMCP
     from fmp_data import AsyncFMPDataClient
+    from schwab_client import SchwabClient
 
 
-def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
+def _fmp_quote_result(
+    symbol: str,
+    q: dict,
+    client: AsyncFMPDataClient,  # noqa: ARG001 — kept for signature consistency
+    premarket_data: Any = None,
+    afterhours_data: Any = None,
+) -> dict:
+    """Build quote result dict from FMP data."""
+    pre_candidates = [
+        item for item in _as_list(premarket_data or [])
+        if (item.get("symbol") or "").upper() == symbol
+        and (item.get("session") or "").lower() == "pre"
+    ]
+
+    latest = _latest_price(q, pre_candidates, _as_dict(afterhours_data) if afterhours_data else None)
+
+    result: dict = {
+        "symbol": symbol,
+        "name": q.get("name"),
+        "price": latest["price"],
+        "change": q.get("change"),
+        "change_pct": latest.get("change_pct"),
+        "volume": q.get("volume"),
+        "market_cap": q.get("marketCap"),
+        "source": "fmp",
+    }
+    if latest["source"] != "quote":
+        result["price_source"] = latest["source"]
+        result["regular_close"] = q.get("price")
+    return result
+
+
+def register(mcp: FastMCP, client: AsyncFMPDataClient, *, schwab_client: SchwabClient | None = None) -> None:
     @mcp.tool(
         annotations={
             "title": "Quote",
@@ -45,6 +78,38 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
         """
         symbol = symbol.upper().strip()
 
+        if schwab_client is not None:
+            # Fire Schwab + FMP concurrently; Schwab for real-time price, FMP for market_cap
+            schwab_data, fmp_data = await asyncio.gather(
+                schwab_client.get_quote(symbol),
+                _safe_call(client.company.get_quote, symbol=symbol, ttl=TTL_REALTIME, default=None),
+            )
+            fmp_q = _as_dict(fmp_data)
+
+            if schwab_data and isinstance(schwab_data, dict) and schwab_data.get("mark") is not None:
+                ext = schwab_data.get("extended_hours") or {}
+                price = schwab_data["mark"]
+                source = "schwab"
+
+                result = {
+                    "symbol": symbol,
+                    "name": schwab_data.get("description") or fmp_q.get("name"),
+                    "price": price,
+                    "change": schwab_data.get("net_change"),
+                    "change_pct": schwab_data.get("net_change_pct"),
+                    "volume": schwab_data.get("volume"),
+                    "market_cap": fmp_q.get("marketCap"),
+                    "source": source,
+                }
+                if ext:
+                    result["extended_hours"] = ext
+                return result
+
+            # Schwab failed — fall through to FMP-only
+            if fmp_q:
+                return _fmp_quote_result(symbol, fmp_q, client)
+
+        # FMP-only path (no Schwab configured or both failed)
         quote_data, premarket_data, afterhours_data = await asyncio.gather(
             _safe_call(client.company.get_quote, symbol=symbol, ttl=TTL_REALTIME, default=None),
             _safe_call(client.market.get_pre_post_market, ttl=TTL_REALTIME, default=[]),
@@ -55,27 +120,7 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
         if not q:
             return {"error": f"No quote data for '{symbol}'"}
 
-        pre_candidates = [
-            item for item in _as_list(premarket_data)
-            if (item.get("symbol") or "").upper() == symbol
-            and (item.get("session") or "").lower() == "pre"
-        ]
-
-        latest = _latest_price(q, pre_candidates, afterhours_data)
-
-        result = {
-            "symbol": symbol,
-            "name": q.get("name"),
-            "price": latest["price"],
-            "change": q.get("change"),
-            "change_pct": latest.get("change_pct"),
-            "volume": q.get("volume"),
-            "market_cap": q.get("marketCap"),
-        }
-        if latest["source"] != "quote":
-            result["price_source"] = latest["source"]
-            result["regular_close"] = q.get("price")
-        return result
+        return _fmp_quote_result(symbol, q, client, premarket_data, afterhours_data)
 
     @mcp.tool(
         annotations={
@@ -101,23 +146,61 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
 
         if not detail:
             # Lean mode: quote + extended hours for freshest price
-            quote_data, premarket_data, afterhours_data = await asyncio.gather(
-                _safe_call(client.company.get_quote, symbol=symbol, ttl=TTL_REALTIME, default=None),
-                _safe_call(client.market.get_pre_post_market, ttl=TTL_REALTIME, default=[]),
-                _safe_call(client.company.get_aftermarket_trade, symbol=symbol, ttl=TTL_REALTIME, default=None),
-            )
-            quote = _as_dict(quote_data)
-            if not quote:
-                return {"error": f"No data found for symbol '{symbol}'"}
+            if schwab_client is not None:
+                schwab_data, fmp_data = await asyncio.gather(
+                    schwab_client.get_quote(symbol),
+                    _safe_call(client.company.get_quote, symbol=symbol, ttl=TTL_REALTIME, default=None),
+                )
+                fmp_q = _as_dict(fmp_data)
+                if schwab_data and isinstance(schwab_data, dict) and schwab_data.get("mark") is not None:
+                    result = {
+                        "symbol": symbol,
+                        "name": schwab_data.get("description") or fmp_q.get("name"),
+                        "price": schwab_data["mark"],
+                        "price_source": "schwab",
+                        "market_cap": fmp_q.get("marketCap"),
+                        "volume": schwab_data.get("volume"),
+                        "change_pct": schwab_data.get("net_change_pct"),
+                        "day_range": {"low": schwab_data.get("low"), "high": schwab_data.get("high")},
+                        "year_range": {"low": schwab_data.get("52wk_low"), "high": schwab_data.get("52wk_high")},
+                        "sma_50": fmp_q.get("priceAvg50"),
+                        "sma_200": fmp_q.get("priceAvg200"),
+                    }
+                    ext = schwab_data.get("extended_hours")
+                    if ext:
+                        result["extended_hours"] = ext
+                    return result
+                # Schwab failed, use FMP data if available
+                if fmp_q:
+                    quote = fmp_q
+                else:
+                    return {"error": f"No data found for symbol '{symbol}'"}
+            else:
+                quote_data, premarket_data, afterhours_data = await asyncio.gather(
+                    _safe_call(client.company.get_quote, symbol=symbol, ttl=TTL_REALTIME, default=None),
+                    _safe_call(client.market.get_pre_post_market, ttl=TTL_REALTIME, default=[]),
+                    _safe_call(client.company.get_aftermarket_trade, symbol=symbol, ttl=TTL_REALTIME, default=None),
+                )
+                quote = _as_dict(quote_data)
+                if not quote:
+                    return {"error": f"No data found for symbol '{symbol}'"}
+                premarket_data_local = premarket_data
+                afterhours_data_local = afterhours_data
 
-            # Filter premarket to this symbol
-            pre_candidates = [
-                item for item in _as_list(premarket_data)
-                if (item.get("symbol") or "").upper() == symbol
-                and (item.get("session") or "").lower() == "pre"
-            ]
+            # FMP-only price resolution (either Schwab failed or not configured)
+            if schwab_client is not None:
+                # Schwab was configured but failed — we have fmp_q as 'quote' but no extended hours
+                pre_candidates: list = []
+                afterhours_local = None
+            else:
+                pre_candidates = [
+                    item for item in _as_list(premarket_data_local)
+                    if (item.get("symbol") or "").upper() == symbol
+                    and (item.get("session") or "").lower() == "pre"
+                ]
+                afterhours_local = afterhours_data_local
 
-            latest = _latest_price(quote, pre_candidates, afterhours_data)
+            latest = _latest_price(quote, pre_candidates, afterhours_local)
 
             result = {
                 "symbol": symbol,
@@ -132,34 +215,68 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
                 "sma_50": quote.get("priceAvg50"),
                 "sma_200": quote.get("priceAvg200"),
             }
-            # Include regular close when extended hours is the source
             if latest["source"] != "quote":
                 result["regular_close"] = quote.get("price")
             return result
 
         # Detail mode: full profile + quote + ratios + extended hours
-        profile_data, quote_data, ratios_data, premarket_data, afterhours_data = await asyncio.gather(
+        # Always fetch FMP profile + ratios; use Schwab for price if available
+        coros: list = [
             _safe_call(client.company.get_profile, symbol=symbol, ttl=TTL_DAILY, default=None),
             _safe_call(client.company.get_quote, symbol=symbol, ttl=TTL_REALTIME, default=None),
             _safe_call(client.company.get_financial_ratios_ttm, symbol=symbol, ttl=TTL_HOURLY, default=[]),
-            _safe_call(client.market.get_pre_post_market, ttl=TTL_REALTIME, default=[]),
-            _safe_call(client.company.get_aftermarket_trade, symbol=symbol, ttl=TTL_REALTIME, default=None),
-        )
+        ]
+        if schwab_client is not None:
+            coros.append(schwab_client.get_quote(symbol))
+        else:
+            coros.append(_safe_call(client.market.get_pre_post_market, ttl=TTL_REALTIME, default=[]))
+            coros.append(_safe_call(client.company.get_aftermarket_trade, symbol=symbol, ttl=TTL_REALTIME, default=None))
 
-        profile = _as_dict(profile_data)
-        quote = _as_dict(quote_data)
-        ratios = _as_dict(ratios_data)
+        results_list = await asyncio.gather(*coros)
+        profile = _as_dict(results_list[0])
+        quote = _as_dict(results_list[1])
+        ratios = _as_dict(results_list[2])
+
         if not profile and not quote:
             return {"error": f"No data found for symbol '{symbol}'"}
 
-        # Filter premarket to this symbol
-        pre_candidates = [
-            item for item in _as_list(premarket_data)
-            if (item.get("symbol") or "").upper() == symbol
-            and (item.get("session") or "").lower() == "pre"
-        ]
+        # Determine price source
+        schwab_quote = None
+        if schwab_client is not None:
+            schwab_quote = results_list[3] if isinstance(results_list[3], dict) else None
 
-        latest = _latest_price(quote, pre_candidates, afterhours_data)
+        if schwab_quote and schwab_quote.get("mark") is not None:
+            price = schwab_quote["mark"]
+            price_source = "schwab"
+            day_range = {"low": schwab_quote.get("low"), "high": schwab_quote.get("high")}
+            year_range = {"low": schwab_quote.get("52wk_low"), "high": schwab_quote.get("52wk_high")}
+            volume = schwab_quote.get("volume")
+            change_pct = schwab_quote.get("net_change_pct")
+            regular_close = None
+        else:
+            # FMP extended hours path
+            if schwab_client is not None:
+                # Schwab was configured but failed; no extended hours data
+                pre_candidates_detail: list = []
+                afterhours_detail = None
+            else:
+                premarket_data_detail = results_list[3]
+                afterhours_data_detail = results_list[4]
+                pre_candidates_detail = [
+                    item for item in _as_list(premarket_data_detail)
+                    if (item.get("symbol") or "").upper() == symbol
+                    and (item.get("session") or "").lower() == "pre"
+                ]
+                afterhours_detail = afterhours_data_detail
+
+            latest = _latest_price(quote, pre_candidates_detail, afterhours_detail)
+            price = latest["price"]
+            price_source = latest["source"]
+            day_range = {"low": quote.get("dayLow"), "high": quote.get("dayHigh")}
+            year_range = {"low": quote.get("yearLow"), "high": quote.get("yearHigh")}
+            volume = quote.get("volume")
+            change_pct = latest.get("change_pct")
+            regular_close = quote.get("price") if latest["source"] != "quote" else None
 
         result = {
             "symbol": symbol,
@@ -172,13 +289,13 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
             "exchange": profile.get("exchange"),
             "country": profile.get("country"),
             "website": profile.get("website"),
-            "price": latest["price"],
-            "price_source": latest["source"],
+            "price": price,
+            "price_source": price_source,
             "market_cap": quote.get("marketCap"),
-            "volume": quote.get("volume"),
-            "change_pct": latest.get("change_pct"),
-            "day_range": {"low": quote.get("dayLow"), "high": quote.get("dayHigh")},
-            "year_range": {"low": quote.get("yearLow"), "high": quote.get("yearHigh")},
+            "volume": volume,
+            "change_pct": change_pct,
+            "day_range": day_range,
+            "year_range": year_range,
             "sma_50": quote.get("priceAvg50"),
             "sma_200": quote.get("priceAvg200"),
             "ratios": {
@@ -198,8 +315,10 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
                 "price_to_fcf_ttm": ratios.get("priceToFreeCashFlowRatioTTM"),
             },
         }
-        if latest["source"] != "quote":
-            result["regular_close"] = quote.get("price")
+        if regular_close is not None:
+            result["regular_close"] = regular_close
+        if schwab_quote and schwab_quote.get("extended_hours"):
+            result["extended_hours"] = schwab_quote["extended_hours"]
 
         errors = []
         if not profile:
