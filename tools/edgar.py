@@ -28,27 +28,30 @@ EDGAR_ARCHIVES_BASE = "https://www.sec.gov/Archives/edgar/data"
 OPENAI_API_KEY = os.environ.get("OPENAI_KEY", "")
 OPENAI_MODEL = "gpt-5-mini"
 
-# Structured output schema for LLM section routing
+# Structured output schema for LLM sub-section routing
 _ROUTER_RESPONSE_SCHEMA = {
     "name": "section_router",
     "strict": True,
     "schema": {
         "type": "object",
         "properties": {
-            "relevant_sections": {
+            "relevant": {
                 "type": "array",
-                "description": "Section keys that contain content relevant to the query.",
+                "description": "List of relevant sub-section identifiers (format: 'section_key/sub_section_header').",
                 "items": {"type": "string"},
             },
             "reasoning": {
                 "type": "string",
-                "description": "Brief explanation of why these sections were selected.",
+                "description": "Brief explanation of why these sub-sections were selected.",
             },
         },
-        "required": ["relevant_sections", "reasoning"],
+        "required": ["relevant", "reasoning"],
         "additionalProperties": False,
     },
 }
+
+# Minimum chars for a block to be considered content (not a page number / footer)
+_MIN_CONTENT_CHARS = 50
 
 # Max filings to parse holdings for (each involves SEC fetch + XML parse)
 _MAX_PARSE_FILINGS = 5
@@ -251,34 +254,75 @@ def _extract_filing_section(symbol: str, form: str, section_key: str, accession:
         return None
 
 
-async def _llm_route_sections(
-    sections: dict[str, str],
+def _split_sub_sections(section_key: str, text: str) -> dict[str, str]:
+    """Split a section into sub-sections by detecting header blocks.
+
+    Headers are short paragraph blocks (< 100 chars) without trailing periods.
+    Returns dict of "section_key/header" -> full sub-section text.
+    If no sub-headers found, returns the whole section under "section_key/_full".
+    """
+    blocks = [b.strip() for b in text.split("\n\n") if b.strip()]
+    if not blocks:
+        return {f"{section_key}/_full": text}
+
+    # Detect header indices
+    header_indices: list[tuple[int, str]] = []
+    for i, block in enumerate(blocks):
+        is_short = len(block) < 100
+        no_period = not block.rstrip().endswith(".")
+        not_footer = len(block) >= _MIN_CONTENT_CHARS or not any(
+            c.isdigit() for c in block
+        )
+        # Also skip very short blocks that look like page numbers
+        if is_short and no_period and not_footer and len(block) > 5:
+            header_indices.append((i, block))
+
+    if len(header_indices) <= 1:
+        # No meaningful sub-structure
+        return {f"{section_key}/_full": text}
+
+    # Build sub-sections from header to next header
+    sub_sections: dict[str, str] = {}
+    for pos, (idx, header) in enumerate(header_indices):
+        next_idx = header_indices[pos + 1][0] if pos + 1 < len(header_indices) else len(blocks)
+        content_blocks = blocks[idx:next_idx]
+        content = "\n\n".join(content_blocks)
+        if len(content) >= _MIN_CONTENT_CHARS:
+            # Clean header for use as key
+            clean_header = header.strip().replace("\n", " ")
+            sub_sections[f"{section_key}/{clean_header}"] = content
+
+    return sub_sections or {f"{section_key}/_full": text}
+
+
+async def _llm_route_sub_sections(
+    sub_sections: dict[str, str],
     query: str,
 ) -> tuple[list[str], str]:
-    """Use GPT-5-mini to identify which sections are relevant to a query.
+    """Use GPT-5-mini to identify which sub-sections are relevant to a query.
 
-    Sends all full section text to GPT-5-mini and asks it to return just
-    the section keys that contain relevant content. Returns (relevant_keys, reasoning).
-    Falls back to all sections if no API key or on error.
+    Sends all full text to GPT-5-mini and asks it to return the sub-section
+    identifiers that contain relevant content. Returns (relevant_keys, reasoning).
+    Falls back to all sub-sections if no API key or on error.
     """
-    all_keys = list(sections.keys())
+    all_keys = list(sub_sections.keys())
 
     if not OPENAI_API_KEY:
-        return all_keys, "no OPENAI_KEY set, returning all sections"
+        return all_keys, "no OPENAI_KEY set, returning all sub-sections"
 
-    # Build the full context with all sections
-    section_text = ""
-    for key, text in sections.items():
-        section_text += f"\n\n=== SECTION: {key} ===\n{text}"
+    # Build the full context with all sub-sections labelled
+    full_text = ""
+    for key, text in sub_sections.items():
+        full_text += f"\n\n=== {key} ===\n{text}"
 
     prompt = (
         f"You are a financial document analyst reading an SEC filing. "
         f"The user wants to know about: \"{query}\"\n\n"
-        f"Below are all the narrative sections from this filing. "
-        f"Return ONLY the section keys that contain content relevant to the user's query. "
-        f"Be inclusive — if a section has even partial relevance, include it.\n\n"
-        f"Available section keys: {all_keys}\n"
-        f"{section_text}"
+        f"Below are all sub-sections from this filing, each labelled with an identifier. "
+        f"Return ONLY the identifiers of sub-sections that contain content relevant to "
+        f"the user's query. Be inclusive — if a sub-section has even partial relevance, include it.\n\n"
+        f"Available identifiers: {all_keys}\n"
+        f"{full_text}"
     )
 
     try:
@@ -302,14 +346,14 @@ async def _llm_route_sections(
             data = resp.json()
             content = data["choices"][0]["message"]["content"]
             parsed = json.loads(content)
-            relevant = parsed.get("relevant_sections", [])
+            relevant = parsed.get("relevant", [])
             reasoning = parsed.get("reasoning", "")
-            # Validate keys — only return keys that actually exist
-            valid = [k for k in relevant if k in sections]
+            # Validate — only return keys that actually exist
+            valid = [k for k in relevant if k in sub_sections]
             return valid or all_keys, reasoning
     except Exception:
-        logger.exception("LLM section routing failed")
-        return all_keys, "LLM routing failed, returning all sections"
+        logger.exception("LLM sub-section routing failed")
+        return all_keys, "LLM routing failed, returning all sub-sections"
 
 
 def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
@@ -595,9 +639,14 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
                 "_warnings": warnings,
             }
 
-        # Route: send all sections to GPT-5-mini to find relevant ones
-        relevant_keys, reasoning = await _llm_route_sections(
-            raw_sections, query.strip()
+        # Split all sections into sub-sections by header
+        all_sub_sections: dict[str, str] = {}
+        for section_key, text in raw_sections.items():
+            all_sub_sections.update(_split_sub_sections(section_key, text))
+
+        # Route: send all sub-sections to GPT-5-mini to find relevant ones
+        relevant_keys, reasoning = await _llm_route_sub_sections(
+            all_sub_sections, query.strip()
         )
 
         result: dict = {
@@ -605,23 +654,27 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
             "form": form,
             "query": query.strip(),
             "routing": {
-                "all_sections_fetched": list(raw_sections.keys()),
-                "relevant_sections": relevant_keys,
+                "total_sub_sections": len(all_sub_sections),
+                "relevant_count": len(relevant_keys),
+                "relevant_keys": relevant_keys,
                 "reasoning": reasoning,
             },
         }
         if accession:
             result["accession"] = accession
 
-        # Return full text of relevant sections only
-        result["sections"] = {}
+        # Return full text of relevant sub-sections only
+        result["content"] = {}
+        total_chars = 0
         for key in relevant_keys:
-            if key in raw_sections:
-                text = raw_sections[key]
-                result["sections"][key] = {
-                    "text": text[:max_chars],
-                    "chars": min(len(text), max_chars),
-                }
+            if key in all_sub_sections:
+                text = all_sub_sections[key]
+                truncated = text[:max_chars - total_chars] if total_chars + len(text) > max_chars else text
+                if truncated:
+                    result["content"][key] = truncated
+                    total_chars += len(truncated)
+                if total_chars >= max_chars:
+                    break
 
         if warnings:
             result["_warnings"] = warnings
