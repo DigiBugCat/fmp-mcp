@@ -9,6 +9,6 @@ import edgar
 # SEC requires a User-Agent identity (name + email) for EDGAR access.
 # edgartools uses module-level state, so calling set_identity() once at
 # import time is sufficient for the entire process.
-_identity = os.environ.get("EDGAR_IDENTITY", os.environ.get("EDGAR_USER_AGENT", ""))
-if _identity:
-    edgar.set_identity(_identity)
+EDGAR_IDENTITY = os.environ.get("EDGAR_IDENTITY", os.environ.get("EDGAR_USER_AGENT", ""))
+if EDGAR_IDENTITY:
+    edgar.set_identity(EDGAR_IDENTITY)

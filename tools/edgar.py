@@ -231,27 +231,26 @@ def _extract_filing_section(symbol: str, form: str, section_key: str, accession:
 
     Returns plain text of the section, or None if not found.
     """
-    try:
-        if accession:
-            filing = edgar_find(accession)
-        else:
-            company = Company(symbol)
-            filings = company.get_filings(form=form)
-            filing = filings.latest()
+    from tools.edgar_client import EDGAR_IDENTITY as _ident
+    if not _ident:
+        raise RuntimeError("EDGAR_IDENTITY or EDGAR_USER_AGENT env var required")
 
-        if filing is None:
-            return None
+    if accession:
+        filing = edgar_find(accession)
+    else:
+        company = Company(symbol)
+        filings = company.get_filings(form=form)
+        filing = filings.latest()
 
-        typed_obj = filing.obj()
-        if typed_obj is None:
-            return None
-
-        # Use __getitem__ which returns plain text
-        text = typed_obj[section_key]
-        return text
-    except Exception:
-        logger.exception("Failed to extract section %s from %s %s", section_key, symbol, form)
+    if filing is None:
         return None
+
+    typed_obj = filing.obj()
+    if typed_obj is None:
+        return None
+
+    # Use __getitem__ which returns plain text
+    return typed_obj[section_key]
 
 
 def _split_sub_sections(section_key: str, text: str) -> dict[str, str]:
