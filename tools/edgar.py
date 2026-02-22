@@ -42,7 +42,7 @@ _ROUTER_RESPONSE_SCHEMA = {
             },
             "reasoning": {
                 "type": "string",
-                "description": "Brief explanation of why these sub-sections were selected.",
+                "description": "One sentence summary.",
             },
         },
         "required": ["relevant", "reasoning"],
@@ -316,12 +316,9 @@ async def _llm_route_sub_sections(
         full_text += f"\n\n=== {key} ===\n{text}"
 
     prompt = (
-        f"You are a financial document analyst reading an SEC filing. "
-        f"The user wants to know about: \"{query}\"\n\n"
-        f"Below are all sub-sections from this filing, each labelled with an identifier. "
-        f"Return ONLY the identifiers of sub-sections that contain content relevant to "
-        f"the user's query. Be inclusive — if a sub-section has even partial relevance, include it.\n\n"
-        f"Available identifiers: {all_keys}\n"
+        f"Query: \"{query}\"\n"
+        f"Identifiers: {all_keys}\n"
+        f"Return which identifiers contain content relevant to the query.\n"
         f"{full_text}"
     )
 
