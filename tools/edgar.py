@@ -26,7 +26,7 @@ EDGAR_USER_AGENT = os.environ.get("EDGAR_USER_AGENT", "")
 EDGAR_ARCHIVES_BASE = "https://www.sec.gov/Archives/edgar/data"
 
 OPENAI_API_KEY = os.environ.get("OPENAI_KEY", "")
-OPENAI_MODEL = "gpt-5-mini"
+OPENAI_MODEL = "gpt-5.2"
 
 # Structured output schema for LLM sub-section routing
 _ROUTER_RESPONSE_SCHEMA = {
