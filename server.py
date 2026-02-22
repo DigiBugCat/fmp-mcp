@@ -33,8 +33,10 @@ mcp = FastMCP(
         "ownership_deep_dive, industry_analysis) for common questions. "
         "Use atomic tools for targeted queries. All tools are self-documenting. "
         "For 'which funds hold [private company]?' questions (SpaceX, Anthropic, xAI, etc.), "
-        "use sec_filings_search with forms='NPORT-P' — this is the only tool that can do "
-        "reverse lookups on private company holdings via SEC EDGAR."
+        "use sec_filings_search with forms='NPORT-P' — this parses actual NPORT-P fund holdings "
+        "with position sizes, values, and portfolio weights via edgartools. "
+        "For reading SEC filing content (risk factors, MD&A, business description), "
+        "use filing_sections with optional query-based LLM filtering to extract only relevant paragraphs."
     ),
     lifespan=lifespan,
 )
