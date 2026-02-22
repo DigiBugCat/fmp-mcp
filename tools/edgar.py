@@ -53,6 +53,9 @@ _ROUTER_RESPONSE_SCHEMA = {
 # Minimum chars for a block to be considered content (not a page number / footer)
 _MIN_CONTENT_CHARS = 50
 
+# Regex for standalone page numbers (e.g. "\n\n16\n\n" or "\n\nF-12\n\n")
+_PAGE_NUMBER_RE = re.compile(r"\n\n\s*(?:F-?)?\d{1,3}\s*\n\n")
+
 # Max filings to parse holdings for (each involves SEC fetch + XML parse)
 _MAX_PARSE_FILINGS = 5
 
@@ -251,6 +254,18 @@ def _extract_filing_section(symbol: str, form: str, section_key: str, accession:
 
     # Use __getitem__ which returns plain text
     return typed_obj[section_key]
+
+
+def _clean_section_text(text: str) -> str:
+    """Clean raw section text from edgartools.
+
+    Removes standalone page numbers, excess whitespace, and other artifacts.
+    """
+    # Remove standalone page numbers (e.g. "\n\n16\n\n")
+    text = _PAGE_NUMBER_RE.sub("\n\n", text)
+    # Collapse runs of 3+ newlines into double newlines
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
 
 
 def _split_sub_sections(section_key: str, text: str) -> dict[str, str]:
@@ -646,10 +661,11 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
                 "_warnings": warnings,
             }
 
-        # Split all sections into sub-sections by header
+        # Clean and split all sections into sub-sections by header
         all_sub_sections: dict[str, str] = {}
         for section_key, text in raw_sections.items():
-            all_sub_sections.update(_split_sub_sections(section_key, text))
+            cleaned = _clean_section_text(text)
+            all_sub_sections.update(_split_sub_sections(section_key, cleaned))
 
         # Route: send all sub-sections to GPT-5-mini to find relevant ones
         relevant_keys, reasoning = await _llm_route_sub_sections(
@@ -671,14 +687,21 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
             result["accession"] = accession
 
         # Return full text of relevant sub-sections only
-        result["content"] = {}
+        result["sections"] = []
         total_chars = 0
         for key in relevant_keys:
             if key in all_sub_sections:
                 text = all_sub_sections[key]
                 truncated = text[:max_chars - total_chars] if total_chars + len(text) > max_chars else text
                 if truncated:
-                    result["content"][key] = truncated
+                    # Parse "section_key/header" into structured entry
+                    parts = key.split("/", 1)
+                    entry: dict = {"id": key, "section": parts[0]}
+                    if len(parts) > 1 and parts[1] != "_full":
+                        entry["heading"] = parts[1]
+                    entry["text"] = truncated
+                    entry["chars"] = len(truncated)
+                    result["sections"].append(entry)
                     total_chars += len(truncated)
                 if total_chars >= max_chars:
                     break
