@@ -324,9 +324,9 @@ async def _llm_route_sub_sections(
     sub_sections: dict[str, str],
     query: str,
 ) -> tuple[list[str], str]:
-    """Use GPT-5-mini to identify which sub-sections are relevant to a query.
+    """Use LLM to identify which sub-sections are relevant to a query.
 
-    Sends all full text to GPT-5-mini and asks it to return the sub-section
+    Sends all full text to the LLM and asks it to return the sub-section
     identifiers that contain relevant content. Returns (relevant_keys, reasoning).
     Falls back to all sub-sections if no API key or on error.
     """
@@ -340,10 +340,29 @@ async def _llm_route_sub_sections(
     for key, text in sub_sections.items():
         full_text += f"\n\n=== {key} ===\n{text}"
 
-    prompt = (
+    system_prompt = (
+        "You are a SEC filing section router. Given a user query and a set of "
+        "labelled sub-sections from a filing, return which sub-section identifiers "
+        "contain content relevant to the query.\n\n"
+        "IMPORTANT RULES:\n"
+        "- Match SEMANTICALLY, not just by keyword. 'supply chain' matches sections "
+        "about logistics, sourcing, inventory, vendors, manufacturing, distribution.\n"
+        "- Consider synonyms and related concepts. 'tariffs' matches import duties, "
+        "trade policy, customs, Section 301, anti-dumping. 'export restrictions' "
+        "matches sanctions, ITAR, EAR, trade controls, embargoes.\n"
+        "- When in doubt, INCLUDE the section. It is much worse to miss a relevant "
+        "section than to include a borderline one.\n"
+        "- You MUST return identifiers EXACTLY as they appear in the Identifiers list. "
+        "Do not modify capitalization, spacing, or punctuation.\n"
+        "- If no sections are relevant, return an empty list — but this should be rare "
+        "for a well-formed query against a real filing."
+    )
+
+    user_prompt = (
         f"Query: \"{query}\"\n"
-        f"Identifiers: {all_keys}\n"
-        f"Return which identifiers contain content relevant to the query.\n"
+        f"Identifiers: {all_keys}\n\n"
+        f"Return which identifiers contain content relevant to the query. "
+        f"Copy identifiers exactly from the list above.\n"
         f"{full_text}"
     )
 
@@ -357,7 +376,10 @@ async def _llm_route_sub_sections(
                 },
                 json={
                     "model": OPENAI_MODEL,
-                    "messages": [{"role": "user", "content": prompt}],
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
                     "response_format": {
                         "type": "json_schema",
                         "json_schema": _ROUTER_RESPONSE_SCHEMA,
@@ -372,7 +394,25 @@ async def _llm_route_sub_sections(
             reasoning = parsed.get("reasoning", "")
             # Validate — only return keys that actually exist
             valid = [k for k in relevant if k in sub_sections]
+            dropped = [k for k in relevant if k not in sub_sections]
+            if dropped:
+                logger.warning(
+                    "LLM returned %d keys that don't match any sub-section: %s",
+                    len(dropped), dropped[:5],
+                )
+            if not valid and relevant:
+                # LLM tried but all keys failed validation — this is a bug
+                reasoning = (
+                    f"FALLBACK: LLM returned {len(relevant)} keys but none matched "
+                    f"(mismatched: {dropped[:3]}). Returning all sections."
+                )
             return valid or all_keys, reasoning
+    except httpx.HTTPStatusError as exc:
+        logger.exception("LLM routing HTTP error: %s", exc.response.status_code)
+        return all_keys, f"LLM routing failed (HTTP {exc.response.status_code}), returning all sub-sections"
+    except httpx.TimeoutException:
+        logger.exception("LLM routing timed out after 90s")
+        return all_keys, "LLM routing timed out, returning all sub-sections"
     except Exception:
         logger.exception("LLM sub-section routing failed")
         return all_keys, "LLM routing failed, returning all sub-sections"
@@ -578,7 +618,7 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
     )
     async def filing_sections(
         symbol: str,
-        query: str,
+        queries: list[str],
         form: str = "10-K",
         sections: list[str] | None = None,
         accession: str | None = None,
@@ -586,22 +626,25 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
     ) -> str | dict:
         """Search SEC filing content by topic using LLM-powered section routing.
 
-        Fetches all narrative sections from a company's filing, sends them to
-        GPT-5-mini to identify which sections are relevant to your query, and
-        returns only those full sections. This avoids dumping entire 50-page
-        filings into context — you get just the parts that matter.
+        Fetches the filing ONCE and runs LLM routing for each query in the
+        batch. This is the only way to search filing content — always pass
+        all your topics in a single call.
+
+        The LLM router matches semantically, not by keyword — "tariffs" also
+        matches "import duties", "trade policy", "customs", etc.
 
         Examples:
-        - "What are AAPL's risks related to China?" → symbol="AAPL", query="China"
-        - "How is TSLA's revenue trending?" → symbol="TSLA", query="revenue trends"
-        - "NVDA AI regulation exposure" → symbol="NVDA", query="AI regulation"
-        - "MSFT cybersecurity posture" → symbol="MSFT", query="cybersecurity"
+        - symbol="WMT", queries=["tariffs trade policy", "supply chain logistics", "export restrictions sanctions"]
+        - symbol="AAPL", queries=["China geopolitical risks", "AI strategy and investments"]
+        - symbol="NVDA", queries=["export controls China", "data center revenue"]
+        - symbol="TSLA", queries=["margins pricing competition"]
 
         Args:
             symbol: Stock ticker (e.g. "AAPL").
-            query: What you want to know about (e.g. "China risks", "AI regulation",
-                "supply chain", "revenue growth"). GPT-5-mini reads all sections
-                and identifies which ones contain relevant content.
+            queries: List of search topics. The filing is fetched once and
+                each query is routed independently against the same extracted
+                sections. Each query can contain multiple related keywords
+                (e.g. "tariffs import duties trade policy").
             form: Filing type — "10-K" (default) or "10-Q".
             sections: Override which sections to fetch. If omitted, fetches all
                 major narrative sections. 10-K options: business, risk_factors,
@@ -610,14 +653,17 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
                 controls, legal, risk_factors.
             accession: Specific filing accession number. If omitted, uses the
                 latest filing of the given form type.
-            max_chars: Max characters per section returned (default 50000).
+            max_chars: Max characters per query result (default 50000).
         """
         symbol = symbol.upper().strip()
         form = form.upper().strip()
         max_chars = max(1000, min(max_chars, 100000))
 
-        if not query or not query.strip():
-            return {"error": "query is required — describe what you want to find in the filing"}
+        if not queries:
+            return {"error": "queries is required — provide a list of topics to search for"}
+        queries = [q.strip() for q in queries if q and q.strip()]
+        if not queries:
+            return {"error": "queries must contain at least one non-empty topic"}
 
         # Validate form type
         if form not in ("10-K", "10-Q"):
@@ -661,39 +707,62 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
                 "_warnings": warnings,
             }
 
-        # Clean and split all sections into sub-sections by header
+        # Clean and split all sections into sub-sections by header (once)
         all_sub_sections: dict[str, str] = {}
         for section_key, text in raw_sections.items():
             cleaned = _clean_section_text(text)
             all_sub_sections.update(_split_sub_sections(section_key, cleaned))
 
-        # Route: send all sub-sections to GPT-5-mini to find relevant ones
-        relevant_keys, reasoning = await _llm_route_sub_sections(
-            all_sub_sections, query.strip()
-        )
+        # Route each query against the same sub-sections in parallel
+        route_tasks = [
+            _llm_route_sub_sections(all_sub_sections, q)
+            for q in queries
+        ]
+        route_results = await asyncio.gather(*route_tasks, return_exceptions=True)
 
-        # Build plain-text output for LLM consumption
-        lines: list[str] = [
-            f"{symbol} {form} — query: {query.strip()}",
-            f"Routing: {len(relevant_keys)}/{len(all_sub_sections)} sub-sections selected",
+        # Build output — one section per query
+        output_lines: list[str] = [
+            f"{symbol} {form} — {len(queries)} queries, {len(all_sub_sections)} sub-sections",
         ]
         if warnings:
-            lines.append(f"Warnings: {'; '.join(warnings)}")
-        lines.append("")
+            output_lines.append(f"Warnings: {'; '.join(warnings)}")
+        output_lines.append("")
 
-        total_chars = 0
-        for key in relevant_keys:
-            if key not in all_sub_sections:
+        for idx, query in enumerate(queries):
+            route_result = route_results[idx]
+            if isinstance(route_result, Exception):
+                output_lines.append(f"=== Query: {query} ===")
+                output_lines.append(f"ERROR: routing failed ({route_result})")
+                output_lines.append("")
                 continue
-            text = all_sub_sections[key]
-            truncated = text[:max_chars - total_chars] if total_chars + len(text) > max_chars else text
-            if not truncated:
-                continue
-            lines.append(truncated)
-            lines.append("")
-            total_chars += len(truncated)
-            if total_chars >= max_chars:
-                lines.append(f"[truncated at {max_chars} chars]")
-                break
 
-        return "\n".join(lines)
+            relevant_keys, reasoning = route_result
+
+            output_lines.append(f"=== Query: {query} ===")
+            output_lines.append(
+                f"Routing: {len(relevant_keys)}/{len(all_sub_sections)} sub-sections selected"
+            )
+            if reasoning:
+                output_lines.append(f"Router: {reasoning}")
+            output_lines.append("")
+
+            total_chars = 0
+            for key in relevant_keys:
+                if key not in all_sub_sections:
+                    continue
+                text = all_sub_sections[key]
+                truncated = (
+                    text[:max_chars - total_chars]
+                    if total_chars + len(text) > max_chars
+                    else text
+                )
+                if not truncated:
+                    continue
+                output_lines.append(truncated)
+                output_lines.append("")
+                total_chars += len(truncated)
+                if total_chars >= max_chars:
+                    output_lines.append(f"[truncated at {max_chars} chars]")
+                    break
+
+        return "\n".join(output_lines)

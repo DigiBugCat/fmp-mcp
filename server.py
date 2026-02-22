@@ -36,7 +36,10 @@ mcp = FastMCP(
         "use sec_filings_search with forms='NPORT-P' — this parses actual NPORT-P fund holdings "
         "with position sizes, values, and portfolio weights via edgartools. "
         "For reading SEC filing content (risk factors, MD&A, business description), "
-        "use filing_sections with optional query-based LLM filtering to extract only relevant paragraphs."
+        "use filing_sections with query-based LLM filtering to extract only relevant paragraphs. "
+        "filing_sections accepts a `queries` list — pass ALL topics in one call "
+        "(e.g. queries=['tariffs trade policy', 'supply chain', 'export restrictions']). "
+        "The filing is fetched once and each query is routed independently."
     ),
     lifespan=lifespan,
 )
