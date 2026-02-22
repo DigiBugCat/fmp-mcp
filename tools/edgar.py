@@ -256,7 +256,8 @@ def _extract_filing_section(symbol: str, form: str, section_key: str, accession:
 def _split_sub_sections(section_key: str, text: str) -> dict[str, str]:
     """Split a section into sub-sections by detecting header blocks.
 
-    Headers are short paragraph blocks (< 100 chars) without trailing periods.
+    Headers are short paragraph blocks (< 100 chars) that look like titles —
+    no trailing punctuation, no bullet markers, no leading whitespace indentation.
     Returns dict of "section_key/header" -> full sub-section text.
     If no sub-headers found, returns the whole section under "section_key/_full".
     """
@@ -264,16 +265,26 @@ def _split_sub_sections(section_key: str, text: str) -> dict[str, str]:
     if not blocks:
         return {f"{section_key}/_full": text}
 
+    # Characters that indicate a block is a list item, not a header
+    _BULLET_CHARS = {"•", "·", "−", "–", "—", "-", "*", "►", "▪", "○", "●"}
+
     # Detect header indices
     header_indices: list[tuple[int, str]] = []
     for i, block in enumerate(blocks):
-        is_short = len(block) < 100
-        no_period = not block.rstrip().endswith(".")
-        not_footer = len(block) >= _MIN_CONTENT_CHARS or not any(
-            c.isdigit() for c in block
+        stripped = block.rstrip()
+        is_short = len(stripped) < 100
+        # Headers don't end with sentence-ending punctuation
+        ends_with_punct = stripped[-1] in ".;:,)" if stripped else True
+        # Headers aren't bullet/list items
+        first_char = stripped[0] if stripped else ""
+        is_bullet = first_char in _BULLET_CHARS or (
+            len(stripped) > 1 and stripped[0].isdigit() and stripped[1] in ".)"
         )
-        # Also skip very short blocks that look like page numbers
-        if is_short and no_period and not_footer and len(block) > 5:
+        # Headers aren't page numbers / footers (very short + has digits)
+        is_footer = len(stripped) < _MIN_CONTENT_CHARS and any(c.isdigit() for c in stripped)
+        # Headers shouldn't contain newlines (multi-line blocks are paragraphs)
+        is_multiline = "\n" in block.strip()
+        if is_short and not ends_with_punct and not is_bullet and not is_footer and not is_multiline and len(stripped) > 5:
             header_indices.append((i, block))
 
     if len(header_indices) <= 1:
