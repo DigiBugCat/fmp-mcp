@@ -674,14 +674,12 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
 
         # Build plain-text output for LLM consumption
         lines: list[str] = [
-            f"{symbol} {form} — filing sections relevant to: {query.strip()}",
+            f"{symbol} {form} — query: {query.strip()}",
             f"Routing: {len(relevant_keys)}/{len(all_sub_sections)} sub-sections selected",
         ]
-        if reasoning:
-            lines.append(f"Reasoning: {reasoning}")
         if warnings:
             lines.append(f"Warnings: {'; '.join(warnings)}")
-        lines.append("")  # blank separator
+        lines.append("")
 
         total_chars = 0
         for key in relevant_keys:
@@ -691,12 +689,6 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
             truncated = text[:max_chars - total_chars] if total_chars + len(text) > max_chars else text
             if not truncated:
                 continue
-            # Section divider with key as header
-            parts = key.split("/", 1)
-            heading = parts[1] if len(parts) > 1 and parts[1] != "_full" else parts[0]
-            lines.append(f"{'=' * 60}")
-            lines.append(heading.upper())
-            lines.append(f"{'=' * 60}")
             lines.append(truncated)
             lines.append("")
             total_chars += len(truncated)
