@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -25,7 +26,29 @@ EDGAR_USER_AGENT = os.environ.get("EDGAR_USER_AGENT", "")
 EDGAR_ARCHIVES_BASE = "https://www.sec.gov/Archives/edgar/data"
 
 OPENAI_API_KEY = os.environ.get("OPENAI_KEY", "")
-OPENAI_MODEL = "gpt-4.1-mini"
+OPENAI_MODEL = "gpt-5-mini"
+
+# Structured output schema for LLM section routing
+_ROUTER_RESPONSE_SCHEMA = {
+    "name": "section_router",
+    "strict": True,
+    "schema": {
+        "type": "object",
+        "properties": {
+            "relevant_sections": {
+                "type": "array",
+                "description": "Section keys that contain content relevant to the query.",
+                "items": {"type": "string"},
+            },
+            "reasoning": {
+                "type": "string",
+                "description": "Brief explanation of why these sections were selected.",
+            },
+        },
+        "required": ["relevant_sections", "reasoning"],
+        "additionalProperties": False,
+    },
+}
 
 # Max filings to parse holdings for (each involves SEC fetch + XML parse)
 _MAX_PARSE_FILINGS = 5
@@ -228,62 +251,65 @@ def _extract_filing_section(symbol: str, form: str, section_key: str, accession:
         return None
 
 
-async def _llm_filter_sections(
+async def _llm_route_sections(
     sections: dict[str, str],
     query: str,
-    max_chars: int,
-) -> dict[str, str]:
-    """Use GPT-5-mini to filter section text to only relevant paragraphs.
+) -> tuple[list[str], str]:
+    """Use GPT-5-mini to identify which sections are relevant to a query.
 
-    Sends each section to the LLM asking it to identify and extract only the
-    paragraphs relevant to the query. Returns filtered text per section.
+    Sends all full section text to GPT-5-mini and asks it to return just
+    the section keys that contain relevant content. Returns (relevant_keys, reasoning).
+    Falls back to all sections if no API key or on error.
     """
+    all_keys = list(sections.keys())
+
     if not OPENAI_API_KEY:
-        # No API key — return truncated full text as fallback
-        return {k: v[:max_chars] for k, v in sections.items()}
+        return all_keys, "no OPENAI_KEY set, returning all sections"
 
-    filtered: dict[str, str] = {}
+    # Build the full context with all sections
+    section_text = ""
+    for key, text in sections.items():
+        section_text += f"\n\n=== SECTION: {key} ===\n{text}"
 
-    async with httpx.AsyncClient(timeout=60) as http:
-        for section_name, text in sections.items():
-            if not text:
-                continue
+    prompt = (
+        f"You are a financial document analyst reading an SEC filing. "
+        f"The user wants to know about: \"{query}\"\n\n"
+        f"Below are all the narrative sections from this filing. "
+        f"Return ONLY the section keys that contain content relevant to the user's query. "
+        f"Be inclusive — if a section has even partial relevance, include it.\n\n"
+        f"Available section keys: {all_keys}\n"
+        f"{section_text}"
+    )
 
-            # If text is already small enough, skip LLM call
-            if len(text) <= max_chars:
-                filtered[section_name] = text
-                continue
-
-            prompt = (
-                f"You are a financial document analyst. Extract ONLY the paragraphs from the following "
-                f"SEC filing section that are relevant to this query: \"{query}\"\n\n"
-                f"Return the relevant paragraphs verbatim, separated by blank lines. "
-                f"If nothing is relevant, respond with 'No relevant content found.'\n\n"
-                f"--- SECTION: {section_name} ---\n{text}"
+    try:
+        async with httpx.AsyncClient(timeout=90) as http:
+            resp = await http.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {OPENAI_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": OPENAI_MODEL,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "response_format": {
+                        "type": "json_schema",
+                        "json_schema": _ROUTER_RESPONSE_SCHEMA,
+                    },
+                },
             )
-
-            try:
-                resp = await http.post(
-                    "https://api.openai.com/v1/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {OPENAI_API_KEY}",
-                        "Content-Type": "application/json",
-                    },
-                    json={
-                        "model": OPENAI_MODEL,
-                        "messages": [{"role": "user", "content": prompt}],
-                        "max_tokens": max_chars // 3,  # rough char-to-token ratio
-                    },
-                )
-                resp.raise_for_status()
-                data = resp.json()
-                content = data["choices"][0]["message"]["content"]
-                filtered[section_name] = content[:max_chars]
-            except Exception:
-                logger.exception("LLM filtering failed for section %s", section_name)
-                filtered[section_name] = text[:max_chars]
-
-    return filtered
+            resp.raise_for_status()
+            data = resp.json()
+            content = data["choices"][0]["message"]["content"]
+            parsed = json.loads(content)
+            relevant = parsed.get("relevant_sections", [])
+            reasoning = parsed.get("reasoning", "")
+            # Validate keys — only return keys that actually exist
+            valid = [k for k in relevant if k in sections]
+            return valid or all_keys, reasoning
+    except Exception:
+        logger.exception("LLM section routing failed")
+        return all_keys, "LLM routing failed, returning all sections"
 
 
 def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
@@ -471,6 +497,10 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
 
         return result
 
+    # Default narrative sections to fetch for each form type
+    _DEFAULT_10K_SECTIONS = ["business", "risk_factors", "mda", "legal", "cybersecurity"]
+    _DEFAULT_10Q_SECTIONS = ["mda", "risk_factors", "legal"]
+
     @mcp.tool(
         annotations={
             "title": "SEC Filing Section Extraction",
@@ -482,65 +512,63 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
     )
     async def filing_sections(
         symbol: str,
+        query: str,
         form: str = "10-K",
         sections: list[str] | None = None,
-        query: str | None = None,
         accession: str | None = None,
-        max_chars: int = 15000,
+        max_chars: int = 50000,
     ) -> dict:
-        """Extract specific sections from SEC filings (10-K, 10-Q) with optional LLM filtering.
+        """Search SEC filing content by topic using LLM-powered section routing.
 
-        Uses edgartools to parse filing structure and extract named sections.
-        When a query is provided and OPENAI_KEY is set, uses GPT-4.1-mini to
-        filter each section down to only the paragraphs relevant to the query,
-        dramatically reducing token usage.
-
-        Without a query, returns the full section text truncated to max_chars.
+        Fetches all narrative sections from a company's filing, sends them to
+        GPT-5-mini to identify which sections are relevant to your query, and
+        returns only those full sections. This avoids dumping entire 50-page
+        filings into context — you get just the parts that matter.
 
         Examples:
-        - AAPL risk factors: symbol="AAPL", sections=["risk_factors"]
-        - TSLA AI-related risks: symbol="TSLA", sections=["risk_factors"], query="artificial intelligence"
-        - Latest 10-Q MD&A: symbol="MSFT", form="10-Q", sections=["mda"]
-        - Specific filing: accession="0000320193-24-000123", sections=["risk_factors", "mda"]
+        - "What are AAPL's risks related to China?" → symbol="AAPL", query="China"
+        - "How is TSLA's revenue trending?" → symbol="TSLA", query="revenue trends"
+        - "NVDA AI regulation exposure" → symbol="NVDA", query="AI regulation"
+        - "MSFT cybersecurity posture" → symbol="MSFT", query="cybersecurity"
 
         Args:
-            symbol: Stock ticker (e.g. "AAPL"). Used to find latest filing if accession not given.
+            symbol: Stock ticker (e.g. "AAPL").
+            query: What you want to know about (e.g. "China risks", "AI regulation",
+                "supply chain", "revenue growth"). GPT-5-mini reads all sections
+                and identifies which ones contain relevant content.
             form: Filing type — "10-K" (default) or "10-Q".
-            sections: Section names to extract. Options for 10-K: business, risk_factors,
-                mda, financials, legal, properties, cybersecurity, executive_compensation.
-                Options for 10-Q: financials, mda, market_risk, controls, legal, risk_factors.
-                Default: ["risk_factors", "mda"] for 10-K, ["mda", "risk_factors"] for 10-Q.
-            query: Optional natural language filter. When provided, uses GPT-4.1-mini to
-                extract only the paragraphs relevant to this query from each section.
-                E.g. "supply chain risks", "AI regulation", "China exposure".
-            accession: Specific filing accession number. If omitted, uses the latest
-                filing of the given form type for the symbol.
-            max_chars: Maximum characters per section in the response (default 15000).
-                Controls token budget. Set lower for concise results.
+            sections: Override which sections to fetch. If omitted, fetches all
+                major narrative sections. 10-K options: business, risk_factors,
+                mda, financials, legal, properties, cybersecurity,
+                executive_compensation. 10-Q: financials, mda, market_risk,
+                controls, legal, risk_factors.
+            accession: Specific filing accession number. If omitted, uses the
+                latest filing of the given form type.
+            max_chars: Max characters per section returned (default 50000).
         """
         symbol = symbol.upper().strip()
         form = form.upper().strip()
-        max_chars = max(1000, min(max_chars, 50000))
+        max_chars = max(1000, min(max_chars, 100000))
+
+        if not query or not query.strip():
+            return {"error": "query is required — describe what you want to find in the filing"}
 
         # Validate form type
         if form not in ("10-K", "10-Q"):
             return {"error": f"Unsupported form type '{form}'. Use '10-K' or '10-Q'."}
 
-        # Resolve section keys
+        # Resolve which sections to fetch
         section_map = _TENK_SECTIONS if form == "10-K" else _TENQ_SECTIONS
         if sections is None:
-            sections = ["risk_factors", "mda"]
+            sections = _DEFAULT_10K_SECTIONS if form == "10-K" else _DEFAULT_10Q_SECTIONS
+        else:
+            invalid = [s for s in sections if s not in section_map]
+            if invalid:
+                return {
+                    "error": f"Invalid section(s): {invalid}. Valid: {list(section_map.keys())}",
+                }
 
-        # Validate section names
-        invalid = [s for s in sections if s not in section_map]
-        if invalid:
-            return {
-                "error": f"Invalid section(s): {invalid}. Valid options: {list(section_map.keys())}",
-            }
-
-        # Extract each section in parallel (edgartools is sync, use thread pool)
-        # Note: each call creates its own Company/Filing lookup, but edgartools
-        # caches filing documents permanently so subsequent calls are fast.
+        # Extract all sections in parallel (edgartools is sync, use thread pool)
         extract_tasks = [
             asyncio.to_thread(
                 _extract_filing_section,
@@ -567,31 +595,33 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
                 "_warnings": warnings,
             }
 
-        # Apply LLM filtering if query provided, otherwise truncate
-        if query and query.strip():
-            output_sections = await _llm_filter_sections(raw_sections, query.strip(), max_chars)
-            filter_method = "llm" if OPENAI_API_KEY else "truncated (no OPENAI_KEY)"
-        else:
-            output_sections = {k: v[:max_chars] for k, v in raw_sections.items()}
-            filter_method = "truncated"
+        # Route: send all sections to GPT-5-mini to find relevant ones
+        relevant_keys, reasoning = await _llm_route_sections(
+            raw_sections, query.strip()
+        )
 
         result: dict = {
             "symbol": symbol,
             "form": form,
-            "filter_method": filter_method,
+            "query": query.strip(),
+            "routing": {
+                "all_sections_fetched": list(raw_sections.keys()),
+                "relevant_sections": relevant_keys,
+                "reasoning": reasoning,
+            },
         }
-        if query:
-            result["query"] = query
         if accession:
             result["accession"] = accession
 
+        # Return full text of relevant sections only
         result["sections"] = {}
-        for section_name, text in output_sections.items():
-            result["sections"][section_name] = {
-                "text": text,
-                "chars": len(text),
-                "original_chars": len(raw_sections.get(section_name, "")),
-            }
+        for key in relevant_keys:
+            if key in raw_sections:
+                text = raw_sections[key]
+                result["sections"][key] = {
+                    "text": text[:max_chars],
+                    "chars": min(len(text), max_chars),
+                }
 
         if warnings:
             result["_warnings"] = warnings
