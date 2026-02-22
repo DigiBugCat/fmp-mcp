@@ -583,7 +583,7 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
         sections: list[str] | None = None,
         accession: str | None = None,
         max_chars: int = 50000,
-    ) -> dict:
+    ) -> str | dict:
         """Search SEC filing content by topic using LLM-powered section routing.
 
         Fetches all narrative sections from a company's filing, sends them to
@@ -672,41 +672,36 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
             all_sub_sections, query.strip()
         )
 
-        result: dict = {
-            "symbol": symbol,
-            "form": form,
-            "query": query.strip(),
-            "routing": {
-                "total_sub_sections": len(all_sub_sections),
-                "relevant_count": len(relevant_keys),
-                "relevant_keys": relevant_keys,
-                "reasoning": reasoning,
-            },
-        }
-        if accession:
-            result["accession"] = accession
+        # Build plain-text output for LLM consumption
+        lines: list[str] = [
+            f"{symbol} {form} — filing sections relevant to: {query.strip()}",
+            f"Routing: {len(relevant_keys)}/{len(all_sub_sections)} sub-sections selected",
+        ]
+        if reasoning:
+            lines.append(f"Reasoning: {reasoning}")
+        if warnings:
+            lines.append(f"Warnings: {'; '.join(warnings)}")
+        lines.append("")  # blank separator
 
-        # Return full text of relevant sub-sections only
-        result["sections"] = []
         total_chars = 0
         for key in relevant_keys:
-            if key in all_sub_sections:
-                text = all_sub_sections[key]
-                truncated = text[:max_chars - total_chars] if total_chars + len(text) > max_chars else text
-                if truncated:
-                    # Parse "section_key/header" into structured entry
-                    parts = key.split("/", 1)
-                    entry: dict = {"id": key, "section": parts[0]}
-                    if len(parts) > 1 and parts[1] != "_full":
-                        entry["heading"] = parts[1]
-                    entry["text"] = truncated
-                    entry["chars"] = len(truncated)
-                    result["sections"].append(entry)
-                    total_chars += len(truncated)
-                if total_chars >= max_chars:
-                    break
+            if key not in all_sub_sections:
+                continue
+            text = all_sub_sections[key]
+            truncated = text[:max_chars - total_chars] if total_chars + len(text) > max_chars else text
+            if not truncated:
+                continue
+            # Section divider with key as header
+            parts = key.split("/", 1)
+            heading = parts[1] if len(parts) > 1 and parts[1] != "_full" else parts[0]
+            lines.append(f"{'=' * 60}")
+            lines.append(heading.upper())
+            lines.append(f"{'=' * 60}")
+            lines.append(truncated)
+            lines.append("")
+            total_chars += len(truncated)
+            if total_chars >= max_chars:
+                lines.append(f"[truncated at {max_chars} chars]")
+                break
 
-        if warnings:
-            result["_warnings"] = warnings
-
-        return result
+        return "\n".join(lines)
