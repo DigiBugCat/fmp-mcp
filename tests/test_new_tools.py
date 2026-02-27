@@ -336,6 +336,77 @@ class TestOwnershipStructure:
         await fmp.aclose()
 
 
+class TestSenateTrading:
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_latest_mode(self):
+        senate_rows = [
+            {
+                "symbol": "LMT",
+                "disclosureDate": "2026-02-10",
+                "transactionDate": "2026-02-05",
+                "representative": "Sen. Jane Doe",
+                "office": "Senate",
+                "assetDescription": "Lockheed Martin",
+                "assetType": "Stock",
+                "type": "Purchase",
+                "amount": "$15,001 - $50,000",
+                "owner": "Self",
+            }
+        ]
+        respx.get(f"{BASE}/stable/senate-latest").mock(
+            return_value=httpx.Response(200, json=senate_rows)
+        )
+        mcp, fmp = _make_server(register_ownership)
+        async with Client(mcp) as c:
+            result = await c.call_tool("senate_trading", {"limit": 10})
+        data = result.data
+        assert data["mode"] == "latest"
+        assert data["count"] == 1
+        assert data["trades"][0]["symbol"] == "LMT"
+        await fmp.aclose()
+
+
+class TestFundSearch:
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_fund_search_maps_name_to_cik(self):
+        disclosure_rows = [
+            {
+                "symbol": "DXYZ",
+                "cik": "0001166559",
+                "entityName": "Destiny XYZ Fund",
+                "seriesName": "Destiny Series",
+                "className": "Class A",
+                "seriesId": "S0001",
+                "classId": "C0001",
+            }
+        ]
+        mutual_rows = [
+            {
+                "symbol": "DXYZ",
+                "holder": "Destiny XYZ Fund",
+                "cik": "0001166559",
+                "seriesName": "Destiny Series",
+                "className": "Class A",
+            }
+        ]
+        respx.get(f"{BASE}/stable/funds/disclosure-holders-search").mock(
+            return_value=httpx.Response(200, json=disclosure_rows)
+        )
+        respx.get(f"{BASE}/stable/mutual-fund-holdings/name").mock(
+            return_value=httpx.Response(200, json=mutual_rows)
+        )
+        mcp, fmp = _make_server(register_ownership)
+        async with Client(mcp) as c:
+            result = await c.call_tool("fund_search", {"query": "Destiny"})
+        data = result.data
+        assert data["query"] == "Destiny"
+        assert data["count"] >= 1
+        assert data["results"][0]["cik"] == "0001166559"
+        await fmp.aclose()
+
+
 # --- VALUATION TOOLS ---
 
 class TestValuationHistory:
@@ -357,6 +428,29 @@ class TestValuationHistory:
         assert "historical" in data
         assert "percentiles" in data
         assert "pe" in data["percentiles"]
+        await fmp.aclose()
+
+
+class TestDiscountedCashFlow:
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_dcf_both_modes(self):
+        dcf_rows = [{"date": "2026-02-10", "dcf": 210.0, "stockPrice": 190.0}]
+        levered_rows = [{"date": "2026-02-10", "leveredDCF": 205.0, "stockPrice": 190.0}]
+        respx.get(f"{BASE}/stable/discounted-cash-flow").mock(
+            return_value=httpx.Response(200, json=dcf_rows)
+        )
+        respx.get(f"{BASE}/stable/levered-discounted-cash-flow").mock(
+            return_value=httpx.Response(200, json=levered_rows)
+        )
+        mcp, fmp = _make_server(register_valuation)
+        async with Client(mcp) as c:
+            result = await c.call_tool("discounted_cash_flow", {"symbol": "AAPL", "mode": "both"})
+        data = result.data
+        assert data["symbol"] == "AAPL"
+        assert data["mode"] == "both"
+        assert data["unlevered"][0]["dcf_value"] == 210.0
+        assert data["levered"][0]["dcf_value"] == 205.0
         await fmp.aclose()
 
     @pytest.mark.asyncio

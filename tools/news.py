@@ -142,13 +142,20 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
                 }
             )
 
-        return {
+        result = {
             "category": category,
             "symbol": symbol,
             "page": page,
             "count": len(articles),
             "articles": articles,
         }
+
+        if category == "stock" and not symbol:
+            result["_warnings"] = [
+                "Stock news is unfiltered. Did you mean to pass symbol='TICKER' for company-specific headlines?",
+            ]
+
+        return result
 
     @mcp.tool(
         annotations={

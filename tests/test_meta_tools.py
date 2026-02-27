@@ -39,9 +39,10 @@ class TestFMPCoverageGaps:
         assert isinstance(data["unimplemented_families"], list)
         assert isinstance(data["categories"], list)
         # Explicitly track key docs families we do not currently support.
-        assert "senate-trading" in data["unimplemented_families"]
         assert "esg" in data["unimplemented_families"]
         assert "websocket" in data["unimplemented_families"]
+        assert "senate-trading" not in data["unimplemented_families"]
+        assert "discounted-cash-flow" not in data["unimplemented_families"]
 
     @pytest.mark.asyncio
     async def test_include_implemented_categories(self):

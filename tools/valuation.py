@@ -250,6 +250,92 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
 
     @mcp.tool(
         annotations={
+            "title": "Discounted Cash Flow",
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True,
+        }
+    )
+    async def discounted_cash_flow(symbol: str, mode: str = "unlevered") -> dict:
+        """Get FMP-native DCF values (unlevered, levered, or both)."""
+        symbol = symbol.upper().strip()
+        mode = mode.lower().strip()
+        if mode not in {"unlevered", "levered", "both"}:
+            return {"error": "Invalid mode. Use 'unlevered', 'levered', or 'both'."}
+
+        async def _unlevered():
+            data = await _safe_call(
+                client.fundamental.get_discounted_cash_flow,
+                symbol=symbol,
+                ttl=TTL_HOURLY,
+                default=[],
+            )
+            return _as_list(data)
+
+        async def _levered():
+            data = await _safe_call(
+                client.fundamental.get_levered_dcf,
+                symbol=symbol,
+                ttl=TTL_HOURLY,
+                default=[],
+            )
+            return _as_list(data)
+
+        unlevered_list: list[dict] = []
+        levered_list: list[dict] = []
+
+        if mode == "unlevered":
+            unlevered_list = await _unlevered()
+        elif mode == "levered":
+            levered_list = await _levered()
+        else:
+            unlevered_list, levered_list = await asyncio.gather(_unlevered(), _levered())
+
+        if not unlevered_list and not levered_list:
+            return {"error": f"No DCF data found for '{symbol}'"}
+
+        def _format(entries: list[dict]) -> list[dict]:
+            formatted = []
+            for row in entries:
+                dcf_value = (
+                    row.get("dcf")
+                    or row.get("dcfValue")
+                    or row.get("leveredDCF")
+                    or row.get("leveredDcf")
+                    or row.get("discountedCashFlow")
+                )
+                stock_price = row.get("stockPrice") or row.get("price")
+                upside_pct = None
+                if dcf_value is not None and stock_price not in (None, 0):
+                    upside_pct = round((dcf_value / stock_price - 1) * 100, 2)
+                formatted.append(
+                    {
+                        "date": _date_only(row.get("date")),
+                        "dcf_value": dcf_value,
+                        "stock_price": stock_price,
+                        "upside_pct": upside_pct,
+                    }
+                )
+            return formatted
+
+        result = {
+            "symbol": symbol,
+            "mode": mode,
+            "unlevered": _format(unlevered_list),
+            "levered": _format(levered_list),
+        }
+        warnings = []
+        if mode in {"unlevered", "both"} and not unlevered_list:
+            warnings.append("unlevered DCF unavailable")
+        if mode in {"levered", "both"} and not levered_list:
+            warnings.append("levered DCF unavailable")
+        if warnings:
+            result["_warnings"] = warnings
+        return result
+
+    @mcp.tool(
+        annotations={
             "title": "Peer Comparison",
             "readOnlyHint": True,
             "destructiveHint": False,
@@ -271,9 +357,17 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
         symbol = symbol.upper().strip()
 
         # Step 1: Get peer list (either custom or FMP auto-peers)
+        warnings: list[str] = []
+        peer_source = "custom" if peer_symbols else "auto"
+        auto_peer_count = None
+
         if peer_symbols:
             # Use custom peer list
-            peer_symbols = [p.upper().strip() for p in peer_symbols]
+            peer_symbols = [p.upper().strip() for p in peer_symbols if p and p.strip()]
+            # Remove target symbol if accidentally included
+            peer_symbols = [p for p in peer_symbols if p != symbol]
+            if not peer_symbols:
+                return {"error": "Custom peer_symbols was empty after normalization"}
         else:
             # /stable/stock-peers returns a flat list of peer companies
             peers_data = await _safe_call(
@@ -288,9 +382,20 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
                 return {"error": f"No peer data found for '{symbol}'"}
 
             # Extract peer symbols from the flat list
-            peer_symbols = [p.get("symbol") for p in peers_list if p.get("symbol")]
+            peer_symbols = [
+                p.get("symbol").upper().strip()
+                for p in peers_list
+                if isinstance(p.get("symbol"), str) and p.get("symbol").strip()
+            ]
+            peer_symbols = [p for p in peer_symbols if p != symbol]
             if not peer_symbols:
                 return {"error": f"No peers identified for '{symbol}'"}
+
+            auto_peer_count = len(peer_symbols)
+            if auto_peer_count < 5:
+                warnings.append(
+                    f"Auto peer set has only {auto_peer_count} symbol(s); provide peer_symbols for a higher-quality direct-comp set."
+                )
 
             # Limit to 10 peers to avoid excessive API calls
             peer_symbols = peer_symbols[:10]
@@ -442,9 +547,13 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient) -> None:
             "symbol": symbol,
             "peers": peer_symbols,
             "peer_count": len(peer_metrics),
+            "peer_source": peer_source,
+            "auto_peer_count": auto_peer_count,
             "comparisons": comparisons,
             "peer_details": peer_metrics,
         }
+        if warnings:
+            result["_warnings"] = warnings
 
         return result
 

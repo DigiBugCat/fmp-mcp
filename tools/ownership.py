@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 
 import httpx
 from polygon_client import PolygonClient as _PolygonClientRuntime
-from tools._helpers import TTL_DAILY, TTL_HOURLY, _as_dict, _as_list, _date_only, _safe_call
+from tools._helpers import TTL_DAILY, TTL_HOURLY, TTL_REALTIME, _as_dict, _as_list, _date_only, _safe_call
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -569,6 +569,188 @@ def register(mcp: FastMCP, client: AsyncFMPDataClient, polygon_client: PolygonCl
         if _warnings:
             result["_warnings"] = _warnings
 
+        return result
+
+    @mcp.tool(
+        annotations={
+            "title": "Senate Trading",
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True,
+        }
+    )
+    async def senate_trading(
+        symbol: str | None = None,
+        name: str | None = None,
+        page: int = 0,
+        limit: int = 50,
+    ) -> dict:
+        """Get U.S. Senate disclosed trading activity.
+
+        Supports three modes:
+        - by symbol (``symbol="LMT"``)
+        - by senator name (``name="Tuberville"``)
+        - latest feed (no symbol/name)
+        """
+        page = max(0, page)
+        limit = max(1, min(limit, 100))
+
+        if symbol and name:
+            return {"error": "Provide either symbol or name, not both."}
+
+        mode = "latest"
+        if symbol:
+            mode = "symbol"
+            symbol = symbol.upper().strip()
+            data = await _safe_call(
+                client.intelligence.get_senate_trading,
+                symbol=symbol,
+                ttl=TTL_HOURLY,
+                default=[],
+            )
+        elif name:
+            mode = "name"
+            name = name.strip()
+            data = await _safe_call(
+                client.intelligence.get_senate_trades_by_name,
+                name=name,
+                ttl=TTL_HOURLY,
+                default=[],
+            )
+        else:
+            data = await _safe_call(
+                client.intelligence.get_senate_latest,
+                page=page,
+                limit=limit,
+                ttl=TTL_REALTIME,
+                default=[],
+            )
+
+        rows = _as_list(data)
+        if not rows:
+            scope = symbol or name or f"page {page}"
+            return {"error": f"No senate trading data found for {scope}"}
+
+        trades = []
+        for row in rows[:limit]:
+            trades.append(
+                {
+                    "symbol": row.get("symbol"),
+                    "disclosure_date": _date_only(row.get("disclosureDate")),
+                    "transaction_date": _date_only(row.get("transactionDate")),
+                    "reporting_name": row.get("representative"),
+                    "office": row.get("office"),
+                    "asset_description": row.get("assetDescription"),
+                    "asset_type": row.get("assetType"),
+                    "transaction_type": row.get("type"),
+                    "amount": row.get("amount"),
+                    "owner": row.get("owner"),
+                    "comment": row.get("comment"),
+                }
+            )
+
+        return {
+            "mode": mode,
+            "symbol": symbol,
+            "name": name,
+            "page": page,
+            "count": len(trades),
+            "trades": trades,
+        }
+
+    @mcp.tool(
+        annotations={
+            "title": "Fund Search",
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True,
+        }
+    )
+    async def fund_search(query: str, limit: int = 25) -> dict:
+        """Map fund names to CIKs and related identifiers."""
+        query = query.strip()
+        if not query:
+            return {"error": "query is required"}
+        limit = max(1, min(limit, 100))
+
+        disclosure_data, mutual_data = await asyncio.gather(
+            _safe_call(
+                client.investment.search_fund_disclosure_holders,
+                name=query,
+                ttl=TTL_HOURLY,
+                default=[],
+            ),
+            _safe_call(
+                client.investment.get_mutual_fund_by_name,
+                name=query,
+                ttl=TTL_HOURLY,
+                default=[],
+            ),
+        )
+
+        disclosure_list = _as_list(disclosure_data)
+        mutual_list = _as_list(mutual_data)
+
+        results: list[dict] = []
+        seen: set[tuple[str, str]] = set()
+
+        for row in disclosure_list:
+            cik = str(row.get("cik") or "").strip()
+            entity_name = row.get("entityName") or row.get("seriesName") or row.get("className")
+            key = (cik, str(entity_name))
+            if key in seen:
+                continue
+            seen.add(key)
+            results.append(
+                {
+                    "source": "fund-disclosure",
+                    "symbol": row.get("symbol"),
+                    "cik": cik or None,
+                    "entity_name": entity_name,
+                    "series_name": row.get("seriesName"),
+                    "class_name": row.get("className"),
+                    "series_id": row.get("seriesId"),
+                    "class_id": row.get("classId"),
+                }
+            )
+
+        for row in mutual_list:
+            cik = str(row.get("cik") or "").strip()
+            entity_name = row.get("holder") or row.get("fundName") or row.get("name")
+            key = (cik, str(entity_name))
+            if key in seen:
+                continue
+            seen.add(key)
+            results.append(
+                {
+                    "source": "mutual-fund",
+                    "symbol": row.get("symbol"),
+                    "cik": cik or None,
+                    "entity_name": entity_name,
+                    "series_name": row.get("seriesName"),
+                    "class_name": row.get("className"),
+                    "series_id": row.get("seriesId"),
+                    "class_id": row.get("classId"),
+                }
+            )
+
+        if not results:
+            return {"error": f"No funds found matching '{query}'"}
+
+        result = {
+            "query": query,
+            "count": min(len(results), limit),
+            "results": results[:limit],
+        }
+        warnings = []
+        if not disclosure_list:
+            warnings.append("fund disclosure search returned no rows")
+        if not mutual_list:
+            warnings.append("mutual fund search returned no rows")
+        if warnings:
+            result["_warnings"] = warnings
         return result
 
     @mcp.tool(
