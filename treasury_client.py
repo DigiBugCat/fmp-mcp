@@ -177,8 +177,6 @@ class TreasuryClient:
         Returns:
             List of auction result dicts with string values (API returns all as strings)
         """
-        from datetime import date, timedelta
-
         since = (date.today() - timedelta(days=days_back)).isoformat()
 
         fields = ",".join([
@@ -201,6 +199,7 @@ class TreasuryClient:
 
         all_records: list[dict] = []
         page = 1
+        max_pages = 10  # Safety cap to avoid runaway pagination
 
         while True:
             data = await self.get(
@@ -221,7 +220,7 @@ class TreasuryClient:
 
             meta = data.get("meta", {})
             total_pages = meta.get("total-pages", 1)
-            if page >= total_pages:
+            if page >= total_pages or page >= max_pages:
                 break
             page += 1
 
@@ -279,7 +278,7 @@ class TreasuryClient:
             )
             resp.raise_for_status()
             data = resp.json()
-        except (httpx.HTTPError, Exception):
+        except httpx.HTTPError:
             return None
 
         for obs in data.get("observations", []):

@@ -415,6 +415,8 @@ def register(mcp: "FastMCP", treasury_client: "TreasuryClient") -> None:
         notes_bonds = [a for a in auctions if a.get("grade")]
         bills = [a for a in auctions if a.get("security_type") == "Bill"]
 
+        _warnings: list[str] = []
+
         result: dict = {
             "count": len(auctions),
             "period": f"last {days_back} days",
@@ -430,10 +432,22 @@ def register(mcp: "FastMCP", treasury_client: "TreasuryClient") -> None:
                 "count": len(notes_bonds),
                 "grade_distribution": grade_dist,
             }
-            result["wi_source"] = "fred_cmt" if treasury_client.fred_api_key else "avg_med_yield"
+            wi_src = "fred_cmt" if treasury_client.fred_api_key else "avg_med_yield"
+            result["wi_source"] = wi_src
+            if wi_src == "avg_med_yield":
+                _warnings.append(
+                    "FRED_API_KEY not configured; tail uses avg_med_yield (less precise). "
+                    "Set FRED_API_KEY for FRED CMT yield WI proxy."
+                )
+        else:
+            if auctions:
+                _warnings.append("No graded auctions (notes/bonds) in results; only bills returned.")
 
         if bills:
             result["bill_count"] = len(bills)
+
+        if _warnings:
+            result["_warnings"] = _warnings
 
         return result
 
@@ -527,6 +541,12 @@ def register(mcp: "FastMCP", treasury_client: "TreasuryClient") -> None:
             graded_summary["by_maturity"] = maturity_breakdown
         else:
             _warnings.append("No graded auctions (notes/bonds) found in period")
+
+        if notes_bonds and not treasury_client.fred_api_key:
+            _warnings.append(
+                "FRED_API_KEY not configured; tail uses avg_med_yield (less precise). "
+                "Set FRED_API_KEY for FRED CMT yield WI proxy."
+            )
 
         # --- Bill summary ---
         bill_summary: dict = {}
