@@ -11,7 +11,8 @@ from fmp_data.config import ClientConfig, RateLimitConfig
 
 from polygon_client import PolygonClient
 from schwab_client import SchwabClient
-from tools import assets, economy, edgar, financials, macro, market, meta, news, options, overview, ownership, transcripts, valuation, workflows
+from treasury_client import TreasuryClient
+from tools import assets, auctions, economy, edgar, financials, macro, market, meta, news, options, overview, ownership, transcripts, valuation, workflows
 
 
 @asynccontextmanager
@@ -19,6 +20,7 @@ async def lifespan(server):
     """Manage client lifecycles."""
     yield
     await client.aclose()
+    await treasury_client.close()
     if polygon_client is not None:
         await polygon_client.close()
     if schwab_client is not None:
@@ -75,6 +77,9 @@ client = AsyncFMPDataClient(
     )
 )
 
+# Initialize Treasury client (auction API is free; FRED CMT yields optional)
+treasury_client = TreasuryClient(fred_api_key=os.environ.get("FRED_API_KEY", "")  or None)
+
 # Initialize optional Polygon client
 polygon_api_key = os.environ.get("POLYGON_API_KEY", "")
 polygon_client: PolygonClient | None = None
@@ -103,6 +108,7 @@ transcripts.register(mcp, client)
 assets.register(mcp, client)
 workflows.register(mcp, client)
 edgar.register(mcp, client)
+auctions.register(mcp, treasury_client)
 meta.register(mcp, client)
 
 # Options & economy tools (Schwab primary, Polygon fallback)
